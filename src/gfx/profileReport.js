@@ -70,6 +70,7 @@ export function buildReport({ frames: input, phases, context = {} }) {
       complete: !!f.coverage?.complete,
       gpu: f.coverage?.complete ? timed.reduce((s, p) => s + p.gpu, 0) : null,
       span: f.coverage?.timelineComplete ? f.coverage.spanMs : null,
+      busy: f.coverage?.timelineComplete ? f.coverage.busyMs ?? null : null,
       passes: f.passes.length,
       missing: f.passes.length - timed.length,
       wall: f.rec?.wall ?? null,
@@ -128,6 +129,7 @@ export function buildReport({ frames: input, phases, context = {} }) {
   const frame = {
     gpu: stats(perFrame.map((f) => f.gpu)),
     span: stats(perFrame.map((f) => f.span)),
+    busy: stats(perFrame.map((f) => f.busy)),
     wall: stats(perFrame.map((f) => f.wall)),
     interval: stats(perFrame.map((f) => f.interval)),
     steps: stats(perFrame.map((f) => f.steps)),
@@ -303,7 +305,7 @@ const lpad = (s, w) => String(s).padStart(w);
 const setupLine = (s) => [
   `map ${s.map ?? '?'}${s.mode ? `/${s.mode}` : ''}`, `view ${s.view ?? '?'}`, `detail ${s.detail ?? '?'}`,
   `canvas ${(s.canvas ?? []).join('×')} @${f(s.pixelRatio, 2)}x`, `scene ×${f(s.renderScale, 3)}`,
-  `TAA ${s.taa ? 'on' : 'off'}`, `upscale ${f(s.upscale, 3)}${s.adaptive ? ' adaptive' : ''}`, `autoRes ${s.autoRes ? 'on' : 'off'}`,
+  `TAA ${s.taa ? 'on' : 'off'}`, `upscale ${f(s.upscale, 3)}${s.adaptive ? ' adaptive' : ''}`, `autoRes ${s.autoRes ? `on${s.autoResSteering ? ` (${s.autoResSteering} time)` : ''}` : 'off'}`,
   ...(s.chromeArgs?.length ? [`chrome ${s.chromeArgs.join(' ')}`] : []),
   ...(s.shaderFeatures ? [`shaders ${Object.entries(s.shaderFeatures).filter(([, on]) => on).map(([k]) => k).join('+') || 'core'}`] : []),
 ].join(' · ');
@@ -324,7 +326,7 @@ export function formatReport(r) {
   for (const v of r.verdict) out.push(`» ${v}`);
   out.push('');
   const fr = r.frames;
-  out.push(`frame   interval ${f(fr.interval.median)} ms [${f(fr.interval.p10)}–${f(fr.interval.p90)}] (${f(fr.fps, 1)} fps) · CPU work ${f(fr.wall.median)} [${f(fr.wall.p10)}–${f(fr.wall.p90)}] · GPU sum ${f(fr.gpu.median)} [${f(fr.gpu.p10)}–${f(fr.gpu.p90)}] · GPU span ${f(fr.span.median)} · passes ${f(fr.passes.median, 0)}`);
+  out.push(`frame   interval ${f(fr.interval.median)} ms [${f(fr.interval.p10)}–${f(fr.interval.p90)}] (${f(fr.fps, 1)} fps) · CPU work ${f(fr.wall.median)} [${f(fr.wall.p10)}–${f(fr.wall.p90)}] · GPU sum ${f(fr.gpu.median)} [${f(fr.gpu.p10)}–${f(fr.gpu.p90)}] · GPU span ${f(fr.span.median)} (busy ${f(fr.busy?.median)}) · passes ${f(fr.passes.median, 0)}`);
   out.push('phase      GPU ms  [p10–p90]        CPU ms');
   for (const p of r.phases) {
     if (!p.gpu.median && !p.cpu.median) continue;

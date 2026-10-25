@@ -28,6 +28,23 @@ function knockedOut(pass, kind) {
   return new Proxy(pass, { get(t, k) { if (drop.has(k)) return NOOP; const v = t[k]; return typeof v === 'function' ? v.bind(t) : v; } });
 }
 
+// A frame's GPU busy time, ms: the union of its passes' [start, start + gpu] on the frame's timeline. Unlike the
+// span (first start to last end) it leaves out the gaps where the GPU waited for the CPU's next submission, and
+// overlapping passes count once (on Apple a render pass's timestamps run from its vertex stage's start to its
+// fragment stage's end, overlapping its neighbours: research/apple-metal/KNOWLEDGE.md 1.2), so the sum of
+// passes overstates it and the span counts idle time. Passes without a start are left out.
+export function busyMs(passes) {
+  const iv = [];
+  for (const p of passes) if (p.start !== null && p.gpu !== null && p.gpu > 0) iv.push([p.start, p.start + p.gpu]);
+  iv.sort((a, b) => a[0] - b[0]);
+  let total = 0, lo = -Infinity, hi = -Infinity;
+  for (const [a, b] of iv) {
+    if (a > hi) { if (hi > lo) total += hi - lo; lo = a; hi = b; } else if (b > hi) hi = b;
+  }
+  if (hi > lo) total += hi - lo;
+  return total;
+}
+
 export class GpuTiming {
   constructor(gpu) {
     this.gpu = gpu;
@@ -56,6 +73,8 @@ export class GpuTiming {
     this.lastFrame = -1;
     this.frameMs = null;
     this._enabled = false;
+    this._asked = false;
+    this._background = false;
     this._epoch = 0;
     this._parts = [];
     this._pendingFrames = new Set();
@@ -231,9 +250,15 @@ export class GpuTiming {
     };
   }
 
+  // On for the profiler and tools (`enabled = …`) or for the app's own frame time (`background`: automatic
+  // resolution steers on each frame's GPU busy time, gfx/post.js AUTO_RES): either keeps timestamps on, and
+  // turning one off leaves the other's running.
   get enabled() { return this._enabled; }
-  set enabled(value) {
-    const on = Boolean(value) && this.supported;
+  set enabled(value) { this._asked = Boolean(value); this._apply(); }
+  get background() { return this._background; }
+  set background(value) { this._background = Boolean(value); this._apply(); }
+  _apply() {
+    const on = (this._asked || this._background) && this.supported;
     if (on === this._enabled) return;
     this._enabled = on;
     this._epoch++;
@@ -372,6 +397,7 @@ export class GpuTiming {
         unlabelled: passes.filter(p => p.name.startsWith('(unlabelled')).length,
         timelineComplete,
         spanMs: timelineComplete ? span : null,
+        busyMs: timelineComplete ? busyMs(passes) : null,
       };
       const frameMs = coverage.complete ? Object.values(merged).reduce((a, b) => a + b, 0) : null;
       if (frameNo >= this.lastFrame) {

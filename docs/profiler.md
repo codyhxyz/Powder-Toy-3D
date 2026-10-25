@@ -13,7 +13,7 @@ One action shows what is wrong with performance, in one run.
 
 1. boots `?map=<key>&view=<view>&profile=1` in `?test=visual` mode, at full presentation cadence and quality;
 2. waits for `__app.test.ready()` and `gpu.pipelines.settled()`. Big maps build their physics kernels after the first frame, so a capture taken earlier is inflated;
-3. freezes auto resolution at its current scale (`--autores` leaves it running), sets the pose, and calls `__app.requestRender()` every animation frame. A settled scene draws nothing (gfx/pacing.js), so without this nothing would render;
+3. freezes auto resolution at the preset's scale (`--autores` leaves it running, steering on GPU busy time, and wakes it every frame as input does), sets the pose, and calls `__app.requestRender()` every animation frame. A settled scene draws nothing (gfx/pacing.js), so without this nothing would render;
 4. warms up for `--warmup` frames, waits out any builds the pose started, then runs `prof.capture({ frames })`;
 5. after the timed frames, collects agent C's cost counters (`__app.prof.cost?.capture()`) and, with `--counters`, agent D's GPU counters (`tools/gpu-counters.mjs`);
 6. closes the browser, measures GPU utilization again to detect a shared GPU, prints the report, and writes `profile.json`, `profile.html` (a self-contained waterfall) and `cost.png` (C's heatmap) to `--out`. The default is `$TMPDIR/tpt-profile/<map>-<pose>`.

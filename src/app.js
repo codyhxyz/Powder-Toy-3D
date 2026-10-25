@@ -2381,6 +2381,7 @@ const prof = createProfiler(gpu, {
     detail: detailKey(frameDetail) || 'none',
     taa: !!post.settings.taa, upscale: post.settings.upscale, adaptive: !!post.settings.adaptive,
     resolutionScale: post.settings.resolutionScale, autoRes: !!autoRes.enabled,
+    autoResSteering: autoRes.enabled ? autoRes.steering : null, autoResChanges: autoRes.enabled ? autoRes.changes : null,
     pose: { eye: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov, pov: !!pov?.active },
     testMode: testMode ?? null, paused: !!settings.paused, pov: !!pov?.active,
     // the physics governor: game speed, its stages' GPU costs (v2/host.js)
@@ -2448,6 +2449,9 @@ const invVol = new THREE.Matrix4();
 const physicsGovernor = createPhysicsGovernor(gpu);   // physics' share of the GPU a frame (v2/host.js)
 const autoRes = createAutoResolution();
 autoRes.enabled = !testMode || testMode === 'visual'; // intentional preview caps are not GPU slowness
+// It steers on each drawn frame's GPU busy time (gfx/autoResolution.js): timestamps stay on while it
+// adapts (gpu.timing.background, set each tick), and every frame whose times land feeds it.
+gpu.timing.addFrameListener((f) => { const ms = f.coverage?.busyMs; if (ms != null) autoRes.gpu(f.frame, ms, clock.getElapsed()); });
 post.onRead = wakeLoop;   // an eye-adaptation reading landed: the view may have more adapting to do
 
 // Screenshots: the canvas, read in the task that submitted its frame (the
@@ -2925,6 +2929,8 @@ function tick(now, renderOnly = false) {
   if (!renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
   // Set before pacing's view key so a scale change always schedules a render.
   post.settings.resolutionScale = autoRes.scale;
+  // (only where it can lower the scale: under an upscaling preset, TAA on; at native nothing is timed)
+  gpu.timing.background = autoRes.enabled && !!post.settings.taa && !!post.settings.adaptive;
   ctx.renderOnly = renderOnly;
 
   if (!renderOnly) {
@@ -3126,6 +3132,8 @@ function tick(now, renderOnly = false) {
   }
   // The HUD's rates
   if (!renderOnly) countHudRates(present && !runView, frameDt, dt, legacyStepped);
+  // a frame that drew the view at TAA measures what rendering costs: its GPU time (as it lands) steers the scale
+  if (!renderOnly && renderedLast && post.settings.taa) autoRes.drawn(gpu.frameNo + 1);
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
   // a map switched in-game is on screen: its load watch ends (loadWatch.js)
   if (loadWatch.active && runView) loadWatch.onScreen();

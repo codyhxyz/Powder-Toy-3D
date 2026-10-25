@@ -166,7 +166,9 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, ko
     return { name: spec.name, eye: cam.position.toArray(), target: ctl.target.toArray() };
   }
   let keep = false, readyWaitMs = null;
-  const pump = () => { if (!keep) return; a.requestRender(); requestAnimationFrame(pump); };
+  // (--autores: woken every frame too, as a player's input does: a still view otherwise finishes at full scale and
+  // automatic resolution rests until something moves, app.js autoRes.recover)
+  const pump = () => { if (!keep) return; if (autores) a.autoRes.wake(); a.requestRender(); requestAnimationFrame(pump); };
   const timing = a.gpu.timing;
   window.__profTool = {
     async prepare() {

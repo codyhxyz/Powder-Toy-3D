@@ -122,6 +122,7 @@ import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
 import { sprintBlurWGSL } from './sprintBlur.js';
 import { crueltyDisplayWGSL, crueltyFrameSettings } from './crueltyDisplay.js';
+import { AUTO_RES } from './autoResolution.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -188,69 +189,9 @@ export const ADAPT = {
   DT: 1 / 60,          // s: the frame time assumed when render() isn't given one
 };
 
-// Frame-time trials, not a refresh-rate target alone: a capped 30 Hz page can
-// regain detail too. Failed trials back off so CPU-bound scenes don't keep cycling.
-export const AUTO_RES = {
-  WINDOW: 1.2,        // s of frames averaged per measurement
-  BUDGET: 1 / 50,     // s: a slower average frame tries a lower scale
-  DOWN: 0.85,         // scale × this per step down…
-  UP: 1.08,           // …and × this per step back up
-  KEEP: 0.93,         // a step is kept only if the frame time moves by this ratio
-  MIN: 0.6,           // lowest multiple of the selected render scale
-  HOLD: 15,           // s between trials…
-  MAX_HOLD: 120,      // …doubling after each failed one, up to this
-};
-export function createAutoResolution() {
-  const { WINDOW, BUDGET, DOWN, UP, KEEP, MIN, HOLD, MAX_HOLD } = AUTO_RES;
-  let time = 0, frames = 0, trial = null, resting = false;
-  let downAt = 0, upAt = HOLD, downHold = HOLD, upHold = HOLD;
-  const auto = {
-    enabled: true, // tools disable adaptation for stable timings (freeze current scale)
-    scale: 1,
-    // Finish a still at selected quality, without measuring its settling frames
-    // and degrading again. Only outside input/state changes release this lock.
-    recover(now) {
-      if (!auto.enabled || resting) return false;
-      resting = true;
-      time = frames = 0; trial = null;
-      upAt = now + HOLD;
-      const changed = auto.scale !== 1;
-      auto.scale = 1;
-      return changed;
-    },
-    wake() { resting = false; },
-    update(dt, now) {
-      if (!auto.enabled || resting) { time = frames = 0; trial = null; return; }
-      time += dt; frames++;
-      if (time < WINDOW) return;
-      const avg = time / frames;
-      time = frames = 0;
-      if (trial) {
-        const { scale, baseline, up } = trial;
-        const accepted = up ? avg <= baseline / KEEP : avg <= baseline * KEEP;
-        if (!accepted) auto.scale = scale;
-        if (up) {
-          upAt = now + (accepted ? WINDOW : upHold);
-          upHold = accepted ? HOLD : Math.min(MAX_HOLD, upHold * 2);
-          // Don't immediately undo a successful recovery at a refresh-rate cap.
-          downAt = Math.max(downAt, now + HOLD);
-        } else {
-          downAt = now + (accepted ? 0 : downHold);
-          downHold = accepted ? HOLD : Math.min(MAX_HOLD, downHold * 2);
-          upAt = Math.max(upAt, now + HOLD);
-        }
-        trial = null;
-        return;
-      }
-      const up = auto.scale < 1 && now >= upAt;
-      if (up || (avg > BUDGET && auto.scale > MIN && now >= downAt)) {
-        trial = { scale: auto.scale, baseline: avg, up };
-        auto.scale = up ? Math.min(1, auto.scale * UP) : Math.max(MIN, auto.scale * DOWN);
-      }
-    },
-  };
-  return auto;
-}
+// Automatic resolution (dynamic resolution scaling on the GPU's frame time) lives in gfx/autoResolution.js;
+// renderScale below applies its multiple.
+export { AUTO_RES, createAutoResolution } from './autoResolution.js';
 
 export const MIPS = 6;
 // Upscaling presets: render scale per axis of the output's (the device's) pixels,
