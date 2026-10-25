@@ -24,6 +24,13 @@ const NO_AMBIENT = [0, 0, 0];   // a scene without an ambient floor (world scene
 // about as much of the view as a box does
 const WORLD_VIEW_DIR = [11, 9.5, 13];
 const WORLD_VIEW_DIST = 21;
+// The window's lead ahead of the god view's eye (world.godFocus): on the ground, half the
+// window's half width, so the eye stands a quarter of the window behind its middle (what's
+// in front is full detail, a WIN_STEP + WIN_HYSTERESIS lag included); each cell of height
+// adds this many, as the ground near the eye gets further away. At the home view (eye
+// ~130 cells up, target ~235 cells out) the cap (~300) is past the target.
+const GOD_LEAD_NEAR = 0.5;         // × the window's half width
+const GOD_LEAD_PER_HEIGHT = 2;     // cells of lead per cell of eye height over the ground
 
 // World: every world gets a shrine (constructions/builtins.js shrine, with its
 // perk orbs) near the middle of its first window, where the god view starts:
@@ -244,16 +251,33 @@ const world = {
     app.rig.setHome(new THREE.Vector3(...(v?.dir ?? WORLD_VIEW_DIR)).setLength(v ? v.dist * scale : WORLD_VIEW_DIST).add(target), target);
   },
 
-  // World mode: keep the window on the focus, the POV body or else the orbit
-  // target (a tool may pin it: __app.worldFocus = [x, z] in world cells).
+  // The god view's focus, world cells [x, z]: the orbit target's column, but never further
+  // from the eye's than GOD_LEAD_NEAR + GOD_LEAD_PER_HEIGHT × the eye's height over the
+  // ground. The orbit target rides WORLD_VIEW_DIST ahead of the eye (camera.js), so
+  // flying down to the ground with W left it two windows ahead, the window with it, and
+  // the far view drawn right under the camera (no fire, blobby trees) with full detail
+  // only far ahead. Up at the home view the cap is past the target and nothing changes.
+  godFocus(app) {
+    const { win, camera, controls, scale, anchor } = app;
+    const tx = controls.target.x / scale + anchor.x, tz = controls.target.z / scale + anchor.y;
+    const ex = camera.position.x / scale + anchor.x, ez = camera.position.z / scale + anchor.y;
+    const dx = tx - ex, dz = tz - ez, d = Math.hypot(dx, dz);
+    const height = Math.max(0, camera.position.y / scale - win.scene.ground(ex, ez, win.P));
+    const cap = GOD_LEAD_NEAR * app.sim.g.nx / 2 + GOD_LEAD_PER_HEIGHT * height;
+    if (d <= cap) return [tx, tz];
+    return [ex + dx * cap / d, ez + dz * cap / d];
+  },
+
+  // World mode: keep the window on the focus, the POV body or else the god view's
+  // (godFocus; a tool may pin it: __app.worldFocus = [x, z] in world cells).
   moveWindow(app) {
     if (app.mp.replica) return;
-    const { win, sim, pov, controls, scale, anchor, hover } = app;
+    const { win, sim, pov, hover } = app;
     let fx, fz;
     const focus = app.villageFocus ?? app.worldFocus;   // (Animal Crossing streams toward your cottage first)
     if (focus) [fx, fz] = focus;
     else if (pov?.active && pov.player) { fx = pov.player.pos.x + sim.origin.x; fz = pov.player.pos.z + sim.origin.z; }
-    else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
+    else [fx, fz] = world.godFocus(app);
     const move = win.update(fx, fz);
     if (!move) return;
     const committed = ([dx, dz]) => {
