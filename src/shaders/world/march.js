@@ -53,7 +53,7 @@ import { volumeHazeGLSL } from '../farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY } from '../../gfx/meshCut.js';
 import { ddaWalk } from '../dda.js';
 import { uniformStruct } from '../../gpu/params.js';
-import { tracerCommonWGSL, realisticTraceWGSL, SCENE_FORMATS, REALISTIC_LEVELS } from '../render.js';
+import { tracerCommonWGSL, realisticTraceWGSL, RICH_BODIES, SCENE_FORMATS, REALISTIC_LEVELS } from '../render.js';
 import { materialStyleForView, isMaterialView } from '../../views.js';
 import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 import { reachWGSL } from './reach.js';
@@ -366,7 +366,43 @@ struct MarchFrag {
 //   S,D shade → scene pass       premultiplied colour (rgba16float), depth (r32float, -1: no hit)
 // Intentional (grains): the grain switches' hand-off band keeps a second shading path in flight
 // across the cut (gfx/grains.js gAlt*), so those detail variants draw as one pass ('whole').
-export const MARCH_STAGES = ['march', 'event', 'reflect', 'shade'];
+// ---- The event kernels (Laine, Karras & Aila 2013, "Megakernels Considered Harmful: Wavefront Path
+// Tracing on GPUs") ----
+// The fat event stage ('event') is the whole loop: a pixel that meets any rich body pays, in every
+// SIMD group it shares, for the code of all of them. An event kernel is the same loop with only the
+// bodies one kind of ray needs (shaders/render.js RICH_BODIES); it runs on the pixels whose first
+// rich event (the lean march's stop, recorded in K as the body's code) is one it takes, and traces
+// the rest of the ray itself while the ray meets only bodies it keeps. At any other body it aborts:
+// it draws nothing and leaves the pixel to the fat stage, which redoes the ray from the same record,
+// so the picture is the one-pass loop's either way (no state is handed on mid-ray: a bent ray in
+// liquid carries ~85 words, docs/march-spill.md). The kernels run in this order, after the lean
+// march and before the fat stage.
+//   key     the stage's name ('ev_' + key)
+//   takes   the first-event bodies routed to it (each body to at most one kernel)
+//   keep    the bodies its loop compiles (takes and those its rays commonly meet next)
+// How it gates (EVENT_GATE_Z): the lean march writes each event pixel's depth from its body's
+// kernel (KIND_Z, 0 for the bodies no kernel takes); a kernel draws at its own z, tested 'equal'
+// without writing (early-z: only its pixels launch); the fat stage draws at EVENT_GATE_Z tested
+// 'greater' (every event pixel) and skips, first thing, those a kernel finished (X, below).
+// To add a kind: one entry here (its takes disjoint from the others'), and nothing else: the stage,
+// its pipeline, layout, gate and the warm-up follow from this list.
+export const EVENT_KINDS = [
+  { key: 'liquid', takes: ['liquid'], keep: ['liquid'] },
+];
+const kindStage = (k) => `ev_${k.key}`;
+const KIND_OF_STAGE = Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), k]));
+/** Whether stage is an event kernel's. */
+export const isKindStage = (stage) => !!KIND_OF_STAGE[stage];
+// each kind's gate depth: spread below EVENT_GATE_Z, exact in depth16unorm (n / 64)
+const KIND_Z = Object.fromEntries(EVENT_KINDS.map((k, i) => [k.key, (i + 1) / 64]));
+if (EVENT_KINDS.some((k, i) => EVENT_KINDS.some((o, j) => j !== i && o.takes.some((b) => k.takes.includes(b))))) throw new Error('march: two event kernels take the same body');
+// (WGSL: a stopped body's code, RICH_BODIES' index + 1, to its kernel's gate depth)
+const evGateWGSL = () => /* wgsl */ `
+fn evGateZ(b: u32) -> f32 {
+${RICH_BODIES.map((b, i) => { const k = EVENT_KINDS.find((x) => x.takes.includes(b)); return k ? `  if (b == ${i + 1}u) { return ${KIND_Z[k.key]}; }` : ''; }).filter(Boolean).join('\n')}
+  return 0.0;
+}`;
+export const MARCH_STAGES = ['march', ...EVENT_KINDS.map(kindStage), 'event', 'reflect', 'shade'];
 /** Whether a detail variant draws through the split stages (not the grain variants: see above). */
 export const marchSplits = (detail = {}) => !GRAINS_ANY(detail);
 const SPLIT_AT = "  // ---- the pixel's traced reflection, marched once";
@@ -382,11 +418,11 @@ function splitTrace(detail, format, optics, split = null) {
 // G-buffer formats, their textures' bytes per pixel (the report's memory column)
 export const GBUF = {
   G0: 'rgba32uint', G1: 'rgba32uint', G2: 'rgba32uint', R0: 'rgba32uint', R1: 'rgba32uint', O: 'rgba16float', S: 'rgba16float', D: 'r32float',
-  K: 'rgba32uint', Z: 'depth16unorm',
+  K: 'rgba32uint', Z: 'depth16unorm', X: 'r8uint',
 };
 /** The G-buffer's array textures, their layers (K: the event stage's record, one binding for its three texels). */
 export const GBUF_LAYERS = { K: 3 };
-export const GBUF_BYTES_PER_PIXEL = Object.entries(GBUF).reduce((n, [k, f]) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, depth16unorm: 2 })[f] * (GBUF_LAYERS[k] ?? 1), 0);
+export const GBUF_BYTES_PER_PIXEL = Object.entries(GBUF).reduce((n, [k, f]) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, depth16unorm: 2, r8uint: 1 })[f] * (GBUF_LAYERS[k] ?? 1), 0);
 // The event stage's gate (Z): the lean march writes depth 0 where it stopped at a rich event and leaves the
 // clear (1) elsewhere; the event stage draws at depth EVENT_GATE_Z, tested 'greater' without writing, so the
 // depth test before its fragment shader (early-z) launches it on those pixels only: the event pixels'
@@ -395,9 +431,12 @@ const EVENT_GATE_Z = 0.5;
 // group 0 of each stage after the frame's four (tables, FrameUniforms, mesh depth, deco plane)
 const GB_BASE = 4;
 // (at most 3 storage textures a stage: the device's 4 less the cost view's counters, gfx/costView.js)
+const KERNEL_EXTRA = [['gbK', 'K'], ['gbG2', 'G2', 'write'], ['gbR0', 'R0', 'write'], ['gbR1', 'R1', 'write']];
 const STAGE_EXTRA = {
   march: [['gbK', 'K', 'write']],
-  event: [['gbK', 'K'], ['gbG2', 'G2', 'write'], ['gbR0', 'R0', 'write'], ['gbR1', 'R1', 'write']],
+  ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), KERNEL_EXTRA])),
+  // (X: the kernels' done marks, read: shaders/world/march.js "The event kernels")
+  event: [...KERNEL_EXTRA, ['gbX', 'X']],
   reflect: [['gbG1', 'G1'], ['gbG2', 'G2'], ['gbR0', 'R0'], ['gbR1', 'R1']],
   shade: [['gbG0', 'G0'], ['gbG1', 'G1'], ['gbG2', 'G2'], ['gbO', 'O']],
 };
@@ -429,7 +468,7 @@ const gbLayout = (stage) => STAGE_EXTRA[stage].map(([, k, w], i) => (w
 // lean and event passes would need a pass per event: a ray in smoke has one per media cell, and up
 // to MAX_BENDS surfaces and its panes besides.)
 // The record (K's three layers, 12 words), what the loop's iteration reads that the lean loop changed:
-//   0  (a spare word), the cell (x, z 13 bits
+//   0  the body it stopped at (RICH_BODIES' index + 1), the cell (x, z 13 bits
 //       each; y 12: worlds to 8192 × 4096 × 8192, BRICK_KEY_BITS), ax, phiStale, the kind, the
 //       iteration (16 bits), F's pick (gPickL), tEnter
 //   1  tMax, F's pick's blend (gPickA)
@@ -440,12 +479,14 @@ const gbLayout = (stage) => STAGE_EXTRA[stage].map(([, k, w], i) => (w
 const RESUME_WGSL = (stage) => /* wgsl */ `
 const EVK_START: u32 = 1u;    // the lean loop stopped at the ray's start (into liquid at the box wall, the eye in it): the event stage traces the ray whole
 const EVK_RESUME: u32 = 2u;   // ... at a rich event: the event stage resumes that iteration (rsResume)
-${stage === 'march' ? `fn rsStore(k: u32, cell: vec3i, tMax: vec3f, tEnter: f32, ax: i32, phiA: vec4f, phiStale: bool, i: i32) {
+const EVK_ABORT: u32 = 3u;    // an event kernel met a body it doesn't keep: the fat stage takes the pixel
+${stage === 'march' ? `${evGateWGSL()}
+fn rsStore(k: u32, b: u32, cell: vec3i, tMax: vec3f, tEnter: f32, ax: i32, phiA: vec4f, phiStale: bool, i: i32) {
   let px = gbPix();
   let wA = (u32(cell.x) & 0x1fffu) | ((u32(cell.z) & 0x1fffu) << 13u) | (u32(ax) << 26u) | (select(0u, 1u, phiStale) << 28u)
          | (select(0u, 1u, k == EVK_RESUME) << 29u);
   let wB = (u32(cell.y) & 0xfffu) | ((u32(i) & 0xffffu) << 12u) | (min(gPickL, 15u) << 28u);
-  textureStore(gbK, px, 0, vec4u(0u, wA, wB, bitcast<u32>(tEnter)));
+  textureStore(gbK, px, 0, vec4u(b, wA, wB, bitcast<u32>(tEnter)));
   if (k == EVK_RESUME) {
     textureStore(gbK, px, 1, vec4u(bitcast<vec3u>(tMax), bitcast<u32>(gPickA)));
     textureStore(gbK, px, 2, bitcast<vec4u>(phiA));
@@ -484,7 +525,7 @@ const GB_ID_SHIFT: u32 = 9u;      // a crisp hit's id (8 bits) or a smooth one's
 const GB_OFF_SHIFT: u32 = 17u;    // a crisp hit's cell - floor(hitP) + 1, 2 bits an axis
 const GB_LEVEL_SHIFT: u32 = 23u;  // gFieldLevel (4 bits), then gPickL (4 bits)
 const GB_LEAN: u32 = 0x80000000u; // the lean march's hit: G1.xyz hold G2's words (normal, F's blends, gSkyIn), col 0, trans 1
-${stage === 'march' || stage === 'event' ? RESUME_WGSL(stage) : ''}// Octahedral unit vectors in a u32, 16 bits an axis (Cigolle et al. 2014, "A Survey of Efficient
+${stage === 'march' || stage === 'event' || isKindStage(stage) ? RESUME_WGSL(stage) : ''}// Octahedral unit vectors in a u32, 16 bits an axis (Cigolle et al. 2014, "A Survey of Efficient
 // Representations for Independent Unit Vectors"; JCGT 3(2)): about 1e-4 rad.
 fn gbSignNZ(v: vec2f) -> vec2f { return select(vec2f(-1.0), vec2f(1.0), v >= vec2f(0.0)); }
 fn gbOctEnc(n0: vec3f) -> u32 {
@@ -516,11 +557,18 @@ fn gbRestore(f: u32, g2: vec4u) {
 
 // The march stage's end, in place of the tracer's tail: the floor's test and the thin gas's keep
 // rule as the tail has them (neither reads what the shading adds), then the G-buffer.
-const marchEpilogueWGSL = (lean) => /* wgsl */ `
+const marchEpilogueWGSL = (lean, kernel = false) => /* wgsl */ `
   // ---- the split march's end (shaders/world/march.js): the terminal state into the G-buffer ----${lean ? `
   if (evK != 0u) {
-    // stopped at a rich event: its state for the event stage, nothing drawn here
-    rsStore(evK, cell, tMax, tEnter, ax, phiA, phiStale, i);
+    // stopped at a rich event: its state for the stage that takes it, nothing drawn here
+    rsStore(evK, evB, cell, tMax, tEnter, ax, phiA, phiStale, i);
+    var none: GBuf;
+    none.ev = true;
+    none.body = evB;
+    return none;
+  }` : ''}${kernel ? `
+  if (evK == EVK_ABORT) {
+    // a body this kernel hasn't: nothing written, the fat stage redoes the ray from the record
     var none: GBuf;
     none.ev = true;
     return none;
@@ -652,11 +700,12 @@ if (!vertexWGSL.includes(VS_Z)) throw new Error('march: the full-screen triangle
 const stageEntryWGSL = {
   // (the lean march: a pixel it stopped at a rich event opens the event stage's gate, Z 0)
   march: () => /* wgsl */ `
-struct GBuf { g0: vec4u, g1: vec4u, ev: bool }
+struct GBuf { g0: vec4u, g1: vec4u, ev: bool, body: u32 }
 ${vertexWGSL}
 struct MarchOut {
   @location(0) g0: vec4u,
   @location(1) g1: vec4u,
+  @location(2) x: u32,
   @builtin(frag_depth) gate: f32,
 }
 @fragment fn fs(v: MarchVarying) -> MarchOut {${preambleWGSL}
@@ -666,7 +715,7 @@ struct MarchOut {
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }
   let g = traceView(ro, rd, t0, bh);
-  if (g.ev) { o.gate = 0.0; return o; }   // (G0, G1 zero: no hit yet)
+  if (g.ev) { o.gate = evGateZ(g.body); return o; }   // (G0, G1 zero: no hit yet; X 0: not done)
   if ((g.g1.w & GB_HIT) == 0u) { discard; return o; }
   o.g0 = g.g0;
   o.g1 = g.g1;
@@ -675,7 +724,7 @@ struct MarchOut {
   // the event stage: where the lean march stopped (its gate, Z), the whole loop from there, into
   // the lean march's G0, G1 (loaded: its own pixels kept) and G2, R0, R1
   event: () => /* wgsl */ `
-struct GBuf { g0: vec4u, g1: vec4u, ev: bool }
+struct GBuf { g0: vec4u, g1: vec4u, ev: bool, body: u32 }
 ${vertexWGSL.replace(VS_Z, `o.position = vec4f(ndc, ${EVENT_GATE_Z}, 1.0);`)}
 struct MarchOut {
   @location(0) g0: vec4u,
@@ -683,11 +732,36 @@ struct MarchOut {
 }
 @fragment fn fs(v: MarchVarying) -> MarchOut {${preambleWGSL}
   var o: MarchOut;
+  if (textureLoad(gbX, gbPix(), 0).x != 0u) { discard; return o; }   // (an event kernel drew it)
   let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }   // (as the lean march: it held)
   let g = traceView(ro, rd, t0, bh);
   if ((g.g1.w & GB_HIT) == 0u) { discard; return o; }
+  o.g0 = g.g0;
+  o.g1 = g.g1;
+  return o;
+}`,
+  // an event kernel (EVENT_KINDS): its pixels only (the gate at its depth, 'equal'), the ray from the
+  // lean march's record; done (X 1) with its picture, or aborted (X 0, its targets as the lean march
+  // left them: zero) for the fat stage
+  kernel: (z) => /* wgsl */ `
+struct GBuf { g0: vec4u, g1: vec4u, ev: bool, body: u32 }
+${vertexWGSL.replace(VS_Z, `o.position = vec4f(ndc, ${z}, 1.0);`)}
+struct MarchOut {
+  @location(0) g0: vec4u,
+  @location(1) g1: vec4u,
+  @location(2) x: u32,
+}
+@fragment fn fs(v: MarchVarying) -> MarchOut {${preambleWGSL}
+  var o: MarchOut;
+  let bh = marchSpan(ro, rd);
+  let t0 = max(bh.x, P.marchNear);
+  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }   // (as the lean march: it held)
+  let g = traceView(ro, rd, t0, bh);
+  if (g.ev) { return o; }
+  o.x = 1u;
+  if ((g.g1.w & GB_HIT) == 0u) { return o; }   // (no hit: G0, G1 stay zero, as the fat stage's discard leaves them)
   o.g0 = g.g0;
   o.g1 = g.g1;
   return o;
@@ -719,10 +793,10 @@ struct ShadeOut {
 // What each stage takes of the tracer
 const GBUF_SIG = 'fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> GBuf {';
 const stageTrace = (stage, detail, format, optics) => {
-  if (stage === 'march' || stage === 'event') {
-    const lean = stage === 'march';
-    const t = splitTrace(detail, format, optics, lean ? 'lean' : 'resume');
-    return `${t.before}${t.march.replace(TRACE_SIG, GBUF_SIG)}${marchEpilogueWGSL(lean)}`;
+  if (stage === 'march' || stage === 'event' || isKindStage(stage)) {
+    const lean = stage === 'march', kind = KIND_OF_STAGE[stage];
+    const t = splitTrace(detail, format, optics, lean ? 'lean' : kind ? { keep: kind.keep } : 'resume');
+    return `${t.before}${t.march.replace(TRACE_SIG, GBUF_SIG)}${marchEpilogueWGSL(lean, !!kind)}`;
   }
   const t = splitTrace(detail, format, optics);
   if (stage === 'reflect') return `${t.before}${reflectWGSL}`;
@@ -804,7 +878,7 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     grainsGLSL(detail),
     volumeHazeGLSL,
     ...(whole ? [traceWorld(detail, fixedReadFormat, optics), entryWGSL()]
-      : [gbufWGSL(stage), stageTrace(stage, detail, fixedReadFormat, optics), stageEntryWGSL[stage]()]),
+      : [gbufWGSL(stage), stageTrace(stage, detail, fixedReadFormat, optics), (isKindStage(stage) ? stageEntryWGSL.kernel(KIND_Z[KIND_OF_STAGE[stage].key]) : stageEntryWGSL[stage]())]),
   ].join('\n');
   const code = [
     prelude(physGrid, { state: false }),
@@ -841,16 +915,18 @@ export const worldMarchPipeline = (stage = 'whole') => {
     };
   }
   const targets = STAGE_TARGETS[stage].map((k) => ({ format: GBUF[k] }));
-  const gate = { march: { format: GBUF.Z, depthWriteEnabled: true, depthCompare: 'always' },
-    event: { format: GBUF.Z, depthWriteEnabled: false, depthCompare: 'greater' } }[stage];
+  const gate = isKindStage(stage) ? { format: GBUF.Z, depthWriteEnabled: false, depthCompare: 'equal' }
+    : { march: { format: GBUF.Z, depthWriteEnabled: true, depthCompare: 'always' },
+      event: { format: GBUF.Z, depthWriteEnabled: false, depthCompare: 'greater' } }[stage];
   return { vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets }, primitive, ...(gate ? { depthStencil: gate } : {}) };
 };
 /** The color targets each split stage renders into (GBUF keys, in location order). */
-export const STAGE_TARGETS = { march: ['G0', 'G1'], event: ['G0', 'G1'], reflect: ['O'], shade: ['S', 'D'] };
+export const STAGE_TARGETS = { march: ['G0', 'G1', 'X'], ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), ['G0', 'G1', 'X']])),
+  event: ['G0', 'G1'], reflect: ['O'], shade: ['S', 'D'] };
 /** The stages that draw over what an earlier stage left in their targets (loadOp 'load'), not a cleared target. */
-export const STAGE_LOADS = new Set(['event']);
-/** The event gate's depth attachment per stage: the lean march clears and writes it, the event stage tests it (read-only). */
-export const STAGE_GATE = { march: 'write', event: 'test' };
+export const STAGE_LOADS = new Set(['event', ...EVENT_KINDS.map(kindStage)]);
+/** The event gate's depth attachment per stage: the lean march clears and writes it, the kernels and the event stage test it (read-only). */
+export const STAGE_GATE = { march: 'write', ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), 'test'])), event: 'test' };
 /** Vertices of the march's draw. */
 export const WORLD_MARCH_VERTICES = 3;
 /** The gpu.layout names the march's groups are made under (a warm-up making them alike finds its pipelines cached). */

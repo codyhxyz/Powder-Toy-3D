@@ -746,6 +746,15 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
+// The loop's rich bodies (the split march's units, shaders/world/march.js "The event kernels"): the
+// code a lean loop stops at and an event kernel keeps or aborts at. A body's code is its index + 1.
+//   liquid    liquid surfaces (the head's interface, entries, events) and segments in liquid
+//   crystal   crystalHit / crystalInterface
+//   glass     glass and source panes and blocks (the crisp glass branch)
+//   media     a media brick's segments (mediaSegment)
+//   film      a film's top (filmHit)
+export const RICH_BODIES = ['liquid', 'crystal', 'glass', 'media', 'film'];
+
 // The split march's event stage (split 'resume'): the whole loop, started where the lean loop
 // stopped (shaders/world/march.js rsResume: the iteration, its DDA state, F's pick and phiA), in that
 // iteration's brick, entered as the lean loop entered it. A ray the lean loop stopped at its start
@@ -762,17 +771,26 @@ const rsResumeWGSL = /* wgsl */ `
 const realistic = (detail, curved = false, fixedReadFormat, richOptics = true, split = null) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
-  // The split march's lean loop (split 'lean', shaders/world/march.js): the loop with every rich
-  // event's body (liquid surfaces and segments, crystals, glass and source panes, films, media)
-  // replaced by a stop that leaves the iteration's state for the event stage's resume ('resume').
+  // The split march's loop variants (shaders/world/march.js, "The event kernels"):
+  //   'lean'      the loop with every rich body (RICH_BODIES) replaced by a stop that records the
+  //               body (evB) and the iteration's state for a later stage to resume (evK)
+  //   { keep }    an event kernel: the resumed loop with the bodies in keep compiled and every other
+  //               one replaced by an abort (evK = EVK_ABORT: the fat stage redoes the ray from the same
+  //               record, so a kernel never draws what it can't draw exactly)
+  //   'resume'    the fat stage: the resumed loop with every body
   // Before its first rich event a ray is out of liquid, so the lean loop has no certified interiors.
-  const lean = split === 'lean', resume = split === 'resume';
+  const lean = split === 'lean', kernel = !!split && typeof split === 'object', resume = split === 'resume' || kernel;
   if (split && !lean && !resume) throw new Error(`realistic: no split ${split}`);
+  if (kernel && !split.keep.every((b) => RICH_BODIES.includes(b))) throw new Error(`realistic: a kernel keeps unknown bodies ${split.keep}`);
   if (split && (curved || grains)) throw new Error('realistic: the split loop is the flat, grain-less tracer\'s');
-  const RICH = (pre = '') => `{ ${pre}evK = EVK_RESUME; break; }`;
+  // whether body b's code is in this variant (lean: none; a kernel: its keep; else all)
+  const keeps = (b) => !lean && (!kernel || split.keep.includes(b));
+  // the code in place of a body this variant hasn't: the lean loop's stop, a kernel's abort
+  const STOP = (b, pre = '') => (lean ? `{ ${pre}evK = EVK_RESUME; evB = ${RICH_BODIES.indexOf(b) + 1}u; break; }` : '{ evK = EVK_ABORT; break; }');
+  const hasLiq = keeps('liquid'), hasMedia = keeps('media');
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
   // liquid, docs/v2/liquid-interior-optimization.md): skips surface tests that cannot find a crossing.
-  const interior = !curved && !lean;
+  const interior = !curved && hasLiq;
   // A step's end: on to the next cell (the loop's end; and the head's bend-less liquid surface, for
   // the cell it was met in)
   const stepOn = (pad) => (curved ? `
@@ -921,8 +939,9 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var hitP = vec3f(0.0);
   var hitN = vec3f(0.0);
   var hitCell = vec3i(0);
-  var hitA = vec4f(0.0);${lean ? `
-  var evK = 0u;   // the rich event the lean loop stopped at (EVK_*: shaders/world/march.js), 0: none` : ''}
+  var hitA = vec4f(0.0);${lean || kernel ? `
+  var evK = 0u;   // a stop at a rich event (lean) or an abort (a kernel): EVK_* (shaders/world/march.js), 0: none
+  var evB = 0u;   // (lean) the body it stopped at: RICH_BODIES' index + 1` : ''}
 
   // Nothing is drawn past the cut: the march below stops there, and every
   // surface, pane face, grain and relief hit is tested against it, so the
@@ -962,10 +981,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
   // (one trip more than the march's steps: a surface met on the last step still refracts)${split ? `
   var i = 0;   // (outside the loop: the lean loop leaves it, the resume starts from it)${resume ? rsResumeWGSL : ''}
   for (; i <= MAX_STEPS + BEND_EXTRA_STEPS; i++) {` : `
-  for (var i = 0; i <= ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {`}${lean ? `
-    // (the box wall into liquid, or the eye in it: the event stage traces the ray from its start)
-    if (ifPend || liq != E_EMPTY) { evK = EVK_START; break; }` : `
-    if (ifPend) {`}${lean ? '' : `
+  for (var i = 0; i <= ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {`}${!hasLiq ? `
+    // (the box wall into liquid, or the eye in it: a liquid kernel traces the ray from its start)
+    if (ifPend || liq != E_EMPTY) { ${lean ? `evK = EVK_START; evB = ${RICH_BODIES.indexOf('liquid') + 1}u;` : 'evK = EVK_ABORT;'} break; }` : `
+    if (ifPend) {`}${!hasLiq ? '' : `
       ifPend = false;
       var ifN = ifG;
       if (!ifEntry) {
@@ -1083,7 +1102,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // ---- crisp voxel ----
       var nFace = vec3f(0.0);
       nFace[ax] = -f32(istp[ax]);
-      if (id == E_CRYSTAL) {${lean ? ` ${RICH()}
+      if (id == E_CRYSTAL) {${!keeps('crystal') ? ` ${STOP('crystal')}
 ` : `
         var th = tEnter;
         var nh = nFace;
@@ -1127,7 +1146,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           break;
         }
         phiStale = true;
-      } else {${lean ? ` ${RICH()}` : `
+      } else {${!keeps('glass') ? ` ${STOP('glass')}` : `
         let hp = ro + rd * tEnter;
         if (!anyHit) { anyHit = true; hitPos = hp; }
         var gNext = false;     // glass bends: the ray restarts gT along it, toward gRd
@@ -1317,8 +1336,8 @@ ${richOptics ? `
         }`}
       }
     } else {
-      prevCrisp = E_EMPTY;${lean ? `
-      if (brickMedia(flags)) ${RICH()}` : ''}
+      prevCrisp = E_EMPTY;${!hasMedia ? `
+      if (brickMedia(flags)) ${STOP('media')}` : ''}
       // ---- smooth surfaces crossing this segment ----
       var ev = EV_NONE;
       var evCh = -1;
@@ -1339,7 +1358,7 @@ ${richOptics ? `
         let ic = surfInsideOpaque(phiA);
         if (ic >= 0) {
           ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN[ax] = -f32(istp[ax]);
-        } else if (liq == E_EMPTY && phiA.x >= SURF_ISO) {${lean ? ` ${RICH('phiStale = false; ')}
+        } else if (liq == E_EMPTY && phiA.x >= SURF_ISO) {${!hasLiq ? ` ${STOP('liquid', 'phiStale = false; ')}
         }` : `
           liq = liquidIdAt(ro + rd * (tEnter + IFACE_PROBE), E_WATER);
           let p0 = ro + rd * tEnter;
@@ -1367,7 +1386,7 @@ ${richOptics ? `
           // next segment starts inside, where no crossing is ever found. The
           // ray then went on through the rock and out of the window, and the
           // far field showed through: sunlit lines along cave floors' seams.
-          let inLiq = ${lean ? 'false' : 'liq != E_EMPTY'};
+          let inLiq = ${hasLiq ? 'liq != E_EMPTY' : 'false'};
           for (var c = 0; c < 4; c++) {
             let t = surfCross(ro, rd, c, !(inLiq && c == CH_LIQUID), tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
             if (!inLiq) {
@@ -1391,7 +1410,7 @@ ${richOptics ? `
       // from air, only nearer than what the fields found, and only in a brick
       // the brick pass found a film's cells in (BRICK_FILM: everywhere else
       // filmHit's 3×3 of reads finds nothing)
-      if (liq == E_EMPTY && brickSurf(flags) && brickFilm(flags) && ev != EV_OPAQUE && filmCellKey(cell) != filmKey) {${lean ? ` ${RICH()}
+      if (liq == E_EMPTY && brickSurf(flags) && brickFilm(flags) && ev != EV_OPAQUE && filmCellKey(cell) != filmKey) {${!keeps('film') ? ` ${STOP('film')}
       }` : `
         var fN = vec3f(0.0, 1.0, 0.0);
         let tF = filmHit(cell, ro, rd, tEnter, tEv, &fN, &filmLid, &filmH);
@@ -1406,8 +1425,8 @@ ${richOptics ? `
       grainEvent(cell, id, ga, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
       if (altOpen && gAltW >= 0.0) { altRefl = gReflPend; }   // (the stored path's colour owes it too: reflectResolve)
       cut = ev == EV_NONE && tEv >= tCut;` : ''}
-${lean ? '\n      // (out of liquid and media: the lean loop stopped at their first segment)' : `
-      // ---- what lies along [tEnter, tEv] ----
+${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stopped at their first segment)' : `
+      // ---- what lies along [tEnter, tEv] ----${hasLiq ? `
       if (liq != E_EMPTY) {
         let pm = ro + rd * (0.5 * (tEnter + tEv));
         var lj = id;
@@ -1430,14 +1449,14 @@ ${lean ? '\n      // (out of liquid and media: the lean loop stopped at their fi
         var tOwn = AMBIENT;   // (the cell's temperature where it is the liquid's own)
         if (own) { tOwn = fetchA(cell).y; }
         absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, tOwn, &col, &trans);
-      } else if (brickMedia(flags)) {
+      }` : ''}${hasMedia ? `${hasLiq ? ' else ' : '\n      '}if (brickMedia(flags)) {
         let al = mediaSegment(ro, rd, tEnter, tEv, &mNext, &col, &trans);
         // until something is hit, hitPos tracks the first gas, and the gas
         // that has become mostly opaque counts as a hit
         if (!anyHit && al > 0.0 && mOp == 0.0) { hitPos = ro + rd * tEnter; }
         mOp = 1.0 - (1.0 - mOp) * (1.0 - al);
         if (!anyHit && mOp > MEDIA_DEPTH_ALPHA) { anyHit = true; }
-      }
+      }` : ''}
 `}
       // ---- the event ----
       if (cut) { break; }
@@ -1448,7 +1467,7 @@ ${lean ? '\n      // (out of liquid and media: the lean loop stopped at their fi
         if (ev == EV_OPAQUE) {
           hitK = HIT_SMOOTH; stop = true; hitP = hp; hitN = evN; hitCh = evCh;
           break;
-        } else {${lean ? ` ${RICH()}
+        } else {${!hasLiq ? ` ${STOP('liquid')}
         }` : `
           // liquid surface: at the top of the next step (the loop's head:
           // ifPend), its normal and detail, then refract in or out and
@@ -1588,9 +1607,10 @@ ${lean ? '\n      // (out of liquid and media: the lean loop stopped at their fi
 // common part as they are, over the world copy's readers: params is its own struct (VolumeParams'
 // fields and more), declared as P.
 export const tracerCommonWGSL = (params) => tracerWGSL(params);
-// split: the split march's two loop variants (shaders/world/march.js 'march' and 'event' stages):
-// 'lean' stops at the first rich event and leaves its resume state (evK), 'resume' is the whole loop
-// that starts from it (rsResumeWGSL, the march module's). Neither changes the loop's arithmetic.
+// split: the split march's loop variants (shaders/world/march.js, "The event kernels"): 'lean' stops at
+// the first rich event and leaves its resume state (evK, evB), { keep } is an event kernel (the bodies
+// in keep, an abort at any other), 'resume' the whole loop that starts from it (rsResumeWGSL, the march
+// module's). None changes the loop's arithmetic.
 export const realisticTraceWGSL = (detail, fixedReadFormat, optics = true, split = null) => realistic(detail, false, fixedReadFormat, optics, split);
 
 /**
