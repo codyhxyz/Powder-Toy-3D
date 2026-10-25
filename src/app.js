@@ -1933,7 +1933,7 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     const drawStill = () => presentation.neutral(() => post.renderStill({
-      prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); wv?.writeUniforms(frameValues(thumbCam, viewId, [0, 0])); frameBoxed = marchBoxed(view, false); },
+      prepare() { const fv = frameValues(thumbCam, viewId, [0, 0]); const written = writeFrameUniforms(gpu, fv); wv?.writeUniforms(fv, written); frameBoxed = marchBoxed(view, false); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => {
         const drew = threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false;
@@ -2722,8 +2722,9 @@ const frameHooks = {
   prepare: (p) => {
     // (the kept scene is for other targets: post's sizes changed with this frame's settings)
     if (frameMode === 'meshes' && !meshFrames.fits(p)) { meshFrames.drop(); frameMode = 'full'; }
-    writeFrameUniforms(gpu, frameValues(camera, renderView, p.jitter));
-    worldView?.writeUniforms(frameValues(camera, renderView, p.jitter));   // (the same values in world cells: gfx/worldView.js)
+    const fv = frameValues(camera, renderView, p.jitter);
+    const written = writeFrameUniforms(gpu, fv);
+    worldView?.writeUniforms(fv, written);   // (the same values in world cells, the camera and settings shared: gfx/worldView.js)
     win?.far?.viewBehind(isMaterialView(renderView));   // a big map's far view (farPass), its derived levels brought up to date
     frameBoxed = marchBoxed(viewKeyOf(renderView), !!warpNow()?.k);
     frameDrawLo = win?.drawOrigin ?? null;

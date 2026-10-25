@@ -4,7 +4,7 @@
 // its own FrameUniforms in world cells and its bind groups; app.js calls, each frame:
 //
 //   const view = createWorldView(gpu, sim, { volume });   // volume: gfx/volume.js (its shadow map, its noise)
-//   prepare:  writeFrameUniforms(gpu, values); view.writeUniforms(values);
+//   prepare:  view.writeUniforms(values, writeFrameUniforms(gpu, values));
 //   compute:  physics, then view.update(gpu.frame, { boxes, camera, sun })   // W writeback → F → L
 //   before the scene pass: view.prepass(gpu.frame, { view, detail, meshDepth, marchNear, aerCopy, boxed, target })
 //   draw:     view.draw(rp, { view: 'realistic', detail, meshDepth, marchNear, aerCopy, boxed })
@@ -24,7 +24,7 @@
 // model moved to the world's corner (worldModelMatrix: the eye comes out in world cells) and those
 // positions moved by sim.origin. A small map's origin is 0: both copies are equal.
 import { Matrix4 } from 'three/webgpu';
-import { FrameUniformsStruct, frameUniformValues, worldModelMatrix, frameUniformsOf } from './uniforms.js';
+import { FrameUniformsStruct, frameUniformValues, frameUniformValuesFor, worldModelMatrix, frameUniformsOf } from './uniforms.js';
 import { drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
@@ -366,12 +366,13 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     },
     /**
      * Writes the march's FrameUniforms: the frame's values (gfx/uniforms.js frameValues' shape),
-     * moved into world cells. After writeFrameUniforms for the same frame.
+     * moved into world cells. After writeFrameUniforms for the same frame; `windowValues`, what
+     * that returned, lends its camera matrices and settings (else they are built again).
      */
-    writeUniforms(frame) {
-      frame.camera.updateMatrixWorld();
+    writeUniforms(frame, windowValues = null) {
       const o = xyz(sim.origin);
-      const values = frameUniformValues({ ...frame, model: worldModelMatrix(frame.model, o) });
+      if (!windowValues) frame.camera.updateMatrixWorld();
+      const values = frameUniformValuesFor(windowValues ?? frameUniformValues(frame), frame.camera, worldModelMatrix(frame.model, o));
       const shift = (v) => { v[0] += o[0]; v[1] += o[1]; v[2] += o[2]; };
       values.lampPos.forEach(shift);
       for (const w of values.wandLightPosition) { w.x += o[0]; w.y += o[1]; w.z += o[2]; }

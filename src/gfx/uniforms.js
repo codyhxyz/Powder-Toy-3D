@@ -157,6 +157,8 @@ export function worldModelMatrix(model, physicsOrigin) {
   return model.clone().multiply(new Matrix4().makeTranslation(-origin[0], -origin[1], -origin[2]));
 }
 const copyValue = v => ArrayBuffer.isView(v) ? v.slice() : Array.isArray(v) ? v.map(copyValue) : v?.clone ? v.clone() : v;
+// the eye in `model`'s cells (FrameUniforms.cam)
+const eyeIn = (camera, model) => new Vector3().setFromMatrixPosition(camera.matrixWorld).applyMatrix4(model.clone().invert());
 
 /**
  * Builds owned FrameUniforms values from the supplied camera/model and the
@@ -175,7 +177,7 @@ const copyValue = v => ArrayBuffer.isView(v) ? v.slice() : Array.isArray(v) ? v.
 export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
   const viewProj = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   const invViewProj = viewProj.clone().invert();
-  const cam = new Vector3().setFromMatrixPosition(camera.matrixWorld).applyMatrix4(model.clone().invert());
+  const cam = eyeIn(camera, model);
   const u = gfxUniforms;
   const values = {
     viewProj, invViewProj, model,
@@ -195,6 +197,24 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, copyValue(value)]));
 }
 
+/**
+ * The same frame's values for another model (gfx/worldView.js: world cells), from frameUniformValues'
+ * `values`: the model and the eye in its cells are new, the positions in those cells (lamps, wand
+ * lights, the dig mark) fresh copies for the caller to move. The camera matrices and the settings
+ * don't depend on the model: they are `values`' own, shared, not built again.
+ * @param {object} values frameUniformValues' result, for the same frame
+ * @param {object} camera that frame's camera (matrices current)
+ * @param {Matrix4} model the other grid's cells → scene, kept as given
+ */
+export function frameUniformValuesFor(values, camera, model) {
+  return {
+    ...values, model, cam: eyeIn(camera, model),
+    lampPos: copyValue(values.lampPos), wandLightPosition: copyValue(values.wandLightPosition),
+    digMin: copyValue(values.digMin), digMax: copyValue(values.digMax),
+  };
+}
+
+// Returns the values it wrote (frameUniformValuesFor builds a second buffer's from them).
 export function writeFrameUniforms(gpu, frame) {
   const { uniforms, last } = frameUniformsOf(gpu);
   frame.camera.updateMatrixWorld();
@@ -203,4 +223,5 @@ export function writeFrameUniforms(gpu, frame) {
   last.eye.setFromMatrixPosition(frame.camera.matrixWorld);last.written = true;
   last.sun = values.sun?.toArray?.() ?? Array.from(values.sun ?? [0, 1, 0]);   // (the sun the lighting reads, grid space: tests aim at its shadows)
   uniforms.write(values);
+  return values;
 }
