@@ -42,6 +42,7 @@ const PAGE_ANSWER_MS = 1000;           // ... and the tool this long after the p
 const SHARED_BUSY_PCT = 25;            // GPU busy % right after our browser closed: someone else was using it
 export const POSES = ['default', 'landDown', 'sky', 'horizon'];
 const MAX_POSES = 6;
+const DETAIL_STORE = 'powder-toy-3d:settings';   // app.js STORE: where --detail puts the level's switches
 const POSE_MS = 2500;                  // a pose's warmup, settle, timed frames and cost capture, about (Lab, 20 frames)
 const BOOT_FRAMES = 600;               // frames xctrace may see before the poses (its recording length only)
 // --knockout N: after a pose's timed frames, its N longest passes (timestamps) each have their draws or
@@ -63,15 +64,15 @@ const DEPS_FRAMES = 2;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--capture] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--detail off|balanced|full] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--capture] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, capture: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, capture: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, detail: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--capture': 'capture', '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup', 'gpu-state'];
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup', 'gpu-state', 'detail'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -96,6 +97,7 @@ export function parseArgs(argv) {
   // --capture: a Metal GPU capture after the poses, replayed one pass at a time (tools/gpu-capture.mjs). Its capture
   // layer and xctrace in one GPU process were not tried together: the capture run records no Metal trace
   if (o.capture) o.counters = false;
+  if (o.detail !== null && !['off', 'balanced', 'full'].includes(o.detail)) throw new Error('--detail: off, balanced or full');
   if (!Number.isSafeInteger(o.frames) || o.frames < 10 || o.frames > 240) throw new Error('--frames must be 10–240 (the median and spread need 10; the profiler keeps 240)');
   if (!Number.isSafeInteger(o.warmup) || o.warmup < 0 || o.warmup > 240) throw new Error('--warmup must be 0–240');
   if (!(o.dpr > 0 && o.dpr <= 3)) throw new Error('--dpr must be in (0, 3]');
@@ -309,6 +311,16 @@ async function main() {
     browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: slot.chromeArgs, ...(captureMod ? { env: { ...process.env, ...captureMod.CAPTURE_ENV } } : {}) });   // (waits for the slot; the slot starts inside it)
     const t0 = Date.now();
     const page = await newTestPage(browser, { mode: 'visual', viewport: o.viewport, deviceScaleFactor: o.dpr });
+    // --detail: Settings -> Detail up close at that level from boot (the stored settings app.js loads, so
+    // the level's view is the one the boot compiles: no rebuild inside the slot); the report's setup names it
+    if (o.detail) {
+      const { DETAIL, settingKey, setDetailLevel } = await import('../src/gfx/detail.js');
+      const sw = {};
+      setDetailLevel(sw, o.detail);
+      await page.addInitScript(([key, sw]) => {
+        try { localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), ...sw })); } catch { /* storage unavailable */ }
+      }, [DETAIL_STORE, Object.fromEntries(DETAIL.map((f) => [settingKey(f), sw[settingKey(f)]]))]);
+    }
     page.on('pageerror', (e) => errors.push(String(e)));
     // exceptions and GPU failures make the capture untrusted; other console errors (a failed fetch) are notes
     const GPU_FAILURE = /GPU validation|Graphics stopped|device (was )?lost|GraphicsFailure/i;

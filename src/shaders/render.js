@@ -772,6 +772,8 @@ const rsResumeWGSL = /* wgsl */ `
 const realistic = (detail, curved = false, fixedReadFormat, richOptics = true, split = null) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
+  // Deep liquid cell by cell (gfx/detail.js waterSteps: Full, and the grain and curved tracers), else a
+  // brick at a time where its own interior bit certifies it (deep liquid, below).
   // The split march's loop variants (shaders/world/march.js, "The event kernels"):
   //   'lean'      the loop with every rich body (RICH_BODIES) replaced by a stop that records the
   //               body (evB) and the iteration's state for a later stage to resume (evK)
@@ -796,6 +798,8 @@ const realistic = (detail, curved = false, fixedReadFormat, richOptics = true, s
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
   // liquid, docs/v2/liquid-interior-optimization.md): skips surface tests that cannot find a crossing.
   const interior = !curved && hasLiq;
+  const deepSteps = !!detail.DETAIL_WATER_STEPS || grains;
+  const brickStep = interior && !deepSteps;
   // A step's end: on to the next cell (the loop's end; and the head's bend-less liquid surface, for
   // the cell it was met in)
   const stepOn = (pad) => (curved ? `
@@ -1069,8 +1073,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       gThin = brickThin(flags);
       if (flags != 0u) { occM = occMaskOf(bid); }${interior ? `
       interiorLiquid = false;
-      if (liq != E_EMPTY && (flags & BRICK_LIQUID_INTERIOR) != 0u) {
-        interiorLiquid = liquidInterior(bc);
+      if (liq != E_EMPTY && (flags & BRICK_LIQUID_INTERIOR) != 0u${brickStep ? ' && brickMixed(flags)' : ''}) {
+        interiorLiquid = liquidInterior(bc);${brickStep ? '   // (an unmixed one is crossed in one step: deep liquid, below)' : ''}
       }` : ''}
     }
     if (flags == 0u) {
@@ -1124,7 +1128,39 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       cell[ax] += istp[ax];
       tMax[ax] += tDelta[ax];
       continue;
-    }`}
+    }`}${brickStep ? `
+    // ---- deep liquid, a brick at a time (gfx/detail.js waterSteps off: Off and Balanced) ----
+    // In liquid, a brick of one liquid (not brickMixed) that is all whole liquid (brickLiquidWhole: its own
+    // cells; or BRICK_LIQUID_INTERIOR, the same out to the fields' reach) with no opaque matter or opaque
+    // smooth field within reach (not brickOpaque, a dilated bit) has no surface inside but a liquid
+    // surface's rounding at a convex edge, so the ray crosses the rest of it in one Beer-Lambert segment
+    // lit at its middle, as Source's water fog ($fogstart/$fogend) and Halo 3's underwater fog take a
+    // body's depth analytically. Cell by cell (Full) it samples the fields and tests every channel in each
+    // cell, and the light in each (the glow is per brick anyway: shaders/world/light.js GLOW). What the
+    // brick step gives up: the cells' paint (it keeps the entry cell's temperature, so molten matter keeps
+    // its glow), and the rounding of the liquid's own edge where it reaches inside such a brick, which a ray
+    // leaving the liquid there passes (the next brick's segment finds itself in air and goes on straight,
+    // its missed-exit recovery: no exit bend or reflection there). Rays from above water meet the surface
+    // from outside, before any brick step. Not while the entry's sun is owed (lightRefAt: its one
+    // sunShadowAt call site is the cell segment's below), nor across the mesh cut.
+    if (liq != E_EMPTY && (brickLiquidWhole(flags) || (flags & BRICK_LIQUID_INTERIOR) != 0u) && !brickOpaque(flags)
+        && !brickMixed(flags) && !lightRefAt && SURFCH(id) == CH_LIQUID) {
+      var bCell = cell;
+      var bMax = tMax;
+      var bT = tEnter;
+      let bAx = skipBrick(bc, ro, rd, istp, &bCell, &bMax, &bT);
+      if (bT < tCut) {
+        liq = id;
+        let pm = ro + rd * (0.5 * (tEnter + bT));
+        mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
+        absorbDeco(liq, vec3i(-1), ro + rd * tEnter, bT - tEnter, mediumLight, fetchA(cell).y, &col, &trans);
+        cell = bCell; tMax = bMax; tEnter = bT; ax = bAx;
+        prevCrisp = E_EMPTY;
+        phiStale = true;
+        if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+        continue;
+      }
+    }` : ''}
 
     if (isCrisp(id)) {
       // ---- crisp voxel ----

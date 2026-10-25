@@ -73,6 +73,9 @@ fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
+// (the world march's: a brick wholly liquid by its own cells; the box's info has no such bit, its
+// BRICK_LIQUID_INTERIOR certifies the field instead: shaders/render.js deep liquid)
+fn brickLiquidWhole(f: u32) -> bool { return false; }
 fn brickFilm(f: u32) -> bool { return brickHas(f, BRICK_FILM); }       // a film here or beside (gfx/film.js filmHit)
 ${occupancyReadWGSL}
 

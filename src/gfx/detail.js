@@ -131,6 +131,20 @@ export const DETAIL = [
   // (shaders/gfx/liquidDetail.js liquidFoam).
   { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater', cost: 'medium',
     desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; long falls tear into spray' },
+  // Looking through water (the user's rule, 2026-10-25: "i want the ULTRA EFFICIENT version available
+  // and we can turn it up if the user has the performance to spare"). On (Full) is the look origin/main
+  // a6ff8ede drew at every level; off (Off and Balanced) the cheap version a game ships by default.
+  // high: Lab looking across the tank (tools/regress.mjs labTank) 90.1 -> 67.3 ms GPU span, Lab default
+  // 17.2 -> 14.7 ms (tools/profile.mjs --detail balanced --frozen, Apple M5, 2560x1600, 2026-10-25,
+  // origin/main a6ff8ede vs the change, at Balanced). (shaders/render.js "deep liquid") Cell by cell, a
+  // ray in liquid samples the fields, tests every surface channel and looks its light up in every cell,
+  // so a look across or down into a tank or the sea is 50+ such steps a pixel; off, it crosses each brick
+  // of one liquid that is whole liquid by its own cells, with nothing opaque within the fields' reach, in
+  // one Beer-Lambert step, as Source's water fog ($fogstart/$fogend) and Halo 3's underwater fog take a
+  // body's depth analytically. What it gives up: paint inside deep water, and a liquid's rounded edge
+  // where it reaches inside such a brick, for a ray leaving the liquid there (no exit bend).
+  { key: 'waterSteps', define: 'DETAIL_WATER_STEPS', label: 'Deep water cell by cell', cost: 'high', since: '2026-10-25',
+    desc: 'Rays through deep water read every cell (its paint, its surfaces) instead of a brick at a time' },
 ];
 
 // Features whose realistic module SwiftShader (the software adapter: the test
@@ -162,9 +176,12 @@ export const allDetailDefines = () => Object.fromEntries(DETAIL.map((f) => [f.de
 // three variants of the view to compile, not one per mix.
 export const DETAIL_LEVELS = { off: () => false, balanced: (f) => COST[f.cost].on, full: () => true };
 const LEVEL_LABELS = [['off', 'Off'], ['balanced', 'Balanced'], ['full', 'Full']];
-// the level the switches match, else the nearest one (fewest switches differ; Balanced on a tie)
+// the level the switches match, else the nearest one (fewest switches differ; Balanced on a tie).
+// Switches added after the levels became the only control (f.since) are left out of the count: a
+// save from before them holds their default, not a choice, so a saved Full stays Full however many
+// are added (setDetailLevel then sets them with the rest).
 export function detailLevelOf(settings) {
-  const misses = (on) => DETAIL.filter((f) => !!settings[settingKey(f)] !== on(f)).length;
+  const misses = (on) => DETAIL.filter((f) => !f.since && !!settings[settingKey(f)] !== on(f)).length;
   return ['balanced', 'off', 'full'].reduce((best, k) => (misses(DETAIL_LEVELS[k]) < misses(DETAIL_LEVELS[best]) ? k : best));
 }
 export function setDetailLevel(settings, level) {

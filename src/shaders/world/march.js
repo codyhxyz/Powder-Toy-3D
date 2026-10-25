@@ -204,6 +204,9 @@ fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }
+// every cell of the brick itself a whole cell of liquid, nothing opaque (W's own LIQ_WHOLE bit, undilated:
+// shaders/world/copy.js), for the tracer's deep-liquid brick step (shaders/render.js)
+fn brickLiquidWhole(f: u32) -> bool { return brickHas(f, ${WC_OWN.LIQ_WHOLE >>> 0}u); }
 fn brickFilm(f: u32) -> bool { return brickHas(f, BRICK_FILM); }   // (gfx/film.js filmHit; W's words don't set it yet: no thin films in the march)
 // (the box's occupancy masks and id bytes: in the world copy, the brick's table entry, read once a brick as the
 // mask was, so a cell reads one pool word at most and nothing else of wcA's: eid(wcA(c)) exactly)
