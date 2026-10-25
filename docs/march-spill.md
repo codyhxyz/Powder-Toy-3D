@@ -396,8 +396,8 @@ stubbed variants (local only, never merged) change the picture.
   never the cost; the stubbed row's gain was noise or the constant probe's folding. Not merged.
 - What is left to try, by these rows: the material plan's cost per pixel (mCell's 27-cell search is 5,345 of the
   stage's 46,332 static instructions, `tools/capture-remarks.mjs`), and the stage's register pressure (126
-  registers, 704 B spill: `capture-remarks` puts 651 register copies in the lamps' loop and 210 in the loop at
-  the sun's soft-shadow taps). Measure each by its own A/B with several runs a side, not one knockout.
+  registers, 704 B spill: `capture-remarks` puts 651 register copies and 154 reloads in planMat's loop round its one
+  matOf, and 210 copies in the lamps' loop, lampShade). Measure each by its own A/B with several runs a side, not one knockout.
 
 Cost: 16 headless slots, about 230 s of GPU occupancy (5 variant runs lost to a slot held by another session or a
 cold compile past the deadline).
