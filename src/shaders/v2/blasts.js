@@ -10,6 +10,7 @@ import { EXTERNAL_BLAST_CAP, blastHeatBudgetWGSL } from '../../v2/externalBlast.
 import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
+import { shaderFeatures, subgroupsWGSL, appendWGSL } from '../../gpu/features.js';
 import { AIRBORNE_SLOT_MASK, AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
 import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 export { DynamicParams };
@@ -181,6 +182,21 @@ fn dWindListed(b: u32) -> bool {
 }
 `;
 }
+/**
+ * Module-scope WGSL after listWGSL, for a module that calls dAppendWhen: with subgroups,
+ * dAppendIf(list, b, want), dAppend with one count per subgroup (appendWGSL); empty without.
+ */
+export const dAppendIfWGSL = (f = shaderFeatures()) => (f.subgroups ? `${subgroupsWGSL(f)}fn dAppendIf(list: u32, b: u32, want: bool) {
+  ${appendWGSL({ when: 'want', counter: 'control[list + 1u]', put: (i) => `atomicStore(&control[list + 2u + ${i}], b)` }, f)}
+}
+` : '');
+/**
+ * WGSL: append `b` to `list` when `when` holds, the plain `if (when) { dAppend(list,b); }`; with
+ * subgroups, dAppendIf, which every lane still running must reach (outside the branch that
+ * decides `when`), `list` the same for all of them. Only for order-free lists (W21).
+ */
+export const dAppendWhen = (when, list, b, f = shaderFeatures()) => (f.subgroups
+  ? `dAppendIf(${list},${b},${when});` : `if (${when}) { dAppend(${list},${b}); }`);
 // The one-thread stages that write indirect args, in listArgs' two-buffer layout (control, dispatch
 // args): each writes the args it decides directly, so no copy splits the tick's compute pass.
 export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple', 'launch', 'rayGate'];

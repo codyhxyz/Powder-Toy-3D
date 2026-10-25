@@ -48,7 +48,7 @@ import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createBrushCursor } from './brush.js';
 import { bindBrushEraseClick } from './brushInput.js';
-import { createCameraRig } from './camera.js';
+import { createCameraRig, bindCameraMouse } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
 import { createMeshFrames } from './gfx/meshFrames.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
@@ -75,6 +75,8 @@ import { createViewSettings, bindViewInputWake, brushKey } from './gfx/viewInput
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
+import { buildReport as buildProfileReport, formatReport as formatProfileReport } from './gfx/profileReport.js';
+import { attachCostView } from './gfx/costView.js';
 import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
@@ -151,7 +153,9 @@ const DEFAULTS = {
   // aren't), and its Property tool's last property and value (kept, as TPT's prefs)
   specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
+  // spawnBar: the god view's element bar is showing (ui/dock.js; TPT's is always there);
+  // dockCollapsed: whether the menu in use is hidden right now, kept by the dock
+  view: 0, camSpeed: 1, upscale: 'quality', spawnBar: true, dockCollapsed: false,
   gender: 'male', character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
@@ -181,7 +185,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
+  'camSpeed', 'upscale', 'spawnBar', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -286,6 +290,11 @@ if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharac
 if (!GENDERS.includes(settings.gender)) settings.gender = genderOf(settings.character);
 Object.assign(settings, bodiesFor(settings.gender, settings.character));
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
+// ?profile=1: the profiler on, as Settings → Developer → Profiler (docs/profiler.md), not saved:
+// the next plain visit keeps the stored choice (save() writes that, until the toggle is used)
+const profileParam = params.get('profile') === '1';
+let storedProfiler = settings.profiler;
+if (profileParam) settings.profiler = true;
 // Physics V2 is the only engine (launch.js physicsEngine). Worlds/POV use explicit readiness while its
 // pipelines build. Multiplayer guests are deliberately render-only: a guest's owner holds the host's frames.
 const physicsMode = physicsEngine();
@@ -303,7 +312,7 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])),
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, k === 'profiler' && profileParam ? storedProfiler : settings[k]])),
       [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
   }, 300);
 }
@@ -456,7 +465,9 @@ const camera = useWebGPUCamera(new THREE.PerspectiveCamera(40, innerWidth / inne
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.12;
-controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+// the left button paints; the right one looks around and Alt + left orbits (camera.js bindCameraMouse);
+// Shift + right pans (bindCameraMouse sets RIGHT per press: OrbitControls turns Shift + rotate into a pan)
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: null };
 controls.zoomToCursor = true;
 controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };   // one finger paints (touchDown)
 // What gpu.three.prepare(object) compiles a new kind of mesh for (B5, F8):
@@ -499,7 +510,11 @@ const isTyping = () => {
   return !!(signs?.editing || (a && (a.tagName === 'TEXTAREA' || a.isContentEditable ||
     (a.tagName === 'INPUT' && !['range', 'checkbox', 'button'].includes(a.type)))));
 };
-const rig = createCameraRig(camera, controls, isTyping);
+const rig = createCameraRig(camera, controls, isTyping, { sensitivity: () => settings.sensitivity, povFov: () => settings.povFov });
+// The god view's fly speed, settings.camSpeed (Settings → Camera → Move speed)
+const CAM_SPEED_MIN = 0.25, CAM_SPEED_MAX = 3;   // × the distance-scaled speed (camera.js)
+const CAM_SPEED_NOTCH = 1.25;                    // × per wheel notch
+const CAM_SPEED_STEP = 0.05;                     // the slider's step: a notch lands on one
 
 // the subsystems the wires fill in (src/wire), null while theirs isn't ready
 let pov = null, mp = OFFLINE, signs = null, builds = null, spawners = null, perkOrbs = null, arenaMarkers = null;
@@ -813,7 +828,6 @@ async function startMode(mode, { fresh = false } = {}) {
     if (modeView !== settings.view) setView(modeView);
   }
   selectedMode = chosen.key;
-  if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
   applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
@@ -859,7 +873,7 @@ async function startMode(mode, { fresh = false } = {}) {
     }
     if (epoch !== modeEpoch) return false;
     const at = new THREE.Vector3(...map.mission.spawn).sub(sim.origin);
-    await pov.enter({ at, swoop: 0, hint: false, valid: () => epoch === modeEpoch });
+    await pov.enter({ at, swoop: 0, valid: () => epoch === modeEpoch });
     if (epoch !== modeEpoch || !pov.player) return false;
     pov.setLook(map.mission.spawnYaw ?? 0, 0);
     return pov.mission.start(map);
@@ -874,7 +888,7 @@ async function startMode(mode, { fresh = false } = {}) {
   // gesture (a drop-in from the god view asks for it itself)
   if (pov.active && !pov.locked) try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed here */ }
   // Halo puts you in your eyes at a spawn: no swoop down from the god view, no sandbox key hint
-  await pov.enter({ swoop: 0, hint: false });
+  await pov.enter({ swoop: 0 });
   mark('entered');
   if (epoch !== modeEpoch || !pov.player) return false;   // (a later map/mode took over, or it couldn't drop in: pov.enter said why)
   return game.start(chosen.key, { fresh });
@@ -1127,7 +1141,6 @@ function startShape(kind) {
   if (!planePoint(start)) return false;
   clampToGrid(start);
   shapeDrag = { kind, start, end: start.clone(), sim, origin: sim.origin.clone() };
-  hud.dismissHint();
   return true;
 }
 // the line or box ghost while dragging (TPT's RenderLine and RenderRect previews)
@@ -1291,7 +1304,6 @@ function fillAt() {
   if(mapKind.streamed && !inWindow(cell))return;
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
-  hud.dismissHint();
   if (mp.isGuest) { mp.fill(req); return; }
   runFill(sim, req, { openSides: mapKind.fillOpenSides, before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
     .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`, { kind: r.error ? 'error' : 'generic' }); })
@@ -1430,6 +1442,7 @@ const dock = createDock({
   onEyedropper: () => setEyedropper(!eyedropper),
   onDecoToggle: () => toggleDeco(),
   onTarget: setTarget,
+  onLayout: () => save(),
 });
 hud.setEditMode(editModeText());
 
@@ -1598,7 +1611,7 @@ const settingsPanel = createSettings({
     // Balanced = each feature's cost-tier default; Customize has a switch per feature with its cost (gfx/detail.js)
     ...(DETAIL.length ? [{ title: 'Detail up close', rows: detailRows(settings, () => { applyDetail(); save(); }) }] : []),
     { title: 'Camera', rows: [
-      { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
+      { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: CAM_SPEED_MIN, max: CAM_SPEED_MAX, step: CAM_SPEED_STEP, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
     // The body you see in third person and when you die. The wizards wear a hat;
@@ -1630,7 +1643,7 @@ const settingsPanel = createSettings({
     // for working on the app itself (the frame loop applies it)
     { title: 'Developer', rows: [
       { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
-        onChange: (v) => { settings.profiler = v; save(); } },
+        onChange: (v) => { settings.profiler = storedProfiler = v; save(); } },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
@@ -1662,7 +1675,7 @@ function setGender(gender) {
 
 function resetSettings() {
   weather.reset();
-  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed,
+  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, spawnBar: settings.spawnBar, dockCollapsed: settings.dockCollapsed,
     ...bodiesFor(settings.gender) };   // the player's own gender stays
   Object.assign(settings, DEFAULTS, keep);
   applyGravity();
@@ -1903,6 +1916,37 @@ function warmThumb(viewId) {
 const canvasEl = canvas;
 const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
   && !signs?.editing && !painting && !shapeDrag;
+// A grid cell's centre in the scene, where the view shows it.
+const cellInScene = (cell) => presentationPoint(cell.clone().addScalar(0.5)).applyMatrix4(volume.matrixWorld);
+// The wheel with the right button held steps the god view's fly speed (the Camera section's
+// Move speed), Unreal's viewport camera speed, and says it a moment.
+let speedToast = null;
+function stepFlySpeed(notches) {
+  const v = THREE.MathUtils.clamp(Math.round(settings.camSpeed * CAM_SPEED_NOTCH ** notches / CAM_SPEED_STEP) * CAM_SPEED_STEP,
+    CAM_SPEED_MIN, CAM_SPEED_MAX);
+  settings.camSpeed = v;
+  rig.setSpeed(v);
+  save();
+  const text = `Move speed ${v.toFixed(2)}×`;
+  if (speedToast?.isConnected) speedToast.querySelector('.nt-text').textContent = text;
+  else speedToast = hud.toast(text);
+}
+// F: fly to what's under the cursor (Roblox Studio's and Unreal's focus), this many cells short of it
+const FOCUS_CELLS = 32;
+async function focusCursor() {
+  const from = sim, ray = gridRay();
+  const hit = await pickRay(ray.origin, ray.direction, true);
+  if (from !== sim || pov?.active) return;
+  if (!hit.valid) { hud.toast('Nothing under the cursor to fly to', { kind: 'error' }); return; }
+  rig.focus(cellInScene(hit.cell), FOCUS_CELLS * volume.matrixWorld.getMaxScaleOnAxis());
+  pacer.wake();
+}
+// Alt + left drag orbits the point under the cursor (the hovered cell)
+bindCameraMouse(canvasEl, rig, controls, {
+  enabled: () => !pov?.active,
+  pivot: () => (hover.valid && pointerInside ? cellInScene(hover.cell) : null),
+  flySpeed: stepFlySpeed,
+});
 bindBrushEraseClick(canvasEl, {
   canErase: canEraseClick,
   erase: e => eraseClick(e).catch(err => { console.error('Erase click failed', err); hud.toast('Could not erase here. Try again.'); }),
@@ -1919,7 +1963,6 @@ async function eraseClick(e) {
   }
   paintStroke({ ...stroke, center: cell.addScalar(0.5) });
   pacer.wake();
-  hud.dismissHint();
 }
 canvasEl.addEventListener('pointermove', (e) => {
   pointerPickDirty = true;
@@ -1985,7 +2028,6 @@ function clickTool() {
     toolbar.setUndoEnabled(true);
     lightning.strikeTool(sim, hover, settings.radius);
     pacer.wake();
-    hud.dismissHint();
     return true;
   }
   if (isSpawnerTool(settings.tool)) {
@@ -2009,7 +2051,6 @@ function clickTool() {
     builds.place();
     // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
     if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish', { kind: 'hint' }); }
-    hud.dismissHint();
     return true;
   }
   return null;
@@ -2026,7 +2067,6 @@ function startStroke(tool) {
   painting = true;
   strokePainted = releasePending = false;
   windFromValid = false;
-  hud.dismissHint();
   pacer.wake();
 }
 
@@ -2130,8 +2170,6 @@ const wantFrame = () => wantShot || frameWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
-  if (e.key === 'Alt') controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
-  if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE; // OrbitControls turns Shift+rotate into pan
   if (isTyping()) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
@@ -2147,9 +2185,14 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'p' && !e.shiftKey) { e.preventDefault(); if (!pov?.active) openProp(); return; }
   if (mod) return;
   const k = e.key;
-  // V switches between the god view and the body (Garry's Mod's noclip key). F drops
-  // in too, from the god view only: in the body F is the kick.
-  if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
+  // V switches between the god view and the body (Garry's Mod's noclip key). In the
+  // god view F flies to what's under the cursor (focusCursor); in the body F is the kick.
+  if (k === 'v' || k === 'V') { if (!e.repeat) actions.firstPerson(); return; }
+  if ((k === 'f' || k === 'F') && !pov?.active) {
+    if (!e.repeat) focusCursor().catch((err) => console.error('Focus failed', err));
+    return;
+  }
+  // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
@@ -2164,8 +2207,9 @@ addEventListener('keydown', (e) => {
   else if (Object.hasOwn(MODE_KEYS, k.toLowerCase())) { const key = MODE_KEYS[k.toLowerCase()]; setSimMode(key, nextMode(key, settings[key]), true); }   // TPT's Y, U
   else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
-  // Q is Garry's Mod's spawn-menu key, the same key as in the body; T stays as the old key (chat when playing together)
-  else if (k === 'q' || k === 'Q' || k === 't' || k === 'T') dock.toggle();
+  // T: the spawn menu (chat when playing together). Q and E fly down and up here (camera.js);
+  // in the body Q is Garry's Mod's spawn-menu key (pov/index.js)
+  else if (k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
   else if (k === ',') actions.toggleSettings();
   else if (k === '?') actions.toggleHelp();
@@ -2180,13 +2224,7 @@ addEventListener('keydown', (e) => {
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v && !e.repeat) setView(v.id); }
 });
-addEventListener('keyup', (e) => {
-  if (e.key === 'Alt') controls.mouseButtons.LEFT = null;
-  if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
-});
 addEventListener('blur', () => {
-  controls.mouseButtons.LEFT = null;
-  controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
   painting = false;
   shapeDrag = null;
 });
@@ -2200,7 +2238,9 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- profiler (Settings → Developer)
 // gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
-const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = false; save(); applyProfiler(); } });
+const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = storedProfiler = false; save(); applyProfiler(); },
+  onCost: () => prof.cost?.show(),
+  fullReport: () => (prof.landed.length ? prof.report().text : null) });
 const prof = createProfiler(gpu, {
   describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
     // (the HUD's old line) steps/s as the simulation runs them, preview's draw rate apart; a big map's
@@ -2209,15 +2249,29 @@ const prof = createProfiler(gpu, {
     screenShare: autoRes.enabled ? post.renderScale * pixelRatio / DEVICE_RATIO : null }),
   onSample: profPanel.update,
   onFrame: profPanel.frame,
+  // prof.enable() from the console or a tool sticks: it is the setting (the frame loop applies the setting
+  // each tick, and used to switch a direct enable(true) straight back off before a frame was timed)
+  onChange: (on) => {
+    settings.profiler = on;
+    profPanel.show(on);
+    post.onPass = on ? postPass : null;
+  },
+  // what the report says was measured (gfx/profileReport.js): two reports compare only on equal setups
+  context: () => ({
+    ...currentMap(),
+    view: VIEWS.find((v) => v.id === renderView)?.key ?? String(renderView),
+    detail: detailKey(frameDetail) || 'none',
+    taa: !!post.settings.taa, upscale: post.settings.upscale, adaptive: !!post.settings.adaptive,
+    resolutionScale: post.settings.resolutionScale, autoRes: !!autoRes.enabled,
+    pose: { eye: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov, pov: !!pov?.active },
+    testMode: testMode ?? null, paused: !!settings.paused, pov: !!pov?.active,
+    sceneTarget: [Math.max(1, Math.round(canvas.width * post.renderScale)), Math.max(1, Math.round(canvas.height * post.renderScale))],
+  }),
+  buildReport: (input) => { const r = buildProfileReport(input); r.text = formatProfileReport(r); return r; },
 });
 // post's passes after the scene (the view's raymarch) are a phase of their own
 const postPass = (name) => { if (name === 'scene') prof.phase('post'); };
-function applyProfiler() {
-  const on = settings.profiler;
-  prof.enable(on);
-  profPanel.show(on);
-  post.onPass = on ? postPass : null;
-}
+function applyProfiler() { prof.enable(settings.profiler); }   // (onChange shows the panel and hooks post)
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
@@ -3256,6 +3310,7 @@ try {
       },
     } : null,
   };
+  attachCostView(window.__app);   // __app.prof.cost: per-pixel work counters (docs/profiler.md)
   gpuLoss.settle();
   loop = createFrameLoop(frame);
   loop.start();

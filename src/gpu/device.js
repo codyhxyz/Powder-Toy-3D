@@ -19,6 +19,7 @@ import { ParamRing, Header, SharedUniforms } from './params.js';
 import { PipelineCache, Kernel, RenderPipe, withVisibility } from './kernels.js';
 import { Readback, TEXEL } from './readback.js';
 import { GpuTiming } from './timing.js';
+import { wantedShaderFeatures, featuresOf, setShaderFeatures } from './features.js';
 
 const GiB = 1024 * 1024 * 1024, MiB = 1024 * 1024;
 
@@ -33,7 +34,11 @@ export const DEFAULT_LIMITS = Object.freeze({
   maxComputeWorkgroupsPerDimension: 65535,
   maxColorAttachmentBytesPerSample: 32,
 });
-/** Optional features requested when the adapter has them (B2). Nothing else in v1 (W3). */
+/**
+ * Optional features requested when the adapter has them (B2), besides the
+ * shader features (features.js SHADER_FEATURE_NAMES: shader-f16, subgroups),
+ * which `?gpufeatures=` can limit. Each use keeps its core path (W3).
+ */
 export const OPTIONAL_FEATURES = Object.freeze(['timestamp-query']);
 /** Frames a GPU-bound loop may queue (B3): 2, and 1 on WebKit. */
 export const MAX_FRAMES_IN_FLIGHT = 2;
@@ -105,6 +110,7 @@ export async function probeWebGPU({ allowFallback } = {}) {
  * when there is no usable adapter or requestDevice rejects.
  * @param {{ adapter?: GPUAdapter, label?: string, debug?: boolean, testMode?: string | null }} [opts]
  *   debug: ?gpudebug=1 (a command per flush, inside an error scope)
+ *   ?gpufeatures=core (or a list: f16,subgroups) requests only those shader features
  * @returns {Promise<Gpu>}
  */
 export async function createGpu({ adapter, label = 'tpt3d', debug, testMode } = {}) {
@@ -113,7 +119,10 @@ export async function createGpu({ adapter, label = 'tpt3d', debug, testMode } = 
     if (!probe.ok) throw new Error(probe.message);
     adapter = probe.adapter;
   }
-  const requiredFeatures = OPTIONAL_FEATURES.filter((f) => adapter.features.has(f));
+  const requiredFeatures = [
+    ...OPTIONAL_FEATURES.filter((f) => adapter.features.has(f)),
+    ...wantedShaderFeatures(adapter, params().get('gpufeatures')),
+  ];
   const device = await adapter.requestDevice({ label, requiredFeatures, requiredLimits: wantedLimits(adapter) });
   return new Gpu(adapter, device, {
     label,
@@ -145,6 +154,8 @@ export class Gpu {
       description: info.description ?? '', isFallbackAdapter: Boolean(info.isFallbackAdapter ?? adapter.isFallbackAdapter),
     };
     this.features = device.features;
+    /** what the shader generators use on this device (features.js shaderFeatures) */
+    this.shaderFeatures = setShaderFeatures(featuresOf(device));
     this.limits = device.limits;
     this.isWebKit = isWebKit();
     this.testMode = testMode;

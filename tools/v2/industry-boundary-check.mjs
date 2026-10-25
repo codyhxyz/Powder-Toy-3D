@@ -35,7 +35,7 @@ function fixture(native, gamemode = 'factory') {
   };
   const app = { sim, gamemode, settings: { preset: 'quarry' }, hover: { valid: false },
     toolbar: { setIndustry: noop, setUndoEnabled: noop }, dock: { setSpawnLocked: noop, setCollapsed: noop },
-    hud: { toast: message => notices.push(message), dismissHint: noop }, canvas: {},
+    hud: { toast: message => notices.push(message) }, canvas: {},
     requestRender: noop, leaveBuild: noop, isTyping: () => false };
   const create = vm.runInNewContext(
     indexSource.replace(/^import .*;\n/gm, '').replace(/^export /gm, '') + '\ncreateIndustry;',

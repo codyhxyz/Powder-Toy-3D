@@ -49,7 +49,7 @@ for (const type of ['pointermove', 'pointerdown', 'pointerup', 'pointerleave', '
   assert.equal(lastStill, still, `${type}: cached scene retained`);
   assert.equal(pacer.wakes, wakes, `${type}: no explicit cache invalidation`);
 }
-for (const field of ['dockCollapsed', 'profiler', 'propText', 'propField', 'rate', 'replace', 'specificDelete',
+for (const field of ['dockCollapsed', 'spawnBar', 'profiler', 'propText', 'propField', 'rate', 'replace', 'specificDelete',
   'replaceTarget', 'steps', 'gravity', 'paused', 'camSpeed', 'sensitivity', 'sprintMode', 'tool', 'radius', 'shape']) {
   settings[field] = 'changed';
   target.dispatchEvent(new Event('input')); drain();

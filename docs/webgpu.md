@@ -68,6 +68,13 @@ stub (J3). Delete GLSL as you replace it; nothing in `src/` keeps both.
 `texture-formats-tier1/2`, read-write storage textures or `float32-filterable`. Every kernel runs on the SwiftShader
 adapter in the test container and on Safari 26. `timestamp-query` is used when present, for profiling only. Optional
 fast paths come later (K3), each behind a feature check with the core path kept and tested.
+*Since 2026-10-24* createGpu also requests `shader-f16` and `subgroups` when the adapter has them, and generators read
+what the device enabled from `src/gpu/features.js` (`shaderFeatures()`: `{ f16, subgroups }`, CORE without a device):
+`halfWGSL` (`hf`/`hv3`… as f16 or f32), `subgroupsWGSL` (the directives), `appendWGSL` (an order-free list append with
+one `atomicAdd` per subgroup, exactly the plain append on core). Snippet directives are hoisted by
+`PipelineCache.module`. `?gpufeatures=core` (or a list, `?gpufeatures=subgroups`) forces the core path on one machine;
+check-wgsl validates the page device's variant beside core, check-wgsl-operators both. First users: the activity
+scan and pass and the air source and wind lists (`v2.js`, `v2/air.js`).
 
 **W4. Behaviour parity first.** Structural wins that compute makes possible are in scope: the fused in-place Margolus
 move, GPU-built brick lists with indirect dispatch (brick-granular sleeping, incremental inert rebuild, aeration over

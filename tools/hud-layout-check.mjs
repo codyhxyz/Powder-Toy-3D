@@ -23,7 +23,6 @@ try {
       const { createHotbar } = await import('/src/pov/tools/hotbar.js');
       const { createPovHud } = await import('/src/pov/hud.js');
       const hud = createHud();
-      hud.dismissHint();
       hud.setStats({ fpsV: 56 });
       const hotbar = createHotbar();
       hotbar.setSlot(0, [{ key: 'shovel', name: 'Shovel' }], 0);

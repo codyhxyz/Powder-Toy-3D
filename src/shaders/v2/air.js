@@ -1,6 +1,7 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, storageLayout, main64, SHOCK_UNIT_PA } from './particles.js';
-import { listControl, listWGSL, windGroupsWGSL } from './blasts.js';
+import { listControl, listWGSL, windGroupsWGSL, dAppendWhen, dAppendIfWGSL } from './blasts.js';
+import { shaderFeatures } from '../../gpu/features.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { V1_AIR } from '../../v2/pressure.js';
 import { PHYS } from '../../physics.js';
@@ -105,7 +106,7 @@ export function airWGSL(g,nativeHead,stage) {
   // live. Any other brick's source is an identity that leaves its reach word 0:
   // its air and its neighbours' are as they were when it last settled, its faces
   // and vacuum are cached, and both copies are equal (tools/v2/air-reach-check.mjs).
-  if (stage==='list') return h+main64(/* wgsl */ `
+  if (stage==='list') return h+dAppendIfWGSL()+main64(/* wgsl */ `
     // The tick's first air dispatch: source recounts durable events, activity the
     // working air (not live particles); no separate clear splits the pass.
     if (t==0u) { atomicStore(&control[1],0u); atomicStore(&control[2],0u); }
@@ -114,22 +115,27 @@ export function airWGSL(g,nativeHead,stage) {
     for (var axis=0u;axis<3u;axis++) { for (var side=-1;side<=1;side+=2) {
       let q=aNeighbor(t,axis,side); if (q!=D_NONE && (aLive(q) || atomicLoad(&act2[V2_STATE_DIRTY+q])!=0u)) { seed=true; }
     } }
-    if (seed) { dAppend(LIST_SOURCE,t); }
+    ${dAppendWhen('seed', 'LIST_SOURCE', 't')}
   `);
   // After the substeps: the bricks where wind or pressure can act (dWindListed). A workgroup is one
   // group of the shared allocator's (shaders/v2.js BRICK_GROUP): its word says whether it listed any, so
   // the couple run's count reads one word for a group instead of every brick's air words. Nothing
   // writes an air-live word between here and that count (gas, couplePlan: cells and plans only).
+  // With subgroups the in-range lanes decide and every lane appends (dAppendWhen), so the list's
+  // count is taken once a subgroup; without, the plain append inside the range test.
+  const sg = shaderFeatures().subgroups;
   if (stage==='windList') return h+`${windGroupsWGSL(g)}
 var<workgroup> wgWind: atomic<u32>;
-`+main64(/* wgsl */ `
+${dAppendIfWGSL()}`+main64(/* wgsl */ `
     // Every lane reaches the barrier: one past the bricks lists nothing.
-    if (t<D_BRICKS) {
+    ${sg ? 'var wind=false;\n    ' : ''}if (t<D_BRICKS) {
       // Every source has read its neighbours' notes, and no cell is written between source and here
       // (reach and the substeps write only air): a later write notes its brick for the next source.
       if (atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
-      if (dWindListed(t)) { dAppend(LIST_WIND,t); atomicStore(&wgWind,1u); }
+      ${sg ? `wind=dWindListed(t);
     }
+    ${dAppendWhen('wind', 'LIST_WIND', 't')} if (wind) { atomicStore(&wgWind,1u); }` : `if (dWindListed(t)) { dAppend(LIST_WIND,t); atomicStore(&wgWind,1u); }
+    }`}
     workgroupBarrier();
     let group=wg.x+wg.y*nwg.x;
     if (li==0u && group<BRICK_GROUPS) { atomicStore(&control[D_WIND_GROUPS+group],atomicLoad(&wgWind)); }

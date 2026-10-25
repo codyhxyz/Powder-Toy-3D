@@ -58,7 +58,7 @@ try {
     assert.equal(await page.locator('.veh-hull [aria-label="Hull health"]').count(), 1);
     assert.equal(await page.locator('.veh-boost').isVisible(), false);
     assert.equal(await page.locator('.veh-warning').isVisible(), false);
-    for (const selector of ['.industry', '.hotbar', '.hb-held', '.pov-hint']) assert.equal(await page.locator(selector).isVisible(), false, selector);
+    for (const selector of ['.industry', '.hotbar', '.hb-held']) assert.equal(await page.locator(selector).isVisible(), false, selector);
     assert.equal(await page.locator('.pov-vitals').isVisible(), true);
     assert.equal(await page.locator('.veh-exit').isVisible(), !touch);
     if (touch) {

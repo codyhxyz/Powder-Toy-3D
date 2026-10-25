@@ -1,6 +1,6 @@
 // Share the free camera's right button: erase only on a click's release.
-// OrbitControls still owns pointer capture and every move once a drag starts.
-const DRAG_PX = 6; // CSS pixels: tolerate a small hand/trackpad wobble.
+// A drag past DRAG_PX is the camera's (camera.js bindCameraMouse: it looks around).
+export const DRAG_PX = 6; // CSS pixels: tolerate a small hand/trackpad wobble.
 export function bindBrushEraseClick(canvas, { canErase, erase }) {
   const view = canvas.ownerDocument.defaultView;
   let press = null;
@@ -15,7 +15,7 @@ export function bindBrushEraseClick(canvas, { canErase, erase }) {
   canvas.addEventListener('pointermove', e => {
     if (!press || e.pointerId !== press.id) return;
     if (e.buttons !== 2 || modified(e) || moved(e) || !canErase()) { cancel(); return; }
-    // Below the threshold, don't let OrbitControls turn a click into a tiny orbit.
+    // Below the threshold it stays a click: nothing else sees the wobble.
     e.stopImmediatePropagation();
   }, true);
   view.addEventListener('pointerup', e => {

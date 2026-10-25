@@ -2,7 +2,7 @@ import { h } from '../ui/dom.js';
 import { TOUCH_MEDIA } from './touch.js';
 
 // The POV HUD: crosshair (with its bloom, and Halo's red on an enemy in range) and hitmarker, Halo's grenade count, the Energy Shield (Halo's bar over health, and its flare on the screen's edge), health and breath, the perks held (Noita's row of
-// icons), screen effects for what the body feels, the pointer-lock prompt, the death screen and the entry hint. Styles
+// icons), screen effects for what the body feels, the pointer-lock prompt, the death screen. Styles
 // in pov.css. update() runs every frame and only touches the DOM when a
 // (rounded) value changes.
 
@@ -12,7 +12,6 @@ const HEALTH_LOW = 0.3;                 // the health bar turns urgent below thi
 const TRAIL_RATE = 1.6;                 // 1/s: the "damage taken" trail catches up with health this fast
 const TRAIL_HOLD = 0.35;                // s the trail waits after a hit before it starts catching up
 const FX_STEPS = 100;                   // effect opacities are rounded to 1/this (fewer style writes)
-const HINT_S = 7;                       // s the entry hint stays up
 const HURT_FLASH_GAIN = 0.85;           // opacity of the red flash at feel.hurt = 1
 const CROSS_GAP_PX = 4;                 // px from the centre to the crosshair ticks at rest
 const BLOOM_GAP_PX = 9;                 // px more at full bloom (just after a shot)
@@ -94,25 +93,8 @@ export function createPovHud() {
       ? [h('span.pov-dot', { text: '·' }), 'God to leave']
       : [h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'])));
 
-  const grappleHint = h('span', {}, key('E'), ' grappendix / release · 100 m reach · jump to launch');
-  const hint = h('div.pov-hint.panel', {},
-    h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
-    h('span', {}, key('Space'), ' jump, hold to fly'),
-    h('span', {}, key('Shift'), ' sprint'),
-    h('span', {}, key('C'), ' crouch'),
-    h('span', {}, key('F'), ' kick'),
-    grappleHint,
-    h('span', {}, key('Z'), ' zoom'),
-    h('span', {}, key('F5'), '/', key('Ctrl'), ' third person'),
-    h('span', {}, key('V'), ' god view'));
-  if (touch) hint.replaceChildren(
-    h('span', { text: 'Drag the scene to look' }),
-    h('span', { text: 'Push the pad to its edge to run' }),
-    h('span', { text: 'Hold Jump to fly' }),
-    h('span', { text: 'God leaves' }));
-
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.buried, fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, pogo, nades, vitals, lock, death, hint);
+    fx.buried, fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, pogo, nades, vitals, lock, death);
   document.body.append(root);
 
   // DOM writes only on change
@@ -137,17 +119,10 @@ export function createPovHud() {
   let perkVersion = -1, perkSet = null;
   let statusVersion = -1, statusSet = null, statusIcons = [];
   const statusPeak = new Map();   // key → the most seconds it had left while on (its bar's full length)
-  let hintTimer = 0;
 
   return {
     show(v) {
       set(root, '.on', v);
-      if (!v) { set(hint, '.show', false); clearTimeout(hintTimer); }
-    },
-    showHint() {
-      set(hint, '.show', true);
-      clearTimeout(hintTimer);
-      hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
     // s.gold: the run's gold (pov/descent), or null for no counter
     // s = { dt, health, breath, jetFuel (0..1), jetting, mana ({ mana, manaMax } of the wand in hand, or null), perks (pov/perks.js set), status (pov/status.js set), feel {heat, cold, acid, hurt},
@@ -195,7 +170,6 @@ export function createPovHud() {
       if (s.buried) set(fx.buried, '--c', s.buried);
       set(fx.buried, 'opacity', live && s.buried ? '1' : '0');
       set(lock, '.show', live && !s.locked);
-      set(grappleHint, 'hidden', !s.grappleEnabled);
 
       // health, with a trail that shows what the last hit took
       const hp = Math.max(0, Math.min(1, s.health));
@@ -256,7 +230,6 @@ export function createPovHud() {
       // death screen
       set(death, '.show', !!s.dead && !s.mission);
       if (s.dead) {
-        set(hint, '.show', false);
         set(deathCause, 'text', s.cause || '');
         set(deathCount, 'text', `${Math.max(1, Math.ceil(s.respawnIn))} s`);
       }
