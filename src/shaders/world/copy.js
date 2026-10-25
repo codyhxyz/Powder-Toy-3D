@@ -158,19 +158,32 @@ fn wcBrickIndex(b: vec3i) -> u32 {
 }
 fn wcCell(c: vec3i) -> u32 {
   if (!wcInWorld(c)) { return WC.air; }
-  let e = wcTable[wcBrickIndex(c >> vec3u(2u))];
+  return wcCellIn(wcEntry(c >> vec3u(2u)), c);
+}
+// The element cell c with word w draws as: E_EMPTY for air, an empty kind, or a part-full liquid's cell its
+// dither leaves out (what wcA reads; the march's occCellId reads only this)
+fn wcShownId(w: u32, c: vec3i) -> i32 {
+  let id = wcId(w);
+  if (id == E_EMPTY) { return E_EMPTY; }
+  let k = KIND(id);
+  if (k == K_EMPTY) { return E_EMPTY; }
+  let a = (w >> 24u) & 127u;
+  if (k == K_LIQUID && a < WC_AUX_WHOLE && a * WC_FULL_Q / WC_AUX_WHOLE <= (seedWorld(c, 0u, 4243u) >> 16u)) { return E_EMPTY; }
+  return id;
+}
+// Cell c's word in the brick whose table entry is e (a uniform brick's word, or its pool slot): one read at most
+fn wcCellIn(e: u32, c: vec3i) -> u32 {
   if ((e & WC_MIXED) == 0u) { return e; }
   return wcPool[(e & ~WC_MIXED) * WC_BRICK_CELLS + wcLocal(c & vec3i(3))];
 }
+// Brick b's table entry (b inside the world)
+fn wcEntry(b: vec3i) -> u32 { return wcTable[wcBrickIndex(b)]; }
 fn wcA(c: vec3i) -> vec4f {
   let w = wcCell(c);
-  let id = wcId(w);
   let T = wcTemp(w);
+  let id = wcShownId(w, c);
   if (id == E_EMPTY) { return vec4f(0.0, T, 0.0, 0.0); }
   let k = KIND(id);
-  if (k == K_EMPTY) { return vec4f(0.0, T, 0.0, 0.0); }
-  let a = (w >> 24u) & 127u;
-  if (k == K_LIQUID && a < WC_AUX_WHOLE && a * WC_FULL_Q / WC_AUX_WHOLE <= (seedWorld(c, 0u, 4243u) >> 16u)) { return vec4f(0.0, T, 0.0, 0.0); }
   let seed = f32(seedWorld(c, 0u, 991u) >> 16u) * (SEED_MAX / 65536.0);
   // a liquid's aux is its fill: its life isn't kept (Intentional (cell word ABI): the picture reads no liquid's life)
   let life = select(wcAux(w) * WC_LIFE_FULL[u32(id)], 0.0, k == K_LIQUID);

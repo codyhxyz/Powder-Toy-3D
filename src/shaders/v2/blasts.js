@@ -733,10 +733,20 @@ var<workgroup> wgSources: u32;
   // explosive's pOn; a solid's difference across it, V1's breaking test) in its velocity z, which
   // planCharges keeps in its plan's flags for damageCharges (dFloodFront). The sight-line front stays the
   // throw's and the flame chain's.
-  if (stage === 'frontFlood') return h + chargeSourcesWGSL + main64(/* wgsl */ `
-    if (t >= D_SLOTS) { return; }
+  // Whether the brick is near any charge is the workgroup's (a workgroup a brick), found once with a lane a
+  // charge: every cell asking all n charges itself, in each of the flood's passes, was ~110 ms of a busy
+  // tick on the M5 (2026-10-25: the flood runs over every cell of the grid while any charge goes off).
+  if (stage === 'frontFlood') return h + chargeSourcesWGSL + `
+var<workgroup> wgNearLanes: array<u32,64>;
+var<workgroup> wgNear: u32;
+` + main64(/* wgsl */ `
+    let live=t<D_SLOTS; let brick=t/64u;
     let p=cellOf(t); let round=P.substep; let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
-    var near=false; for (var k=0u;k<n;k++) { near=near || dSrcNearBrick(k,t/64u); }
+    var mine=0u; for (var k=li;k<n;k+=64u) { if (brick<D_BRICKS && dSrcNearBrick(k,brick)) { mine=1u; } }
+    wgNearLanes[li]=mine; workgroupBarrier();
+    if (li==0u) { var hit=0u; for (var lane=0u;lane<64u;lane++) { hit|=wgNearLanes[lane]; } wgNear=hit; }
+    let near=workgroupUniformLoad(&wgNear)!=0u;
+    if (!live) { return; }
     if (round==0u) {
       // an explosive's pOn: its open neighbours' largest; any other cell's V1 breaking difference: along an axis
       // the nearer side's front, the far side not yet reached (a side the same path away peaks with it: none)
@@ -822,9 +832,17 @@ var<workgroup> wgNear: u32;
     }
     if (li==0u && n==0u) { atomicStore(&control[6],bitcast<u32>(1.0)); }
   `);
-  if (stage === 'damageCharges') return h + chargeServedWGSL + chargeSourcesWGSL + main64(`
+  // The charges whose reach holds a cell of the brick, a bit a charge, found once by the workgroup (a lane a
+  // charge, as frontFlood's): a cell skips the rest, which its own reach test would skip anyway.
+  if (stage === 'damageCharges') return h + chargeServedWGSL + chargeSourcesWGSL + `
+var<workgroup> wgNearMask: array<atomic<u32>,${Math.ceil(CHARGES_MAX / 32)}>;
+` + main64(`
+    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX); let brick=t/64u;
+    if (li<${Math.ceil(CHARGES_MAX / 32)}u) { atomicStore(&wgNearMask[li],0u); }
+    workgroupBarrier();
+    for (var c=li;c<n;c+=64u) { if (brick<D_BRICKS && dSrcNearBrick(c,brick)) { atomicOr(&wgNearMask[c>>5u],1u<<(c&31u)); } }
+    workgroupBarrier();
     if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id); let p=cellOf(t);
-    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     var energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
     var combined=vec3f(0); var front=dFloodFront(plan.flags); var flameSteps=D_CHAIN+1; plan.flags&=~D_FLOOD_BITS;
     let open=id!=0u && (events[t]&1u)==0u && (plan.flags&4u)==0u;
@@ -833,6 +851,7 @@ var<workgroup> wgNear: u32;
       // sources each one's share at its own scale, summed (energy) and as a direction
       if (n>1u) { energy=0.0; }
       for (var c=0u;c<n;c++) {
+        if ((atomicLoad(&wgNearMask[c>>5u])&(1u<<(c&31u)))==0u) { continue; }
         let steps=dSrcSteps(c,p); if (dSrcEnergy(c)<=0.0 || steps>dSrcReach(c) || !dSrcSees(c,p)) { continue; }
         front=max(front,dSrcFrontPa(c,steps));
         if (n>1u) { let share=dSrcShare(c,p)*bitcast<f32>(atomicLoad(&control[D_CHARGE_SCALES+c])); energy+=length(share); combined+=share; }
