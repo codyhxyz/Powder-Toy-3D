@@ -2,9 +2,10 @@
 // its detail variants (gfx/detail.js) and material styles, as one full-screen ray march in world
 // cells over the world copy (W), the field clipmaps (F) and the lighting (L). Every map draws its
 // realistic view through it, a small one (a world the size of its box) as a big one: there is no
-// box-shaped draw. A big map's march stops at the pixel's reach (shaders/world/reach.js, 64 cells and a
-// dithered band) and live's distance pass draws past it (world/far.js, shaders/far.js farFrag), depth
-// ordered with it; a small map's reach never ends (Intentional: no far view, as live).
+// box-shaped draw. A big map's march draws each ray inside physics' window only, live's full-detail
+// region (shaders/world/reach.js windowSpan), and live's distance pass draws outside it (world/far.js,
+// shaders/far.js farFrag), depth ordered with it; a small map's march draws all of it (Intentional: no
+// far view, as live).
 //
 // What it pastes, unchanged: the realistic tracer (shaders/render.js realisticTraceWGSL) and the
 // shading library (gfx/surface.js, liquid.js, liquidDetail.js, media.js, grains.js, deco.js,
@@ -18,7 +19,7 @@
 //   skipEmpty              W's occupancy levels: the 64³ node, else the 16³ node, else the brick
 //   cellFlow, the foam's aeration, the deco paint
 //                          physics' window only (P.physOrigin .. + window), zero elsewhere
-// F's level: the march reads level 0 (within the reach a pixel's footprint is far below a cell) and
+// F's level: the march reads level 0 (within the window a pixel's footprint is far below a cell) and
 // picks, at every brick it enters, the first clip level that holds it (fieldPickAt).
 //
 // The pass: a full-screen triangle into the scene target after three's opaque meshes, the sky
@@ -73,7 +74,7 @@ export const MarchParams = uniformStruct('MarchParams', {
   physSize: 'vec3i',    // ... its size in cells ...
   physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout ...
   physRing: 'u32',      // ... rotated by its ring, in bricks (shaders/common.js ringOf; sim.g.ring, 0 unringed)
-  reach: 'f32',         // cells: a big map's reach (shaders/world/reach.js REACH_CELLS; 0: none, the whole world)
+  boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside physics' window only (marchSpan)
 });
 /** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
 export const physParams = (sim) => {
@@ -259,17 +260,45 @@ const floorWorld = (code) => rewrite(code, [
   ['return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line);', 'return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line * f32(P.floorLines));'],
 ], 'gfx/surface.js floorAlb');
 // The tracer picks F's level at every brick it enters (and keys its bricks by coordinate), and stops at
-// the pixel's reach (shaders/world/reach.js) as it stops at the meshes' cut: nothing past it is drawn, a
-// ray that met nothing before it draws nothing (the far view's pixel stands).
+// physics' window's far face (marchSpan: gMarchExit) as it stops at the meshes' cut: nothing past it is
+// drawn, a ray that met nothing before it draws nothing (the far view's pixel stands).
 const traceWorld = (detail, format, optics) => rewrite(realisticTraceWGSL(detail, format, optics), [
   ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      fieldPickAt(ro + rd * tEnter);\n'],
-  ['var tCut = meshCutT(rd);', 'var tCut = min(meshCutT(rd), reachAt(gFragCoord, f32(FU.frame), P.reach));'],
+  ['var tCut = meshCutT(rd);', 'var tCut = min(meshCutT(rd), gMarchExit);'],
 ], 'the realistic tracer');
 
 // The full-screen triangle and the fragment entry: the pixel's ray from the eye through the far
 // plane (P.meshInv: clip → world cells, the jittered camera's), its footprint (derivatives, at
 // the top in uniform control flow), the world's box, the trace.
 const entryWGSL = () => /* wgsl */ `
+// A big map's frame with its far view (P.boxed): the ray's span through physics' window, live's
+// full-detail box ([physOrigin, physOrigin + physSize): shaders/world/reach.js windowSpan, the far view's
+// own), in place of the world's: (entry t, exit t, entry axis). The tracer cuts at its exit (gMarchExit).
+var<private> gMarchExit: f32 = MESH_CUT_NONE;
+var<private> gMarchFace: bool = false;   // the span starts at the window's face (the ray came from outside it)
+fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f {
+  var bh = boxHit(ro, rd);
+  gMarchExit = MESH_CUT_NONE;
+  gMarchFace = false;
+  if (P.boxed != 0u) {
+    let w = windowSpan(ro, rd, vec3f(P.physOrigin), vec3f(P.physOrigin + P.physSize));
+    if (w.x > bh.x) { bh.x = w.x; bh.z = w.z; gMarchFace = true; }
+    bh.y = min(bh.y, w.y);
+    gMarchExit = w.y;
+  }
+  return bh;
+}
+// Whether the march draws a ray from t0: never one that comes into the window inside matter (from under
+// the ground outside it), which would draw the box's cut face; the far view's hit, nearer, fills it.
+// Gas is not matter here (the media draw through the face).
+fn marchEnters(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> bool {
+  if (!gMarchFace || t0 > bh.x) { return true; }   // (a small map's walls, as live; the eye or its near clip inside)
+  if (!isGasLike(wcId(wcCell(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))))))) { return false; }
+  let p = ro + rd * t0;
+  fieldPickAt(p);
+  let phi = surfSample(p);
+  return surfInsideOpaque(phi) < 0 && phi.x < SURF_ISO;
+}
 struct MarchVarying {
   @builtin(position) position: vec4f,
   @location(0) far: vec4f,   // the far plane's point, homogeneous world cells (divided per pixel)
@@ -294,9 +323,9 @@ struct MarchFrag {
   gCubicEye = gEye;
   gCubicPixAng = gPixAng;
   var o: MarchFrag;
-  let bh = boxHit(ro, rd);
+  let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
-  if (bh.y <= t0) { discard; return o; }
+  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }
   let h = traceView(ro, rd, t0, bh);
   if (!h.hit) { discard; return o; }
   o.color = h.color;
@@ -532,9 +561,9 @@ struct MarchOut {
 }
 @fragment fn fs(v: MarchVarying) -> MarchOut {${preambleWGSL}
   var o: MarchOut;
-  let bh = boxHit(ro, rd);
+  let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
-  if (bh.y <= t0) { discard; return o; }
+  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }
   let g = traceView(ro, rd, t0, bh);
   if ((g.g1.w & GB_HIT) == 0u) { discard; return o; }
   o.g0 = g.g0;

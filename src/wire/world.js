@@ -59,11 +59,11 @@ const world = {
     gfxUniforms.uClouds.value=true;
     gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
     // Its distance pass (world/far.js, app.js farPass): the far field's brick-resolution grid of the
-    // whole world, drawn past the world march's reach (shaders/world/reach.js) in a pass of its own, as
-    // live drew it past the window. Joined once its kernels are built, so it never holds up the load
-    // (win.whenReady waits on win.far), and built from the world copy then (useWorldCopy, SUM's builder:
-    // until it is there the far view never draws and the march keeps the whole world, reach 0). Its
-    // lighting group is the window volume's, with the far grid in it (attachVolume).
+    // whole world, drawn past physics' window (the world march's full detail: shaders/world/reach.js) in a
+    // pass of its own, as live drew it past the window. Joined once its kernels are built, so it never holds
+    // up the load (win.whenReady waits on win.far), and built from the world copy then (useWorldCopy: until
+    // it has built the far view doesn't draw and the march keeps the whole world). Its lighting group is
+    // the window volume's, with the far grid in it (attachVolume).
     const far = new FarField(app.renderer, win, { sun: app.sun });
     far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
     far.attachVolume(app.vol);
