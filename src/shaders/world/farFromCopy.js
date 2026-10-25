@@ -149,7 +149,7 @@ const entryAt = (copy, [x, y, z]) => {
   return copy.table[Math.min(Math.max(x, 0), BX - 1) + BX * (y + BY * Math.min(Math.max(z, 0), BZ - 1))];
 };
 const f32 = Math.fround;
-function newCount() { return { w: new Map(), roles: new Map(), open: 0, heat: 0, s: 0, l: 0 }; }
+function newCount() { return { w: new Map(), roles: new Map(), open: 0, heat: 0, flames: 0, flameHeat: 0, s: 0, l: 0 }; }
 function vote(c, id, appearance, weight) {
   c.w.set(id, f32((c.w.get(id) ?? 0) + weight));
   const slot = ROLE.indexOf(id);
@@ -162,6 +162,7 @@ function countCell(c, word, above, T) {
     vote(c, id, materialAppearance(word), open ? FAR.SURFACE_W : 1);
     if (open) { c.open = f32(c.open + 1); c.heat = f32(c.heat + f32(Math.max(f32(T - INCAND.T0), 0))); }
   } else if (farLiquid(id)) c.w.set(id, f32((c.w.get(id) ?? 0) + 1));
+  else if (ELEMENTS[id]?.render === R.FIRE) { c.flames = f32(c.flames + 1); c.flameHeat = f32(c.flameHeat + f32(Math.max(f32(T - INCAND.T0), 0))); }
 }
 const level = (x) => Math.floor(Math.min(Math.max(x, 0), 1) * FAR.LEVELS + 0.5);
 function pack(c) {
@@ -175,7 +176,7 @@ function pack(c) {
     const r = (a) => c.roles.get(`${best}:${a}`) ?? 0;
     for (let a = 1; a <= AP_BARK; a++) if (r(a) > r(appearance)) appearance = a;
   }
-  const glow = level(c.open > 0 ? f32(f32(c.heat / c.open) / FAR.GLOW_SPAN) : 0);
+  const glow = level(Math.max(c.open > 0 ? f32(f32(c.heat / c.open) / FAR.GLOW_SPAN) : 0, c.flames > 0 ? f32(f32(c.flameHeat / c.flames) / FAR.GLOW_SPAN) : 0));
   return packFarTexel({ s: level(f32(c.s / n)), l: level(f32(c.l / n)), id: best, appearance, glow, liquid, open: c.open > 0 });
 }
 // the cell at c as both read it: [id, material word, °C]

@@ -70,8 +70,8 @@ const DIFFERENCES = {
   industry:         [true, false],
 
   // --- Tools and camera ---
-  // Intentional (a window has no walls): a small map's brush stops at its walls; past a
-  // big map's window there is nothing simulated to paint, so there's no brush.
+  // Intentional (a window has no walls): a small map's brush stops at its walls; a big
+  // map's goes anywhere on the map, and physics' window comes to it (app.js workAt).
   clampBrush:       [true, false],
   // Intentional (a window has no walls): a fill reaching a box's wall stops there; one
   // reaching a window's edge would run on past what's simulated, so it's refused

@@ -120,6 +120,8 @@ struct FarCount {
   roles: array<array<f32, 11>, 4>, // WOOD, PLANT, cedar MOSS, PLANKS (its boards' axis); never split physical votes
   open: f32,           // its open opaque cells...
   heat: f32,           // ...and their degrees above the glow's start
+  flames: f32,         // its flames (fire's render class: a gas, so no share)...
+  flameHeat: f32,      // ...and their degrees above the glow's start
   s: f32,              // opaque and liquid cells of its cube
   l: f32,
 }
@@ -144,6 +146,9 @@ fn farCell(c: ptr<function, FarCount>, word: i32, above: i32, T: f32) {
     if (open) { (*c).open += 1.0; (*c).heat += max(T - INCAND_T0, 0.0); }
   } else if (farLiquid(id)) {
     (*c).w[id] += 1.0;
+  } else if (RCLASS(id) == R_FIRE) {
+    (*c).flames += 1.0;
+    (*c).flameHeat += max(T - INCAND_T0, 0.0);
   }
 }
 // a share or the glow in FAR_LEVELS steps, rounded as the 8-bit channel it was (half up)
@@ -167,7 +172,11 @@ fn farPack(c: ptr<function, FarCount>) -> vec4u {
       if ((*c).roles[slot][a] > (*c).roles[slot][f.appearance]) { f.appearance = a; }
     }
   }
-  f.glow = farLevel(select(0.0, (*c).heat / (*c).open / FAR_GLOW_SPAN, (*c).open > 0.0));
+  // a burning brick glows as hot as its flames, so a fire past physics' window reads from afar (a gas has
+  // no share: the far view otherwise drew a burning forest as a still green one)
+  let surfaceGlow = select(0.0, (*c).heat / (*c).open / FAR_GLOW_SPAN, (*c).open > 0.0);
+  let flameGlow = select(0.0, (*c).flameHeat / (*c).flames / FAR_GLOW_SPAN, (*c).flames > 0.0);
+  f.glow = farLevel(max(surfaceGlow, flameGlow));
   f.liquid = liquid;
   f.open = (*c).open > 0.0;
   return farPackTexel(f);

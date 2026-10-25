@@ -257,7 +257,10 @@ const world = {
   // flying down to the ground with W left it two windows ahead, the window with it, and
   // the far view drawn right under the camera (no fire, blobby trees) with full detail
   // only far ahead. Up at the home view the cap is past the target and nothing changes.
+  // Where you work comes first (app.js workAt: a press, a stroke): the window goes there and stays while the
+  // eye stays near (Minecraft's simulation distance around the player; the god view's player is its cursor).
   godFocus(app) {
+    if (app.workFocus) return [...app.workFocus];
     const { win, camera, controls, scale, anchor } = app;
     const tx = controls.target.x / scale + anchor.x, tz = controls.target.z / scale + anchor.y;
     const ex = camera.position.x / scale + anchor.x, ez = camera.position.z / scale + anchor.y;
@@ -269,7 +272,7 @@ const world = {
   },
 
   // World mode: keep the window on the focus, the POV body or else the god view's
-  // (godFocus; a tool may pin it: __app.worldFocus = [x, z] in world cells).
+  // (godFocus: where you work, else round the eye; a tool may pin it: __app.worldFocus = [x, z] in world cells).
   moveWindow(app) {
     if (app.mp.replica) return;
     const { win, sim, pov, hover } = app;

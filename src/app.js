@@ -596,6 +596,7 @@ function build(savedWorldSize = null) {
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   mapKind = kindOf(!!worldMode);
   win = null;
+  workFocus = workEye = parked = heldCenter = null;
   nativeRayStroke = null;
   // A guest's grid gets its native owner too: it holds the host's frames as native cells (net/codec.js
   // unpack) without ticking, and runs them once the session ends (a box guest plays on alone). Without
@@ -711,6 +712,21 @@ let worldFocus = null, villageFocus = null;
 // Is grid point p inside the window's columns (x and z)? Painting and tools
 // act only there: beyond it, in a world, is ground the window doesn't hold.
 const inWindow = (p) => p.x >= 0 && p.x < sim.g.nx && p.z >= 0 && p.z < sim.g.nz;
+// Whether the god view aims at the whole map (gfx/worldView.js pick, over the world copy the far view draws
+// too) rather than physics' window: a big map's host or solo god view, the view flat (a bent one, the rolling
+// log, keeps the window's pick, which walks its parabola). Then a press past the window brings it there.
+const worldAim = () => mapKind.streamed && !pov?.active && !mp.replica && !warpNow() && !!worldView?.picks;
+// The god view's eye, world cells [x, z].
+const eyeColumn = () => [camera.position.x / scale + anchor.x, camera.position.z / scale + anchor.y];
+// Work at world column (x, z): physics' window comes to it (godFocus) and stays while the eye stays near.
+function workAt(x, z) {
+  if (!worldAim()) return;
+  workFocus = [x, z];
+  workEye = eyeColumn();
+  pacer.wake();
+}
+// Whether the window has come to rest where its focus asks (wire/world.js: it walks WIN_STEP cells a frame).
+const windowAtRest = () => !win?.goal || (win.goal[0] === sim.origin.x && win.goal[2] === sim.origin.z);
 
 // A grid cell found by a pick asked for with the window at origin o: where
 // it is in the window now (it may have moved since), in place.
@@ -1010,6 +1026,18 @@ let strokeTool = E.SAND;   // what the stroke under way paints: the selected too
 let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
 let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
 let dragY = 0;
+// A big map's god view works where you aim (Minecraft's simulation distance follows the player; an editor's
+// player is its cursor): a press anywhere on the map brings physics' window there (workFocus, world cells
+// [x, z], wire/world.js godFocus), and it stays while you work there. It goes back to following the eye once
+// the eye has flown WORK_FOCUS_RELEASE windows' widths from where it was set.
+const WORK_FOCUS_RELEASE = 0.5;   // × the window's width: eye travel that hands the window back to the view
+// A press whose spot the window doesn't hold yet waits for it this long (the window walks WIN_STEP cells a
+// frame: across a 1024-cell island in about two seconds), then it's dropped and says so.
+const WORK_ARRIVAL_MS = 5000;
+let workFocus = null, workEye = null;
+let parked = null;        // a one-click, fill or shape press waiting for the window: { e, hover (world cells), at, released }
+let heldCenter = null;    // a click's brush centre (world cells) while its one paint waits for the window
+let heldAt = 0;
 const brushCenter = new THREE.Vector3();
 let brushValid = false;
 // The Wind tool blows the way the brush moves (TPT WIND.cpp takes the mouse's
@@ -1063,13 +1091,17 @@ function requestPick() {
   const skipLiquids = fromPov && skipPickLiquids();
   pickPending = true;
   const from = sim, o = sim.origin.clone(), revision = presentation.revision;
-  vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids).then((hit) => {
+  const whole = !fromPov && worldAim();   // (the whole map: its cell comes back in world cells)
+  (whole ? worldView.pick(ray.origin.clone().add(o), ray.direction) : vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids)).then((hit) => {
     pickPending = false;
     if (from !== sim || revision !== presentation.revision || skipLiquids !== skipPickLiquids()) return;   // a new grid/effect/tool since
     hover.valid = hit.valid;
-    if (hover.valid) {
+    if (hover.valid && whole) hover.cell.fromArray(hit.cell).sub(sim.origin);   // (window cells now; it may lie past the window)
+    else if (hover.valid) {
       pickedNow(hover.cell.fromArray(hit.cell), o);
       hover.valid = inWindow(hover.cell);
+    }
+    if (hover.valid) {
       hover.face = hit.face;
       hover.id = hit.id;
       hover.T = hit.T;
@@ -1083,8 +1115,15 @@ function requestPick() {
 // { valid, cell, face, id, T, P } like `hover`. visible: the ray is one on screen
 // (from the eye through a pixel), which a presentation effect bends: it walks the
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
-function pickRay(ro, rd, visible = false) {
+// whole: on a big map's god view, the whole map (worldAim): its cell may lie past the window.
+function pickRay(ro, rd, visible = false, whole = false) {
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
+  if (visible && whole && worldAim()) {
+    return worldView.pick(new THREE.Vector3().copy(ro).add(o), rd).then((hit) => {
+      const cell = new THREE.Vector3().fromArray(hit.cell).sub(sim.origin);
+      return { valid: from === sim && revision === presentation.revision && hit.valid, cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
+    });
+  }
   return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
     return { valid: from === sim && (!visible || revision === presentation.revision) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
@@ -1114,7 +1153,10 @@ function updateBrush() {
   }
   if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
   if (isBrush(settings.tool)) {
-    if (painting || shapeDrag) {
+    if (painting && releasePending && heldCenter) {
+      brushCenter.copy(heldCenter).sub(sim.origin);   // (a click's one paint, waiting for the window: where it was clicked)
+      brushValid = true;
+    } else if (painting || shapeDrag) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
     } else if (hover.valid) {
@@ -1122,7 +1164,10 @@ function updateBrush() {
       brushValid = true;
     }
   }
-  if(!mapKind.clampBrush && brushValid && !inWindow(brushCenter))brushValid=false;
+  // (a big map's god view: the brush goes anywhere on the map; the window follows a stroke, which paints once it's there)
+  const aimWorld = worldAim();
+  if (aimWorld && brushValid && (painting || shapeDrag)) workAt(brushCenter.x + sim.origin.x, brushCenter.z + sim.origin.z);
+  if(!mapKind.clampBrush && brushValid && !aimWorld && !inWindow(brushCenter))brushValid=false;
   if (brushValid && mapKind.clampBrush) clampToGrid(brushCenter);
   if (shapeDrag) {
     if (brushValid) shapeDrag.end.copy(brushCenter);
@@ -1142,7 +1187,7 @@ function updateBrush() {
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
 // Where the pointer's ray meets the paint plane (the height a press started at), if in the grid's window.
 function planePoint(out) {
-  return !!screenPlane(gridRay(), dragY, out) && (!mapKind.streamed || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
+  return !!screenPlane(gridRay(), dragY, out) && (!mapKind.streamed || worldAim() || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
 }
 
 // ---------------------------------------------------------------- TPT's editing tools (src/editing.js)
@@ -1969,7 +2014,7 @@ function stepFlySpeed(notches) {
 const FOCUS_CELLS = 32;
 async function focusCursor() {
   const from = sim, ray = gridRay();
-  const hit = await pickRay(ray.origin, ray.direction, true);
+  const hit = await pickRay(ray.origin, ray.direction, true, true);
   if (from !== sim || pov?.active) return;
   if (!hit.valid) { hud.toast('Nothing under the cursor to fly to', { kind: 'error' }); return; }
   rig.focus(cellInScene(hit.cell), FOCUS_CELLS * volume.matrixWorld.getMaxScaleOnAxis());
@@ -2031,6 +2076,21 @@ function press(e) {
     if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     return;
   }
+  if (worldAim()) {
+    // a big map: the window comes to the press (workAt); nothing under the cursor (the sky) paints nothing
+    if (!hover.valid) return;
+    workAt(hover.cell.x + sim.origin.x, hover.cell.z + sim.origin.z);
+    // a click, fill or shape on a spot the window doesn't hold yet waits for it (replayParked); a stroke starts
+    // now and paints once the window is there (the paint gate)
+    const stroke = !drawModeOf(e) && !isOneClick(settings.tool);
+    if (!stroke && !(inWindow(hover.cell) && windowAtRest())) {
+      parked = {
+        e: { button: 0, shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType, replay: true },
+        hover: { cell: hover.cell.clone().add(sim.origin), face: hover.face, id: hover.id, T: hover.T, P: hover.P }, at: performance.now(), released: false,
+      };
+      return;
+    }
+  }
   if (clickTool() !== null) return;
   // TPT's PropertyTool does nothing until its window holds a value that reads
   if (settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
@@ -2038,7 +2098,26 @@ function press(e) {
   const mode = drawModeOf(e);
   if (mode === 'fill' && fills(settings.tool)) { fillAt(); return; }
   if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(settings.tool);
-  if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
+  if (e.pointerType !== 'touch' && !e.replay) canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already; a replayed press's button may be up)
+}
+
+// The tools whose press is one click (clickTool), not a stroke.
+const isOneClick = (t) => t === SIGN_TOOL || t === LIGHTNING_TOOL || isSpawnerTool(t) || isBuild(t);
+// A parked press (press: a big map's click, fill or shape past the window) runs once the window holds its spot
+// and has come to rest, as if made there now; past WORK_ARRIVAL_MS it's dropped.
+function replayParked() {
+  if (!parked) return;
+  const cell = new THREE.Vector3().copy(parked.hover.cell).sub(sim.origin);
+  if (!inWindow(cell) || !windowAtRest()) {
+    if (performance.now() - parked.at > WORK_ARRIVAL_MS) { parked = null; hud.toast('The simulation didn\'t get there in time. Try again', { kind: 'error' }); }
+    return;
+  }
+  const p = parked;
+  parked = null;
+  Object.assign(hover, { valid: true, face: p.hover.face, id: p.hover.id, T: p.hover.T, P: p.hover.P });
+  hover.cell.copy(cell);
+  press(p.e);
+  if (p.released && shapeDrag) finishShape();
 }
 
 // A click with a one-click tool (a sign, lightning, a spawner, a construction)
@@ -2100,6 +2179,7 @@ function startStroke(tool) {
   strokeTool = tool;
   painting = true;
   strokePainted = releasePending = false;
+  heldCenter = null;
   windFromValid = false;
   pacer.wake();
 }
@@ -2140,8 +2220,12 @@ addEventListener('pointerup', (e) => {
   if (e.button !== 0) return;
   // a click shorter than the GPU's frame (its frames still in flight, B3)
   // has painted nothing yet: it paints once, on the next tick that runs
-  if (painting && !strokePainted) releasePending = true;
-  else painting = false;
+  if (parked) parked.released = true;
+  if (painting && !strokePainted) {
+    releasePending = true;
+    // a big map's click past the window: its one paint waits for the window, where it was clicked
+    if (worldAim() && brushValid && !inWindow(brushCenter)) { heldCenter = brushCenter.clone().add(sim.origin); heldAt = performance.now(); }
+  } else painting = false;
   if (shapeDrag) finishShape();
 });
 
@@ -2160,7 +2244,7 @@ function touchDown(e) {
   pointerInside = true;
   uiHover = false;
   const id = ++touchPress, ray = gridRay();
-  Promise.all([pickRay(ray.origin, ray.direction, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
+  Promise.all([pickRay(ray.origin, ray.direction, true, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
     if (touchPress !== id) return;
     touchPress = 0;
     Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P });
@@ -2678,6 +2762,7 @@ const frameHooks = {
     frameWires.compute((w) => frameMode === 'meshes' && !!w.scene);
     if (!blocks) vol.recordCensus(renderView);   // (the scanned textures of what is in the grid: gfx/materialCensus.js)
     vol.recordPicks();
+    worldView?.recordPicks();   // (a big map's god view aims at the whole map: gfx/worldView.js pick)
   },
   // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)
   opaque: (p) => {
@@ -2856,7 +2941,10 @@ function tick(now, renderOnly = false) {
       rig.update(dt);
       controls.update();
     }
+    if (workFocus && (!worldAim() || (!painting && !parked && !shapeDrag
+      && Math.hypot(eyeColumn()[0] - workEye[0], eyeColumn()[1] - workEye[1]) > WORK_FOCUS_RELEASE * sim.g.nx))) workFocus = null;
     for (const w of live) w.follow?.(ctx, dt);   // the world's window following the focus
+    replayParked();
     updatePresentation();   // (after the camera and the window: the bend is anchored beneath the eye)
     updateBrush();
 
@@ -2875,7 +2963,12 @@ function tick(now, renderOnly = false) {
         strokePainted = true;
       }
     } else windFromValid = false;
-    if (releasePending) painting = releasePending = false;   // (the button went up before this tick: its one paint)
+    // (the button went up before this tick: its one paint; a big map's click past the window waits for it there)
+    if (releasePending && heldCenter && !strokePainted && performance.now() - heldAt > WORK_ARRIVAL_MS) {
+      hud.toast('The simulation didn\'t get there in time. Try again', { kind: 'error' });
+      heldCenter = null;
+    }
+    if (releasePending && (strokePainted || !heldCenter)) { painting = releasePending = false; heldCenter = null; }
     }
   }
   prof.phase('sim');
@@ -3093,6 +3186,7 @@ function tick(now, renderOnly = false) {
     if (!found || !boxSea || found.sea !== boxSea.sea) boxSea = found;
   },
   get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
+  get workFocus() { return workFocus; },   // (the god view's work spot: wire/world.js godFocus)
   get villageFocus() { return villageFocus; },
   villageSpawn,
   withVillageFocus(at, valid, visit) {

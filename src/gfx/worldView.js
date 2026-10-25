@@ -45,7 +45,10 @@ import { WorldCopy } from '../world/worldCopy.js';
 import { WorldFields } from './worldFields.js';
 import { worldCopyWGSL } from '../shaders/world/copy.js';
 import { costify, costBinding, costLayoutEntry } from '../shaders/costView.js';
+import { worldPickFrag, WORLD_PICK_LAYOUTS } from '../shaders/world/pick.js';
+import { PickParams, PICK_BATCH, PICK_RESULT_BYTES } from '../shaders/render.js';
 
+const PICK_RING_SLOTS = 64;   // (gfx/volume.js's: rays in flight)
 const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits, importable in Node)
 const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 const xyz = (o) => [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0];
@@ -192,8 +195,70 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
   // has every level around the camera, not a few thousand bricks of them
   let primed = true;
 
+  // ---- the whole map's pick (shaders/world/pick.js): a big map's god view aims at what the far view draws too
+  // (app.js worldAim). Built on its first ray: a map that never asks compiles nothing. ----
+  const picker = (() => {
+    const kernel = gpu.kernel({
+      name: 'worldPick', code: worldPickFrag(sim.g), layouts: [sim.L.TABLES, worldCopy.layout, gpu.layout('WORLD_PICK', WORLD_PICK_LAYOUTS()[2])],
+      params: PickParams, workgroupSize: [PICK_BATCH, 1, 1], build: 'manual',
+    });
+    const ring = gpu.readback.ring(label('picks'), PICK_RESULT_BYTES, PICK_RING_SLOTS);
+    const group = gpu.bindGroup(kernel.groups[2], [{ binding: 0, resource: { buffer: ring.buffer } }], label('picks'));
+    return { kernel, ring, group, queue: [], scheduled: false };
+  })();
+  const failPicks = (e) => { for (const p of picker.queue.splice(0)) p.reject(e); };
+  const recordPicksQuietly = () => { try { view.recordPicks(); } catch { /* (the picks carry it) */ } };
+
   const view = {
     worldCopy, fields, light,
+    /** Whether pick() can run: the world copy built. */
+    get picks() { return !!worldCopy.bindGroup && !disposed; },
+    /**
+     * A flat ray through the whole map (world cells): the first non-gas cell, the world's floor, or a miss,
+     * as gfx/volume.js pick resolves them ({ valid, cell (world cells), face, id, T, P, life }). Queued and
+     * recorded with the frame's compute (recordPicks), or on its own in a microtask.
+     */
+    pick(ro, rd, skipLiquids = false) {
+      if (!view.picks) return Promise.reject(new Error('world pick: no world copy'));
+      const v3 = (v) => (Array.isArray(v) ? [...v] : [v.x, v.y, v.z]);
+      const p = new Promise((resolve, reject) => picker.queue.push({ ro: v3(ro), rd: v3(rd), skipLiquids, resolve, reject }));
+      if (!picker.scheduled) {
+        picker.scheduled = true;
+        queueMicrotask(() => { picker.scheduled = false; if (!disposed && picker.queue.length) recordPicksQuietly(); });
+      }
+      return p;
+    },
+    /** Records the queued rays into the open frame (PICK_BATCH a dispatch), as gfx/volume.js recordPicks. */
+    recordPicks() {
+      if (!picker.queue.length) return;
+      if (picker.kernel.state !== 'ready') { picker.kernel.build().then(recordPicksQuietly, failPicks); return; }
+      const copy = worldCopy.bindGroup;
+      if (!copy) { failPicks(new Error('world pick: no world copy')); return; }
+      while (picker.queue.length) {
+        const batch = picker.queue.splice(0, PICK_BATCH);
+        let slots;
+        try {
+          slots = batch.map(() => picker.ring.next());
+          const words = new Array(PICK_BATCH).fill(0);
+          slots.forEach((s, i) => { words[i] = s; });
+          picker.kernel.dispatch(gpu.frame, [1, 1, 1], {
+            bind: [sim.tables, copy, picker.group],
+            params: {
+              ro: batch.map((b) => [...b.ro, 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
+              warp: batch.map(() => [0, 0, 0, 1]), slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
+            },
+          });
+        } catch (e) {
+          for (const b of batch) b.reject(e);
+          failPicks(e);
+          throw e;
+        }
+        batch.forEach((b, i) => picker.ring.read(slots[i]).then((bytes) => {
+          const f = new Float32Array(bytes);
+          b.resolve({ valid: f[3] >= 0, cell: [f[0], f[1], f[2]], face: f[3], id: Math.round(f[4]), T: f[5], P: f[6], life: f[7], raw: f });
+        }, b.reject));
+      }
+    },
     /** W's build (the whole map, before the first frame). */
     ready,
     /** Builds the world copy from a loaded window (a big map), or a simulation (a small map). */
@@ -437,6 +502,8 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       groups.clear();
       gbs.splice(0).forEach((b) => Object.values(b.tex).forEach((t) => t.destroy?.()));
       gb = null;
+      failPicks(new Error('world view disposed'));
+      picker.ring.close();
       worldCopy.dispose?.();
       fields.dispose?.();
       light.dispose?.();
