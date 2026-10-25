@@ -365,7 +365,9 @@ Adding Xcode's separate **Metal GPU Counters** instrument (`--instrument 'Metal 
 Attaching and recording all processes give the same Metal tables, which are
 system-wide either way, so the tool always filters to the pid.
 
-## Capture (`--capture`, on branch tools/profiler-truth; not on main yet)
+## Capture (`--capture`)
+
+A game map's capture boots slower under Apple's capture layer (Lab 12 s instead of 3.6 s), so it needs the lead's long slot: `TPT_LEAD_LONG_SLOT=1 node tools/profile.mjs --map lab --capture --no-cost --frozen --frames 12 --warmup 4` (Lab and Island worked, 2026-10-25). The heat maps come from the costliest draws by gpudebug's ranking, which may be a small warm-up draw rather than the full-screen pass.
 
 Apple's own answer to "what does one pass cost and why" is a GPU capture replayed with one pass at a time on the GPU. `tools/gpu-capture.mjs` does it from the command line (Xcode 27.1's `gpucapture` and `gpudebug`; research/apple-metal/KNOWLEDGE.md 4A):
 
