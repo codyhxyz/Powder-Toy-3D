@@ -39,7 +39,7 @@ import { materialTextures } from './materialTextures.js';
 // lead swaps them for world/worldCopy.js WorldCopy, gfx/worldFields.js WorldFields and
 // gfx/worldLight.js WorldLight at integration (same constructors and methods).
 import { WorldLight } from './worldLight.js';
-import { worldFieldsWGSL, fieldsBindingsWGSL, FIELDS_BINDINGS } from '../shaders/world/fields.js';
+import { worldFieldsWGSL, fieldsBindingsWGSL, FIELDS_BINDINGS, fieldClipFor, fieldFocus } from '../shaders/world/fields.js';
 import { RENDER_LAYOUT } from '../shaders/bindings.js';
 import { WorldCopy } from '../world/worldCopy.js';
 import { WorldFields } from './worldFields.js';
@@ -70,7 +70,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     throw err;
   });
   if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
-  const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES });
+  // F's level 0 is physics' window's box at a texel a cell (fieldClipFor), centred on it (update: fieldFocus)
+  const win = [sim.g.nx, sim.g.ny, sim.g.nz];
+  const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES, ...fieldClipFor(size, win) });
   const light = new WorldLight(gpu, worldCopy, fields, {
     copyWGSL: worldCopyWGSL(), fieldsWGSL: `${fieldsBindingsWGSL(2)}\n${worldFieldsWGSL()}`, fieldsBindings: FIELDS_BINDINGS, mediaNoise: volume.mediaNoiseView,
   });
@@ -322,7 +324,10 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       worldCopy.recordWriteback(frame, sim, boxes);
       const changes = worldCopy.changesSince ? worldCopy.changesSince(rev) : [];
       const eye = camera ? camera.position.clone().applyMatrix4(last.model.clone().invert()).toArray() : null;
-      if (!primed && eye && worldCopy.bindGroup) { fields.prime(frame, eye); primed = true; } else if (eye) fields.update(frame, eye, changes);
+      // F follows physics' window, not the eye: the march's full detail is the window's box (a god view's eye
+      // is often past level 0's reach of it, which read the window's thin walls from coarse levels: gone)
+      const focus = fieldFocus(xyz(sim.origin), win);
+      if (!primed && eye && worldCopy.bindGroup) { fields.prime(frame, focus); primed = true; } else if (eye) fields.update(frame, focus, changes);
       // L's writers read the tables and FrameUniforms in world cells (group 0 without the march's extras)
       lightFrame ??= gpu.bindGroup(gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
         { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } }], label('light frame'));

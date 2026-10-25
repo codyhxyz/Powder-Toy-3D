@@ -861,6 +861,9 @@ export const FAR_VIEW = {
   OVERLAP: BRICK,          // the march's span past the window's near face before it is left out: one far brick, so
                            // where the coarse ground stands off the fine one at the face, the far hit fills the pixel
                            // the world march leaves (it draws nothing that comes in through the ground: march.js)
+  SEA_SLIVER: 2.0,         // cells under the flat sea a ray may leave the window and still have crossed the window's
+                           // water surface just past its face (that surface's top cell part filled, its field's iso):
+                           // the world march stops at the face, so the sea it crossed fills the pixel (farFrag)
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
   NORMAL_STEP: 2.0,        // the normal's difference step (half a brick)
@@ -995,6 +998,7 @@ const FAR_MAX_STEPS: i32 = ${L.size.reduce((n, side) => n + side / BRICK, 16)};
 const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
 const FAR_OVERLAP_CELLS: f32 = ${glf(FAR_VIEW.OVERLAP)};
 const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
+const FAR_SEA_SLIVER: f32 = ${glf(FAR_VIEW.SEA_SLIVER)};
 const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
@@ -1375,6 +1379,12 @@ struct FarOut {
       // In its water: that water's body past the wall, so the window's water
       // carries on past its side.
       if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
+      // (the world march's frames: it crossed the sea inside the window and leaves it just under it, past a
+      // window water surface a hair under the flat sea, where the march stopped at the face (a thin dark line
+      // along the window's far faces): that sea's surface, at the exit's depth, so the march's water stays in front)
+      else if (P.march != 0u && !plain && seaWin && tSea < tHit && level - p.y <= FAR_SEA_SLIVER) {
+        col = farLiquid(ps, farDirection(rd, tSea), E_WATER, farSunLit(ps, 0), -1.0);
+      }
       else { col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0); }
     } else {
       let sunVis = farSunLit(p, 0);

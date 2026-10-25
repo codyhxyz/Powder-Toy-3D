@@ -60,7 +60,8 @@ const roundUp = (n, m) => Math.ceil(n / m) * m;
  * @returns {{ texels: number, levels: { k: number, s: number, rows: number, band: number, worldTexels: number[],
  *   worldBricks: number[], clipBricks: number[] }[], rows: number, thinRows: number, n: number }}
  */
-export function fieldClipPlan(world, { texels = FIELD_CLIP_TEXELS, rows = FIELD_CLIP_ROWS, thinLevels = FIELD_THIN_LEVELS } = {}) {
+export function fieldClipPlan(world, { texels = FIELD_CLIP_TEXELS, rows = FIELD_CLIP_ROWS, thinLevels = FIELD_THIN_LEVELS,
+  transition0 = FIELD_TRANSITION } = {}) {
   if (texels % WC_BRICK || rows % WC_BRICK) throw new Error('fieldClipPlan: the clip is whole bricks');
   let n = 1;
   while (texels * 2 ** (n - 1) < Math.max(world[0], world[2]) || rows * 2 ** (n - 1) < world[1]) n++;
@@ -75,8 +76,26 @@ export function fieldClipPlan(world, { texels = FIELD_CLIP_TEXELS, rows = FIELD_
     band += r + 1;   // (the guard row)
     if (k < thinLevels) thinRows = band;
   }
-  return { texels, levels, rows: band, thinRows, n };
+  return { texels, levels, rows: band, thinRows, n, transition0 };
 }
+
+/**
+ * Level 0's size for physics' window (docs/seamless-world.md, "work parity": full detail is the window's box,
+ * live's derived fields' region): fieldClipPlan's texels and rows, so level 0, centred on the window
+ * (fieldFocus), holds all of it at a texel a cell. Along an axis the window spans the world (a small map's
+ * box, the Island's height) the clip holds the world; elsewhere the window and, on each side, the brick ring a
+ * clip keeps out of what it holds (gfx/worldFields.js usable) and FIELD_FILTER_MARGIN. Level 0 then needs no
+ * transition band (transition0 0): the march reads it inside the window only, and the far view takes over at
+ * the window's faces, inside level 0's. Never less than the defaults.
+ * @param {number[]} world [x, y, z] cells
+ * @param {number[]} win physics' window [nx, ny, nz] cells
+ */
+export function fieldClipFor(world, win) {
+  const need = (i) => roundUp(win[i] >= world[i] ? world[i] : win[i] + 2 * (WC_BRICK + FIELD_FILTER_MARGIN), WC_BRICK);
+  return { texels: Math.max(FIELD_CLIP_TEXELS, need(0), need(2)), rows: Math.max(FIELD_CLIP_ROWS, need(1)), transition0: 0 };
+}
+/** F's focus (world cells): physics' window's centre, so level 0 holds the window (fieldClipFor). */
+export const fieldFocus = (origin, win) => origin.map((v, i) => v + win[i] / 2);
 
 /** A level's clip origin (level bricks) for the camera at world cell `cam`: centred, clamped into the world. */
 export function clipOrigin(level, cam) {

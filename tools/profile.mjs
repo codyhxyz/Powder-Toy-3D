@@ -269,7 +269,11 @@ async function main() {
     }
     // a pose that stalls ends the poses, not the run: the ones captured still report, and the stall is said
     for (let i = 0; i < o.poseSpecs.length; i++) {
-      try { runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]]))); }
+      try {
+        runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]])));
+        // --shot: each pose's frame as the player sees it after its capture (frame-<i>-<pose>.png: a picture pair per pose for an A/B)
+        if (o.shot) { mkdirSync(o.out, { recursive: true }); writeFileSync(join(o.out, `frame-${i}-${o.poseSpecs[i].name}.png`), await page.screenshot()); }
+      }
       catch (e) {
         if (!runs.length) throw e;
         slot.poseError = `pose ${i} (${o.poseSpecs[i].name}): ${e.message.split('\n')[0]}`;
@@ -278,8 +282,6 @@ async function main() {
       }
     }
     log('captured');
-    // --shot: the frame as the player sees it after the capture (frame.png: a picture pair for a change's A/B)
-    if (o.shot) { mkdirSync(o.out, { recursive: true }); writeFileSync(join(o.out, 'frame.png'), await page.screenshot()); }
     // the GPU counters: end the recording now, but parse the trace (10-60 s of CPU) only after the browser
     // has closed, so the GPU slot isn't held during it (tools/gpu-counters.mjs)
     if (counters) { countersDone = counters.stop(); countersDone.catch(() => {}); counters = null; }

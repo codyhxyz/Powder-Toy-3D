@@ -42,6 +42,7 @@ export const FIELD_GROW_SEED = 4;
 /** Jobs a frame may record (each is ~9 dispatches): a frame of small jobs stops here. */
 export const FIELD_JOBS_PER_FRAME = 16;
 const STAMP_MAX = 0xffff;   // the slot map's stamp is 16 bits
+const FIELD_TRANSITION_NONE = 1e-3;   // cells: a level without a transition band (fieldPick divides by its width)
 
 // ---- boxes, in level bricks, hi exclusive ----
 const EMPTY = Object.freeze({ lo: [0, 0, 0], hi: [0, 0, 0] });
@@ -219,7 +220,8 @@ export function fieldClipValues(plan, levels, world) {
     if (!L) { band.push([0, 1, 1, 0]); lo.push([FIELD_FAR, FIELD_FAR, FIELD_FAR, 1]); hi.push([-FIELD_FAR, -FIELD_FAR, -FIELD_FAR, 0]); continue; }
     const { s, rows, band: row, worldBricks } = L.level, V = L.valid, cells = WC_BRICK * s, m = FIELD_FILTER_MARGIN * s;
     band.push([row, rows, s, 0]);
-    const width = FIELD_TRANSITION * plan.texels * s;
+    // (level 0 sized to physics' window has none: fieldClipFor; FIELD_TRANSITION_NONE keeps fieldPick's divide finite)
+    const width = Math.max((k === 0 ? plan.transition0 ?? FIELD_TRANSITION : FIELD_TRANSITION) * plan.texels * s, FIELD_TRANSITION_NONE);
     if (boxEmpty(V)) { lo.push([FIELD_FAR, FIELD_FAR, FIELD_FAR, width]); hi.push([-FIELD_FAR, -FIELD_FAR, -FIELD_FAR, 0]); continue; }
     lo.push([...V.lo.map((v) => (v <= 0 ? -FIELD_FAR : v * cells + m)), width]);
     hi.push([...V.hi.map((v, i) => (v >= worldBricks[i] ? FIELD_FAR : v * cells - m)), 0]);
@@ -240,11 +242,11 @@ export class WorldFields {
     // W's WGSL and the element tables' group: opts, the world copy, or set once on the class
     // (WorldFields.copyWGSL = worldCopyWGSL), so (gpu, worldCopy) is enough once wired
     const { copyWGSL = worldCopy?.wgsl ?? worldCopy?.copyWGSL ?? WorldFields.copyWGSL, size = worldCopy?.size,
-      tables = worldCopy?.tables ?? gpu.tables ?? null, smoothing = 1, budget = FIELD_BRICKS_PER_FRAME, texels, rows } = opts;
+      tables = worldCopy?.tables ?? gpu.tables ?? null, smoothing = 1, budget = FIELD_BRICKS_PER_FRAME, texels, rows, transition0 } = opts;
     if (!copyWGSL) throw new Error('WorldFields: no world copy WGSL (WorldFields.copyWGSL = shaders/world/copy.js worldCopyWGSL)');
     if (!size) throw new Error('WorldFields: no world size (worldCopy.size)');
     Object.assign(this, { gpu, worldCopy, tables, smoothing, budget, size: [...size] });
-    const plan = (this.plan = fieldClipPlan(this.size, { texels, rows }));
+    const plan = (this.plan = fieldClipPlan(this.size, { texels, rows, transition0 }));
     const lay = (this.layout = fieldWorkLayout(plan, budget));
     this.levels = plan.levels.map((l) => new ClipLevel(l, lay));
     this.frameNo = 0;
