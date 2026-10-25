@@ -158,7 +158,7 @@ const DEFAULTS = {
   view: 0, camSpeed: 1, upscale: 'quality', spawnBar: true, dockCollapsed: false,
   gender: 'male', character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
-  nearGI: true, glowLights: true, caustics: true,
+  nearGI: true, glowLights: true, caustics: true, reflections: true, bending: true,
   ...detailDefaults(),
   profiler: false,
 };
@@ -171,7 +171,7 @@ const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
 REDUCED_MOTION.addEventListener('change', () => wakeLoop());
 const MOBILE_DEFAULTS = {
-  nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
+  nearGI: false, glowLights: false, caustics: false, reflections: false, bending: false, upscale: 'performance',
   ...Object.fromEntries(DETAIL.map((f) => [settingKey(f), false])),
 };
 if (MOBILE) Object.assign(DEFAULTS, MOBILE_DEFAULTS);
@@ -186,7 +186,7 @@ const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'spawnBar', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
-  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
+  'nearGI', 'glowLights', 'caustics', 'reflections', 'bending', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -600,7 +600,8 @@ function build(savedWorldSize = null) {
   owner.integrationReady.then(() => wakeLoop(), () => {});
   derived = new Derived(sim);
   blocksOn = plainView();
-  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance });
+  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance,
+    onVariant: () => pacer.wake() });   // (the rich optics' variant: gfx/opticsScan.js)
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: mapKind.streamed });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -1602,7 +1603,11 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
         fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
       // each costs GPU time; turning one off restores the softer probe-only light
-      ...[['nearGI', 'Contact Shadows'], ['glowLights', 'Lava Lights'], ['caustics', 'Caustics']]
+      // (Reflections and Light bending: the user asked for these two switches, 2026-10-24; Off
+      // shows the environment in place of a traced reflection and looks straight through water
+      // and glass with a small nudge in place of bending the ray: gfx/liquid.js reflectDefer, opticsBend)
+      ...[['nearGI', 'Contact Shadows'], ['glowLights', 'Lava Lights'], ['caustics', 'Caustics'],
+        ['reflections', 'Reflections'], ['bending', 'Light bending']]
         .map(([key, label]) => ({ type: 'seg', key, options: [[true, `${label}: On`], [false, 'Off']],
           onChange: (v) => { settings[key] = v; save(); } })),
     ] },
@@ -2558,6 +2563,7 @@ const frameHooks = {
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
     frameWires.compute((w) => frameMode === 'meshes' && !!w.scene);
+    if (!blocks) vol.recordCensus(renderView);   // (the scanned textures of what is in the grid: gfx/materialCensus.js)
     vol.recordPicks();
   },
   // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)
@@ -2889,6 +2895,8 @@ function tick(now, renderOnly = false) {
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
+    gfxUniforms.uReflections.value = settings.reflections;
+    gfxUniforms.uBending.value = settings.bending;
     frameDerived = runDerived;
     post.render(frameHooks, camera, null, dt, { viewmodel: ctx.viewmodel, glow: ctx.glow });   // its passes after the scene count as 'post'
     // (a mesh-only frame doesn't measure what rendering costs: auto resolution skips it)

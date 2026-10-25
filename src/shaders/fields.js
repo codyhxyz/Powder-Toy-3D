@@ -4,6 +4,8 @@ import { blendFixedFrames } from '../gfx/pacing.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { JOIN_REACH } from './gfx/liquidDetail.js';
+import { FULL } from '../v2/layout.js';
+import { filmCellsWGSL } from './gfx/film.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -29,6 +31,19 @@ import { JOIN_REACH } from './gfx/liquidDetail.js';
 //    centre instead of blurring away: lone grains and droplets, one-cell
 //    trunks, films, streams. Ghosts of cells that moved on hold no matter now,
 //    so they still fade with the EMA.
+//
+// Liquids (liquidFillWGSL): V2 keeps each liquid cell's exact fill, which the
+// draw's reader dithers to whole cells or none (shaders/compact.js), so a
+// spill of part-full cells came out as a scatter of whole cells, each boosted
+// into a ball 30 cm across. The fields read the fill instead: a liquid cell
+// resting on something fills its channel by its fill (the EMA), so a pool's
+// top cell at fill f puts the level surface f into the cell and a thin spill
+// stays one continuous film; and the boost sizes a liquid feature by the most
+// any of its cells holds (gfx/materials.js DROP_RADIUS_K, FILM_MIN_CELLS),
+// so a parcel in the air is a drop of its own volume, not a cell-sized bead.
+// Liquid in the air stays whole in the EMA (the boost sizes it), so pours and
+// streams read as before. A film (liquid on a floor thinner than the fields
+// can show, shaders/gfx/film.js) is left out of them: the tracer draws it.
 //
 // Pours (jetWGSL): the sim pours a stream as parcels a few cells apart along
 // one path, which drawn as they are make a dotted line of glass beads. While
@@ -331,6 +346,29 @@ fn jetAt(p: vec3i) -> bool {
   return false;
 }`;
 
+// ---- liquids' fill (the header's Liquids paragraph) ----
+// After the prelude and materialsGLSL. fetchNativeCore reads 0 where the state
+// isn't V2's (format 0), and then every liquid is whole, as before.
+const liquidFillWGSL = /* wgsl */ `
+const FILL_FULL: f32 = ${FULL}.0;   // a whole cell of liquid in V2's fill units (v2/layout.js FULL)
+// (liquid id, fill in cells) at c: V2's exact fill, also of a part-full cell
+// the draw's dither leaves out; (-1, 0) where c holds no liquid
+fn liquidAt(c: vec3i) -> vec2f {
+  let core = fetchNativeCore(c);
+  let id = i32(core.x & 255u);
+  if (KIND(id) != K_LIQUID) { return vec2f(-1.0, 0.0); }
+  return vec2f(f32(id), f32(core.y & 0xffffffu) / FILL_FULL);
+}
+// does the cell at p rest on something: the box's floor, matter or liquid (not air or a gas)
+fn restsOn(p: vec3i) -> bool {
+  let q = p - vec3i(0, 1, 0);
+  if (!inGrid(q)) { return true; }
+  if (liquidAt(q).y > 0.0) { return true; }
+  let id = eid(fetchA(q));
+  return id != E_EMPTY && MEDIACH(id) < 0;
+}
+${filmCellsWGSL}`;
+
 // ---- 1. the EMA ----
 // emaS, emaM: each channel's blend weight (CHANNELS[i].ema, MEDIA[i].ema);
 // reset: every cell starts over at its target (a load, a new smoothing:
@@ -340,6 +378,7 @@ export const fieldEmaFrag = (g, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${dirtyListsWGSL(g)}
+${liquidFillWGSL}
 // Rubble (STONE) is a heap of chips up to ~11 cm, so its surface is lumpy at
 // the cell's scale, not smooth like sand: each cell fills its channel by a
 // share of its own (from its seed, so it moves with the cell), and the blurred
@@ -356,7 +395,9 @@ ${EmaParams.wgsl}
 ${jetWGSL(JET_BINDING.JET)}
 ${listMainWGSL('LIST_EMA')}
   let a = fetchAs(s);
-  let id = eid(a);
+  let liq = liquidAt(p);
+  var id = eid(a);
+  if (liq.y > 0.0) { id = i32(liq.x); }
   var sv = vec4f(0.0);
   var m = vec4f(0.0);
   let ch = SURFCH(id);
@@ -365,6 +406,11 @@ ${listMainWGSL('LIST_EMA')}
   if (ch >= 0) {
     var v = 1.0;
     if (id == E_STONE) { v = 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH); }
+    // resting liquid by its fill: the blur of a column's box-filtered top
+    // crosses ISO within ~0.03 cells of the true level (tools/water-look-check.mjs's
+    // fixtures; the Gaussian is symmetric about a half-full cell)
+    if (liq.y > 0.0 && restsOn(p)) { v = min(liq.y, 1.0); }
+    if (filmAt(p).y > 0.0) { v = 0.0; }   // (a film: the tracer's, gfx/film.js)
     sv[ch] = v;
   }
   if (md == MD_SMOKE) { m.x = clamp(a.z, 0.0, 1.0); }
@@ -448,7 +494,8 @@ export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32
 export const fieldBoostFrag = (g, stage, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, stage === 0 ? STATE_OPTS.STATE_RO : { state: false })}
 ${dirtyListsWGSL(g)}
-${stage === 0 ? materialsGLSL() : ''}
+${stage === 0 ? `${materialsGLSL()}
+${liquidFillWGSL}` : ''}
 ${BoostParams.wgsl}
 @group(3) @binding(1) var<uniform> P: BoostParams;
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
@@ -468,8 +515,13 @@ ${listMainWGSL('LIST_WORK')}${coverWGSL('boost')}
     var w = 0.5 * (1.0 - P.s);
     if (i == 0) { w = P.s; }
 ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(src[SLOTS + t]));
-    let ch = SURFCH(eid(fetchAs(t)));
-    if (ch >= 0) { occ[ch] = 1.0; }
+    // the occupancy: 1, or as much as a liquid cell holds
+    let lq = liquidAt(q);
+    var cid = eid(fetchAs(t));
+    var share = 1.0;
+    if (lq.y > 0.0) { cid = i32(lq.x); share = select(min(lq.y, 1.0), 0.0, filmAt(q).y > 0.0); }
+    let ch = SURFCH(cid);
+    if (ch >= 0) { occ[ch] = max(occ[ch], share); }
     if (jetAt(q)) { occ.x = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);
     occ = max(occ, unpack4x8unorm(src[SLOTS + t]));`}
   }
@@ -492,6 +544,7 @@ export const fieldPeakFrag = (g, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${dirtyListsWGSL(g)}
+${liquidFillWGSL}
 ${PeakParams.wgsl}
 @group(3) @binding(1) var<uniform> P: PeakParams;   // bulk: each channel's bulk peak
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
@@ -510,9 +563,22 @@ ${listMainWGSL('LIST_FIELDS')}
       }
     }
   }
-  let occ = unpack4x8unorm(src[SLOTS + s]);   // stage 2's, passed along
-  let k = max(vec4f(1.0), P.bulk / max(acc, vec4f(THIN_MIN_PEAK)));
-  let boosted = step(vec4f(0.5), occ);
+  let occ = unpack4x8unorm(src[SLOTS + s]);   // stage 2's, passed along: the most a cell of the 3³ holds now
+  // The radius the feature's surface sits at (gfx/materials.js DROP_RADIUS_K):
+  // a drop of its fill's volume in the air, a film's top f above its base
+  // resting on something, never past THIN_RADIUS (whole cells: matter, a
+  // full parcel, a pour's rope keep it).
+  let held = max(occ, vec4f(FILL_EPS));
+  let r = min(select(DROP_RADIUS_K * pow(held, vec4f(1.0 / 3.0)), max(held, vec4f(FILM_MIN_CELLS)) - 0.5, restsOn(p)),
+              vec4f(THIN_RADIUS));
+  // The peak that puts it there: the bulk peak at THIN_RADIUS, ISO at the
+  // centre, and between them as the cubic B-spline falls from a peak
+  // (quadratically near it: bspline3 is 1 - 3x²/2 + 3|x|³/4 of its peak,
+  // gfx/materials.js; exact at both ends), mirrored under the centre.
+  let rr = r * abs(r) / (THIN_RADIUS * THIN_RADIUS);
+  let bulk = ISO_LEVEL / (1.0 - (1.0 - ISO_LEVEL / P.bulk) * rr);
+  let k = max(vec4f(1.0), bulk / max(acc, vec4f(THIN_MIN_PEAK)));
+  let boosted = step(vec4f(FILL_EPS), occ);
   let phi = vec4f(unpack2x16float(blurred[s]), unpack2x16float(blurred[SLOTS + s]));
   let med = vec4f(unpack2x16float(blurred[2u * SLOTS + s]), unpack2x16float(blurred[3u * SLOTS + s]));
   var surf = phi * mix(vec4f(1.0), k, boosted);

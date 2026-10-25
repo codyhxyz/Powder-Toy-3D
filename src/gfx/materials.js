@@ -31,11 +31,13 @@
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
 //          wherever matter's light is used (emission(), below).
 
-import { ELEMENTS, K } from '../elements.js';
+import { ELEMENTS, K, WATER_SCATTER, SALT_SCATTER_GAIN } from '../elements.js';
 import { bandGlow, LUMA_709 } from './incandescence.js';
 import { FLAME_COLOR } from './lamps.js';
 import { accessorsWGSL } from '../shaders/hostStruct.js';
 import { glf as f } from '../glsl.js';
+import { CELL_M } from '../scale.js';
+import { TEXTURE_SET } from './textureSet.js';
 
 // sRGB decoding (IEC 61966-2-1)
 const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
@@ -196,6 +198,33 @@ export const MEDIA_NOISE_CELLS = 64;
 //          albedo swing, warm/cool hue swing, roughness swing (each per unit
 //          of a centred noise, p5..p95 about ±0.8) and the size of its patches as a
 //          multiple of MACRO_M there. Defaults by kind: MACRO_DEFAULT
+//   tex    a scanned texture (gfx/textureSet.js TEXTURE_SET id; Poly Haven,
+//          public/textures/CREDITS.md): the realistic view draws the photo
+//          (albedo, normal map, roughness), projected triplanar in the world,
+//          in place of the element's procedural pattern (shaders/gfx/surface.js
+//          matTextured), once the textures have loaded (gfx/materialTextures.js;
+//          until then, the procedural look). The photo is scaled so its mean is
+//          alb, the look's albedo (what the far view, GI and reflections draw
+//          the element with), and its roughness so its mean is rough; with no
+//          alb, alb is the photo's own mean.
+//   texM   metres one tile of the texture covers (default: the scan's real size)
+//   texN   the normal map's strength (default 1: as scanned)
+//   texHue the share of the photo's own hue kept (default 0: recoloured to alb
+//          channel by channel; 1: only its brightness is scaled to alb's).
+//          For a photo whose colours are the point (grass: dry and green
+//          blades), which a per-channel recolour turns into flat turf; the
+//          far view and GI keep drawing alb, so keep it small (scrap: 1, so
+//          its rust stays orange and its steel grey; its photo's alpha is
+//          a metal mask, tools/bake-material-textures.mjs METAL_MASK, that
+//          makes the rust a dielectric)
+//   texVary  break up the tile's repeat (shaders/gfx/surface.js matTextured:
+//          a second, offset read blended in by a low-frequency noise, Quilez's
+//          "texture repetition"): for what covers big surfaces, where a 1-2 m
+//          tile repeats visibly across a slope or up a trunk. Costs two more
+//          reads per projection, so only those that need it
+// A textured look's photo downloads once the element is in the map (the
+// census: gfx/materialCensus.js), not with the page; until then the
+// procedural look stands in.
 // Albedo sources (approximate, visible band): dry quartz sand 0.35-0.55, fresh
 // snow 0.85-0.95, concrete 0.25-0.4, wood ash 0.3-0.4, black powder ~0.04,
 // bark 0.05-0.15, leaves ~0.05/0.15/0.03, basalt 0.08-0.15, tan sandstone
@@ -203,6 +232,26 @@ export const MEDIA_NOISE_CELLS = 64;
 // (USGS spectral library, Clark et al. 2007). Metal F0 from measured complex
 // IORs (iron/steel 0.56-0.58, gold 1.0/0.77/0.34).
 const STEEL_F0 = [0.56, 0.57, 0.58];
+const SCRAP_ALB = [0.3, 0.27, 0.24];   // scrap's mean: scuffed steel and rust (SCRAP below)
+// Snow's photo keeps old footprints and tracks in its relief; fresh snow shows
+// them faintly at most (its albedo is flattened at the bake for the same reason).
+const SNOW_TEX_N = 0.5;
+// The meadow grass keeps a little of its photo's own hue (dry blades among the
+// green): at 0.6 its mean drifted to a pale olive (0.15, 0.17, 0.05 against
+// PLANT's 0.07, 0.19, 0.03) and parted from the far view's and GI's green; at
+// this it stays within ~0.02 of it.
+const GRASS_TEX_HUE = 0.15;
+// Sawdust is finer than the wood chips in its photo: the tile drawn at half its
+// scanned 2 m, so the chips are a few millimetres.
+const SAWDUST_TEX_M = 1;
+// The fuse's woven cord: its threads' relief drawn deeper than the scan's (its
+// albedo's contrast is raised 2.5x at the bake: ALBEDO_FLATTEN) and the tar a little
+// glossy, so the weave reads on so dark a cord.
+const FUSE_TEX_N = 2.5;
+const FUSE_ROUGH = 0.45;
+// An element's UI colour (elements.js color), for a textured look that keeps
+// it as its albedo (a textured look without alb takes its photo's mean).
+const uiColour = (key) => ELEMENTS.find((e) => e.key === key).color;
 // Play-distance variation (macro, above). Nothing was authored at the 0.3-4 m
 // the player looks at, so past a few metres every opaque material read as one
 // flat albedo (docs/v2/evidence/audit-render.md 2.1-2.3). The rule is
@@ -223,29 +272,35 @@ const MACRO_ROCK = { tone: 0.12, hue: 0.06, rough: 0.06, size: 1.5 };  // the CR
 const MACRO_NONE = { tone: 0, hue: 0, rough: 0, size: 1 };            // lava, crystal, void: their look is their own
 const MACRO_PARAMS = ['tone', 'hue', 'rough', 'size'];
 const LOOKS = {
-  WALL: { rough: 0.85, alb: '#8f8c87' },
-  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 } },
-  STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 } },
-  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 } },   // wind crust and drifts: gloss varies more than colour
-  GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
-  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3 },
-  // Liquids. Clean water absorbs red most (real ratios ~1 : 0.2 : 0.1 with a
-  // little dissolved matter) and scatters a little, mostly blue: clear when
-  // shallow, blue-green with depth. Both are exaggerated several-fold over
-  // real water so a tank-sized body still shows them. Oil is amber (absorbs
+  WALL: { rough: 0.85, alb: '#8f8c87', tex: 'concrete_wall_008' },
+  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 }, tex: 'dense_sand', texVary: true },
+  STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 }, tex: 'gray_rocks' },
+  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 }, tex: 'snow_02', texVary: true, texN: SNOW_TEX_N },   // wind crust and drifts: gloss varies more than colour
+  GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7, tex: 'dense_sand' },   // graphite glaze: a soft sheen, many glints (sand's grains, darkened)
+  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3, tex: 'moon_dusted_04', texVary: true },
+  // Liquids. Clean water absorbs red most and scatters a little, mostly
+  // blue: clear when shallow, blue-green with depth, at its measured strength
+  // (elements.js WATER_ABSORB_M, WATER_SCATTER_M); brine scatters a little
+  // more (SALT_SCATTER_GAIN) and absorbs the same. Oil is amber (absorbs
   // blue hardest), dark when thick. Acid is Noita's (elements.js ACID): it
   // scatters nearly all the green it stops (albedo ~0.95) and almost none of
   // the red and blue, so a body of it is a saturated, near-opaque lime; a
   // little rougher than water, so its sheen is broader and less of a mirror.
-  WATER: { ior: 1.333, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  WATER: { ior: 1.333, rough: 0.02, scatter: WATER_SCATTER },
   OIL: { ior: 1.47, rough: 0.03, scatter: [0.012, 0.008, 0.003] },
   ACID: { ior: 1.36, rough: 0.1, scatter: [0.09, 0.47, 0.02], emit: tintGlow(ACID_GLOW_TINT, ACID_GLOW_LUM) },
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522', macro: MACRO_NONE },   // its crust and glow are its own
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
-  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 } },
-  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 } },   // lush .. sun-dried patches
-  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },
+  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 }, tex: 'bark_brown_02', texVary: true },   // bark (end grain stays procedural)
+  // Sawn softwood boards, a little weathered (planed pine ~0.35-0.45 reflectance; aged boards darker):
+  // the scanned boards (Poly Haven brown_planks_04) where the photo has loaded, else shaders/gfx/surface.js matOf's planks branch
+  PLANKS: { ch: 'ORGANIC', rough: 0.7, alb: '#8c6f54', macro: { tone: 0.15, hue: 0.08, rough: 0.08, size: 0.6 }, tex: 'brown_planks_04' },
+  // (its photo is the meadows' grass alone, appearance GRASS: foliage stays procedural)
+  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true, texHue: GRASS_TEX_HUE },   // lush .. sun-dried patches
+  // Steel diamond plate (its scan's paint and rust greyed at the bake, so it
+  // reads as bare steel), keeping the brushed highlight (surf BRUSHED)
+  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED', tex: 'metal_plate' },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
   // Debris (elements.js breakInto): heaps of fragments, powders as TPT's BGLA,
   // SAWD and BRMT are. Crushed glass is near-white, as crushed ice is snow and
@@ -256,16 +311,20 @@ const LOOKS = {
   // fibrous and matte, light wrapping into the thin chips as into leaves.
   // Scrap is the same steel, torn and scuffed, glinting off its torn edges.
   SHARDS: { rough: 0.4, ior: 1.5, alb: '#dce8e6', sss: 0.45, glint: 0.9 },
-  SAWDUST: { rough: 0.95, sss: 0.25 },
-  SCRAP: { rough: 0.5, metal: 1, alb: STEEL_F0, glint: 0.6, surf: 'BRUSHED',
-    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 } },   // torn and scuffed: the brushing broken up, dull patches
+  SAWDUST: { rough: 0.95, sss: 0.25, alb: uiColour('SAWDUST'), tex: 'wood_chips', texM: SAWDUST_TEX_M },
+  // Its photo is rust-spotted steel: the rust is no metal (the photo's metal
+  // mask) and keeps its own colour (texHue 1), so alb is the heap's mean, dull
+  // steel and rust together (rust's ~0.2 drags it under bare steel's 0.56).
+  SCRAP: { rough: 0.5, metal: 1, alb: SCRAP_ALB, glint: 0.6, surf: 'BRUSHED',
+    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 }, tex: 'rusty_metal_02', texHue: 1 },   // torn and scuffed: the brushing broken up, dull patches
   // Ice shares the liquid surface: a clear surface between ice and water is
   // nearly invisible in real life too (n = 1.31 vs 1.33). Frozen ice is
   // cloudy (trapped air), so it scatters white and stays visible.
   ICE: { ch: 'LIQUID', ior: 1.31, rough: 0.06, scatter: [0.025, 0.025, 0.025] },
   CLONE: { rough: 0.25, metal: 1, alb: [1.0, 0.766, 0.336], surf: 'POLISHED' },   // polished gold
   // natural rock (terrain): weathered basalt, part of the natural-solids surface
-  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG', macro: MACRO_ROCK },
+  // The rocks' photos (tex) replace the CRAG pattern once loaded, as bark's does.
+  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG', macro: MACRO_ROCK, tex: 'dark_rock_02', texVary: true },
   // The other rocks share it (and its texture: surf CRAG, crag below).
   // Sandstone: quartz grains (n = 1.54, they glint like sand's) in a tan,
   // iron-stained cement, linear albedo ~0.45/0.33/0.2. Limestone: calcite
@@ -276,17 +335,17 @@ const LOOKS = {
   // (Glossier, it outshone the basalt beside it under a low sun.) Broken coal
   // shows the same faces fresh, glinting where they catch the sun.
   SANDSTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
-    crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
+    crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 }, tex: 'sandstone_cracks', texVary: true },   // rounded by weathering, bedded, iron-stained
   // Basalt: fresh lava rock, darker than ROCK's weathered face, its gas
   // bubbles frozen in as pits (vesicles), clinkery and unbedded (fresh flows
   // ~0.03-0.05 albedo, below the weathered 0.08-0.15).
   BASALT: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.9, alb: '#353331', surf: 'CRAG',
-    crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 } },
+    crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 }, tex: 'dark_rock', texVary: true },
   LIMESTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
-    crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
+    crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 }, tex: 'marble_rock_01', texVary: true },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
-    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
-  BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
+    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 }, tex: 'rock_face_04' },       // blocky cleat, bright and dull bands
+  BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5, tex: 'rock_face_04' },   // coal's own face, broken
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
   // growth faces (polished glass with faint growth marks). A cell
   // is drawn as a cluster of pointed prisms (shaders/gfx/crystal.js); their
@@ -301,28 +360,31 @@ const LOOKS = {
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
   // draws P and N; the switch a dark green relay; the insulator a pale,
-  // chalky aerogel blue; the sensor TPT's magenta.
-  BATTERY: { rough: 0.45, alb: '#6f6d1c' },
+  // chalky aerogel blue; the sensor TPT's magenta. The battery, switch and
+  // sensor are painted steel: one greyed scan of painted panels, painted each
+  // one's colour (the paint is no metal, so their metalness stays 0).
+  BATTERY: { rough: 0.45, alb: '#6f6d1c', tex: 'blue_metal_plate' },
   PSCN: { rough: 0.15, ior: 3.9, alb: '#5c4646' },
   NSCN: { rough: 0.15, ior: 3.9, alb: '#46465c' },
-  SWITCH: { rough: 0.4, alb: '#1d4a1f' },
+  SWITCH: { rough: 0.4, alb: '#1d4a1f', tex: 'blue_metal_plate' },
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
-  TSNS: { rough: 0.5, alb: '#c21aa6' },
+  TSNS: { rough: 0.5, alb: '#c21aa6', tex: 'blue_metal_plate' },
   LAMP: { rough: 0.5, ior: 1.5, alb: '#f4e6c4', sss: 0.5 },   // frosted bulb glass: its light is sparkEmit's (lampLit)
   PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14], surf: 'POLISHED', polished: { wave: 1, haze: 2 } },   // Clone's gold, tarnished: TPT draws it dark olive
   // Radioactive metals as powders: a metal powder is dark, since light is
   // trapped between the grains, with bright glints off the facets. Uranium
   // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
   // skin is dull olive-grey.
-  URANIUM: { rough: 0.55, alb: '#3f413b', glint: 0.5 },
-  PLUTONIUM: { rough: 0.6, alb: '#45493a', glint: 0.4 },
+  // Both draw sand's grains (dense_sand), darkened to their oxides.
+  URANIUM: { rough: 0.55, alb: '#3f413b', glint: 0.5, tex: 'dense_sand' },
+  PLUTONIUM: { rough: 0.6, alb: '#45493a', glint: 0.4, tex: 'dense_sand' },
   // Batch 3 (elements.js, el-mat). Void: matte black, a hole in the world.
   VOID: { rough: 1, alb: '#0d0809', macro: MACRO_NONE },
   // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
   // blue (USGS spectral library, fired clay); built, so crisp like Wall.
   // Crushed, it is paler: the broken faces scatter more.
-  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 } },   // weathered, sooted walls
-  RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09] },
+  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 }, tex: 'red_brick' },   // weathered, sooted walls
+  RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09], tex: 'brick_gravel' },
   // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
   // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
   // gold as Clone's, mercury ~0.75 flat (a liquid mirror).
@@ -348,12 +410,13 @@ const LOOKS = {
   // colourless, n = 1.199 (CRC); its boiling fills it with bubbles that
   // scatter a little. Saturated brine is water with n = 1.378 (CRC, 26 % NaCl).
   LIQUID_NITROGEN: { ior: 1.199, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
-  SALTWATER: { ior: 1.378, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  SALTWATER: { ior: 1.378, rough: 0.02, scatter: WATER_SCATTER.map((b) => +(b * SALT_SCATTER_GAIN).toPrecision(3)) },
   // Salt: clear halite cubes (n = 1.544) crushed white, albedo ~0.8, light
   // wrapping into the grains and glinting off their cube faces.
-  SALT: { rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
+  // The white powders (salt, dry ice, dust) draw snow's crust, as white and as fine.
+  SALT: { rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7, tex: 'snow_02', texN: SNOW_TEX_N },
   // Dry ice: pressed CO₂ snow, white and porous (n ~1.4), light bleeding into it.
-  DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5 },
+  DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5, tex: 'snow_02', texN: SNOW_TEX_N },
   // Lithium is silvery cut, but dulls in air within minutes (nitride, hydroxide):
   // a grey, rough metal.
   LITHIUM: { rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56], surf: 'BRUSHED', brushed: { aniso: 0.3, scale: 0, wear: 2 } },
@@ -368,13 +431,14 @@ const LOOKS = {
   // Kaolin is as white (ISO brightness 80-90%); mud is darker, as any wet
   // soil is (water in the pores cuts the scattering: about half the
   // reflectance; Lekner & Dorf, Appl. Opt. 27, 1988) and wet-glossy, drawn
-  // with lava's opaque-liquid surface. Ceramic is matte white bisque.
+  // with lava's opaque-liquid surface. Ceramic is fired and glazed: white tiles
+  // (its photo), glossy where a bisque would be matte.
   // Antimatter is a game substance: a pale lilac powder with a sheen, so it
   // reads apart from the other powders. The singularity reflects nothing.
-  DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
-  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 } },
-  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 } },   // wetter: darker and glossier patches
-  CERAMIC: { rough: 0.6, alb: '#efeae0' },
+  DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35, tex: 'snow_02', texN: SNOW_TEX_N },
+  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 }, tex: 'clay_plaster' },
+  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 }, tex: 'brown_mud_02' },   // wetter: darker and glossier patches
+  CERAMIC: { rough: 0.3, alb: '#efeae0', tex: 'long_white_tiles' },
   ANTIMATTER: { rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
   SINGULARITY: { rough: 1, alb: '#000000', macro: MACRO_NONE },
   // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
@@ -382,12 +446,13 @@ const LOOKS = {
   // yellow oil, n = 1.479. Cast TNT is pale yellow-brown, dull and crystalline.
   // Thermite is rust-red iron oxide with flecks of aluminium that glint. A
   // safety fuse is a tarred cord. Propane is invisible: it borrows steam's
-  // haze so you can see where it pools (a liberty).
-  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2 },
+  // haze so you can see where it pools (a liberty). The putty and cast TNT
+  // draw clay's smooth plaster; thermite coarse rust; the fuse woven jute.
+  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2, tex: 'clay_plaster' },
   NITRO: { ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
-  TNT: { rough: 0.7, alb: '#b9975a' },
-  THERMITE: { rough: 0.8, alb: '#6f4436', glint: 0.35 },
-  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424' },
+  TNT: { rough: 0.7, alb: '#b9975a', tex: 'clay_plaster' },
+  THERMITE: { rough: 0.8, alb: '#6f4436', glint: 0.35, tex: 'rust_coarse_01' },
+  FUSE: { ch: 'ORGANIC', rough: FUSE_ROUGH, alb: '#2a4424', tex: 'hessian_230', texN: FUSE_TEX_N },
   // Noita's liquids (elements.js), each tinted by its sigma and scatter: the
   // scattered share sets the colour a deep body shows. Blood is near opaque
   // (haemoglobin absorbs blue and green within a millimetre; red cells
@@ -406,9 +471,10 @@ const LOOKS = {
   POLYMORPHINE: { ior: 1.34, rough: 0.02, scatter: [0.015, 0.006, 0.012], emit: tintGlow('#ee6fcf', MAGIC_GLOW_LUM) },
   PHEROMONE: { ior: 1.34, rough: 0.02, scatter: [0.015, 0.004, 0.006], emit: tintGlow('#ff3d62', MAGIC_GLOW_LUM) },
   // Moss: a dark, matte green mat (moss reflects ~0.05-0.1 in the visible,
-  // greenest near 550 nm); light wraps into its leaves. Fungus: pale buff
-  // mycelium over the wood, glowing green (foxfire).
-  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3, macro: { tone: 0.3, hue: 0.35, rough: 0.05, size: 0.5 } },
+  // greenest near 550 nm); light wraps into its leaves. Its photo is moss
+  // clumps over a forest floor. Fungus: pale buff mycelium over the wood,
+  // glowing green (foxfire).
+  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3, macro: { tone: 0.3, hue: 0.35, rough: 0.05, size: 0.5 }, tex: 'forest_leaves_02', texVary: true },
   FUNGUS: { ch: 'ORGANIC', rough: 0.75, alb: '#c9c3a0', sss: 0.35, emit: FOXFIRE_GLOW, macro: { tone: 0.2, hue: 0.15, rough: 0.08, size: 0.4 } },
   // Meat (elements.js MEAT, COOKED_MEAT): raw lean muscle is wet (a glossy
   // surface, water's n = 1.33) and translucent, red with myoglobin (light
@@ -417,6 +483,14 @@ const LOOKS = {
   // Saturated past the measured values, as the Castle Crashers look wants.
   MEAT: { rough: 0.35, ior: 1.33, alb: '#b8424a', sss: 0.5 },
   COOKED_MEAT: { rough: 0.7, alb: '#6e4126', sss: 0.15 },
+  // Noita's terrain (elements.js NOITA_*) in the realistic view, each its
+  // UI colour (the mean of Noita's own texture): the rock scans, and the
+  // jungle's lush soil the moss's forest floor. The Noita view keeps its own
+  // pixel art (shaders/gfx/noita.js), which returns before any of this.
+  NOITA_SNOWROCK: { alb: uiColour('NOITA_SNOWROCK'), tex: 'marble_rock_01', texVary: true },
+  NOITA_VAULT: { alb: uiColour('NOITA_VAULT'), tex: 'dark_rock', texVary: true },
+  NOITA_TEMPLE: { alb: uiColour('NOITA_TEMPLE'), tex: 'sandstone_cracks', texVary: true },
+  NOITA_LUSH: { alb: uiColour('NOITA_LUSH'), tex: 'forest_leaves_02', texVary: true },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -451,6 +525,34 @@ const familyParams = (l) => {
   const v = f ? f.names.map((k) => (l[f.key] ?? f.def)[k] ?? f.def[k]) : [];
   return [...v, ...Array(SURF_P_LEN - v.length).fill(0)];
 };
+// A look's scanned texture (LOOKS tex): texMap (its first layer in the texture
+// array, or NO_TEX while its photo isn't there; tiles per cell; the photo's
+// mean roughness; the normal map's strength) and texTint (what scales the
+// photo's albedo to the look's mean, rgb; w: 1 to break up the repeat,
+// texVary). TEX_LAYERS: array layers per texture (albedo, surface:
+// gfx/materialTextures.js). The layer is the only value that changes after
+// the page loads: gfx/materialTextures.js places a photo when its element
+// shows up, then sets it here (setTexLayer, so tables built later carry it)
+// and in the element tables on the GPU.
+export const TEX_LAYERS = 2;
+export const NO_TEX = -1;
+const DEFAULT_TEX_NORMAL = 1;
+const luma = (c) => c.reduce((s, v, k) => s + v * LUMA_709[k], 0);
+const mix = (a, b, t) => a + (b - a) * t;
+const texOf = (key) => {
+  const i = TEXTURE_SET.findIndex((t) => t.id === key);
+  if (i < 0) throw new Error(`LOOKS tex: no texture ${key} (gfx/textureSet.js)`);
+  return { i, t: TEXTURE_SET[i] };
+};
+const texFields = (l, alb) => {
+  if (!l.tex) return { texAsset: NO_TEX, texMap: [NO_TEX, 0, 0, 0], texTint: [1, 1, 1, 0] };
+  const { i, t } = texOf(l.tex);
+  return {
+    texAsset: i,
+    texMap: [NO_TEX, +(CELL_M / (l.texM ?? t.tileM)).toFixed(ROUND_DIGITS), t.roughMean, l.texN ?? DEFAULT_TEX_NORMAL],
+    texTint: [...alb.map((v, k) => +(mix(v / t.mean[k], luma(alb) / luma(t.mean), l.texHue ?? 0)).toFixed(ROUND_DIGITS)), l.texVary ? 1 : 0],
+  };
+};
 const macroOf = (e, l) => {
   const m = l.macro ?? (l.metal ? MACRO_METAL : MACRO_DEFAULT[e.kind] ?? MACRO_NONE);
   return MACRO_PARAMS.map((k) => m[k] ?? MACRO_NONE[k]);
@@ -474,9 +576,12 @@ const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
 
 export const LOOK = ELEMENTS.map((e) => {
   const l = { ...KIND_LOOK[e.kind], ...LOOKS[e.key] };
+  // a textured look without its own albedo takes the photo's mean
+  const alb = linearOf(l.alb ?? (l.tex ? texOf(l.tex).t.mean : e.color)).map((v) => +v.toFixed(ROUND_DIGITS));
   return {
+    ...texFields(l, alb),
     ch: chIndex(l.ch), media: mediaIndex(l.media), haze: l.haze ?? 1, rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
-    alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(ROUND_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
+    alb, sss: l.sss ?? 0, glint: l.glint ?? 0,
     bevel: l.bevel ?? 1,
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(ROUND_DIGITS)),
     shed: l.shed ?? 1,
@@ -487,6 +592,31 @@ export const LOOK = ELEMENTS.map((e) => {
     scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(ROUND_DIGITS)),
   };
 });
+
+// The small maps' floor (shaders/gfx/surface.js floorAlb), a scanned look that
+// is no element's: plain sealed concrete, scuffed, a lab or workshop floor, scaled
+// in the shader to the floor's albedo (gfx/sky.js groundAlb, which GI and the
+// open ground around the box keep drawing). tiles: tiles per cell (the scan's
+// real size); mean: the photo's mean albedo; layer: its first layer in the
+// texture array, NO_TEX until it loads (the frame uniforms' floorTex:
+// gfx/uniforms.js), the flat floor until then. Wanted once a small map's view
+// draws scanned looks (gfx/volume.js recordCensus).
+const FLOOR_TEX_ID = 'concrete_floor_worn_001';
+export const FLOOR_TEX = (() => {
+  const { i, t } = texOf(FLOOR_TEX_ID);
+  return { asset: i, layer: NO_TEX, tiles: +(CELL_M / t.tileM).toFixed(ROUND_DIGITS), mean: t.mean };
+})();
+
+// The texture asset (gfx/textureSet.js index) element id draws from, or NO_TEX.
+export const texAssetOf = (id) => LOOK[id]?.texAsset ?? NO_TEX;
+// Asset `asset`'s photo now sits from array layer `layer` on (NO_TEX: gone):
+// every look drawing from it takes the layer. Returns the elements changed.
+export function setTexLayer(asset, layer) {
+  const ids = [];
+  LOOK.forEach((l, id) => { if (l.texAsset === asset) { l.texMap[0] = layer; ids.push(id); } });
+  if (asset === FLOOR_TEX.asset) FLOOR_TEX.layer = layer;
+  return ids;
+}
 
 // 5-tap Gaussian weights (offsets -2..2), normalised.
 export function gauss5(sigma) {
@@ -514,6 +644,23 @@ export const THIN_MIN_PEAK = 0.01;
 // ~0.05 cells of its cubic surface anyway, so shallow water stays cheap.
 export const THIN_MASK_LO = 1.8;
 export const THIN_MASK_HI = 3.0;
+
+// Liquid features as big as the water they hold (shaders/fields.js). V2
+// keeps each liquid cell's exact fill, so the boost sizes a thin liquid
+// feature by the most any cell of its 3³ holds instead of blowing every one
+// up to THIN_RADIUS: a cell in the air with fill f is a drop of its own
+// volume, radius cbrt(3f / 4π) cells (a lone full cell 0.62, capped at
+// THIN_RADIUS; a 1 % parcel 0.13 cells, 4 cm), and one resting on something
+// (the floor, matter, other liquid) is a film whose top sits f above its
+// cell's base, f - 1/2 from its centre (a signed radius: under the centre the
+// boost's peak goes below ISO). Over a floor the field reads at most ~1.09x
+// a film's centre (the box's edge clamps it, a crisp bed counts neither way),
+// so the fields draw resting water from FILM_MIN_CELLS up; a film thinner
+// than that, on a floor, is left out of them and drawn by the tracer at its
+// true thickness (shaders/gfx/film.js).
+export const DROP_RADIUS_K = Math.cbrt(3 / (4 * Math.PI));   // cells per cube root of fill: a sphere of the fill's volume
+export const FILM_MIN_CELLS = 0.7;   // cells (21 cm): the thinnest film the field shows over a floor (at 0.5 its peak sits on ISO)
+export const FILL_EPS = 1 / 255;
 
 // The local peak at or above which a feature needs no boost, for a blur with
 // 5-tap weights w. Along an axis the trilinear field falls from a lone cell's
@@ -565,6 +712,8 @@ const look = (e) => {
 export const MATERIAL_FIELDS = [
   { name: 'surfP', type: 'vec4f', fn: 'SURFP', get: (e) => look(e).surfP },   // the texture family's parameters (FAMILY_PARAMS)
   { name: 'macroVar', type: 'vec4f', fn: 'MACRO', get: (e) => look(e).macro },   // play-distance variation (tone, hue, rough, size)
+  { name: 'texMap', type: 'vec4f', fn: 'TEXMAP', get: (e) => look(e).texMap },   // scanned texture: first layer (-1: none), tiles per cell, mean roughness, normal strength
+  { name: 'texTint', type: 'vec4f', fn: 'TEXTINT', get: (e) => look(e).texTint },   // ...its albedo scale to the look's mean (rgb)
   { name: 'albedo', type: 'vec3f', fn: 'ALBEDO', get: (e) => look(e).alb },
   { name: 'surfCh', type: 'i32', fn: 'SURFCH', get: (e) => look(e).ch },
   { name: 'scatAlb', type: 'vec3f', fn: 'SCATALB', get: (e) => look(e).scatAlb },
@@ -704,6 +853,11 @@ export function materialsGLSL() {
     `const THIN_MIN_PEAK: f32 = ${f(THIN_MIN_PEAK)};`,
     `const THIN_MASK_LO: f32 = ${f(THIN_MASK_LO)};`,
     `const THIN_MASK_HI: f32 = ${f(THIN_MASK_HI)};`,
+    `const ISO_LEVEL: f32 = ${f(ISO)};`,
+    `const THIN_RADIUS: f32 = ${f(THIN_RADIUS)};`,
+    `const DROP_RADIUS_K: f32 = ${f(DROP_RADIUS_K)};`,
+    `const FILM_MIN_CELLS: f32 = ${f(FILM_MIN_CELLS)};`,
+    `const FILL_EPS: f32 = ${f(FILL_EPS)};`,
     `const SPARK_GLOW: vec3f = ${vec3(SPARK_GLOW.map((v) => +v.toFixed(ROUND_DIGITS)))};`,
     `const LAMP_ROOM_GAIN: f32 = ${f(LAMP_ROOM_GAIN)};`,
     `const LAMP_GLOW: vec3f = ${vec3(LAMP_GLOW.map((v) => +v.toFixed(ROUND_DIGITS)))};`,

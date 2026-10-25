@@ -6,6 +6,7 @@ export const shadowOpticsWGSL = () => /* wgsl */ `
 const SHADOW_TAU_MAX: f32 = SHADOW_TINT_ID_SCALE - 1.0;
 const SHADOW_NO_HIT: f32 = 1e5;        // depth stored where nothing is hit: past any receiver
 const SHADOW_MEDIA_MIN_K: f32 = 1e-4;  // gas with less transport extinction (1/cell) casts nothing
+const SHADOW_PANE_COS_MIN: f32 = 0.05; // a pane's path is cut at this cosine (edge-on: a long sliver, not infinite)
 // The texel's ray (ro, rd) through the box: (opaque depth, translucent start,
 // translucent end, tint id · scale + optical depth).
 fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
@@ -29,6 +30,8 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   var hit = false;
   var phiA = surfSample(ro + rd * tEnter);
   var phiStale = false;
+  var gPrev = E_EMPTY;   // the glass the last cell held (its shape kept through a block, gfx/glass.js glassShape) ...
+  var gS = GlassShape(0, -1, -1, 0.0, -1, -1, 0.0);   // ... and that shape
   if (max(phiA.y, max(phiA.z, phiA.w)) >= SURF_ISO) { oC.x = tEnter; hit = true; }
   for (var i = 0; i < MAX_STEPS; i++) {
     if (hit || outside(cell)) { break; }
@@ -40,7 +43,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
       gThin = brickThin(flags);
       if (flags != 0u) { occM = occMaskOf(bid); }
     }
-    if (flags == 0u) { skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); phiStale = true; continue; }
+    if (flags == 0u) { skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); phiStale = true; gPrev = E_EMPTY; continue; }
     let ax = argmin3(tMax);
     let tExit = tMax[ax];
     let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
@@ -58,9 +61,21 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
       phiStale = true;
     } else if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }
-      if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = id; }
-      tau += meanSigma(id) * (tExit - tEnter);
-      oC.z = tExit;
+      // Glass casts the shadow of the shape the view draws: a pane only its
+      // sheet's few mm where the ray crosses it (almost none), a block its
+      // whole path, with its own tint (glassSigma: window glass's iron green).
+      if (id != gPrev || gS.n > 0) { gS = glassShape(cell, id, glassNeighbours(cell, id)); }
+      var len = tExit - tEnter;
+      if (gS.n > 0) {
+        len = 0.0;
+        if (sheetHit(ro, rd, tEnter, cell, gS.a0, gS.r0, gS.s0) < tExit) { len += PANE_CELLS / max(abs(rd[gS.a0]), SHADOW_PANE_COS_MIN); }
+        if (sheetHit(ro, rd, tEnter, cell, gS.a1, gS.r1, gS.s1) < tExit) { len += PANE_CELLS / max(abs(rd[gS.a1]), SHADOW_PANE_COS_MIN); }
+      }
+      if (len > 0.0) {
+        if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = id; }
+        tau += meanSigma(id) * len;
+        oC.z = tExit;
+      }
       phiStale = true;
     } else if (brickSurf(flags) || brickMedia(flags)) {
       if (phiStale) { phiA = surfSample(ro + rd * tEnter); }
@@ -100,6 +115,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     } else {
       phiStale = true;
     }
+    gPrev = select(E_EMPTY, id, isCrisp(id) && RCLASS(id) == R_GLASS);
     tEnter = tExit;
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];

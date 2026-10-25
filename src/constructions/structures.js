@@ -87,14 +87,14 @@ export function dock({ put, box, footing, T }, variant) {
   footing(DOCK.FOOT);
 
   // a step up from the shore, then the deck and its posts
-  box(-hw, 0, -1, hw, 0, 0, 'WOOD', PLANK_X);
-  box(-hw, deck, 0, hw, deck, L, 'WOOD', PLANK_X);
-  for (let z = every; z <= L; z += every) for (const x of [-hw, hw]) put(x, 0, z, 'WOOD', PLANK_Y);
+  box(-hw, 0, -1, hw, 0, 0, 'PLANKS', PLANK_X);
+  box(-hw, deck, 0, hw, deck, L, 'PLANKS', PLANK_X);
+  for (let z = every; z <= L; z += every) for (const x of [-hw, hw]) put(x, 0, z, 'PLANKS', PLANK_Y);
   // the head, wider, with a post at every corner and edge and bollards at its seaward corners
   const z0 = L - HL + 1;
-  box(-HW, deck, z0, HW, deck, L, 'WOOD', PLANK_X);
-  for (let z = z0; z <= L; z += every) for (let x = -HW; x <= HW; x += every) put(x, 0, z, 'WOOD', PLANK_Y);
-  for (const x of [-HW, HW]) { put(x, 0, L, 'WOOD', PLANK_Y); box(x, deck + 1, L, x, deck + DOCK.BOLLARD, L, 'WOOD', PLANK_Y); }
+  box(-HW, deck, z0, HW, deck, L, 'PLANKS', PLANK_X);
+  for (let z = z0; z <= L; z += every) for (let x = -HW; x <= HW; x += every) put(x, 0, z, 'PLANKS', PLANK_Y);
+  for (const x of [-HW, HW]) { put(x, 0, L, 'PLANKS', PLANK_Y); box(x, deck + 1, L, x, deck + DOCK.BOLLARD, L, 'PLANKS', PLANK_Y); }
   if (variant === 'hut') hut(z0);
 
   // a plank shack on the head: its door to the shore, a window to the sea
@@ -104,7 +104,7 @@ export function dock({ put, box, footing, T }, variant) {
     for (let y = deck + 1; y <= deck + H; y++)
       for (let z = cz - b; z <= cz + b; z++)
         for (let x = -a; x <= a; x++)
-          put(x, y, z, Math.abs(x) === a || Math.abs(z - cz) === b ? 'WOOD' : 'AIR',
+          put(x, y, z, Math.abs(x) === a || Math.abs(z - cz) === b ? 'PLANKS' : 'AIR',
             Math.abs(x) === a || Math.abs(z - cz) === b ? PLANK_Y : undefined);
     const dw = (odd(HUMAN.DOOR_W * T) - 1) / 2;
     box(-dw, deck + 1, cz - b, dw, deck + dh, cz - b, 'AIR');
@@ -114,7 +114,7 @@ export function dock({ put, box, footing, T }, variant) {
     for (let z = cz - b - 1; z <= cz + b + 1; z++) {
       const y = deck + H + 1 + Math.round((cz + b + 1 - z) / 3);
       box(-a - 1, y, z, a + 1, y, z, DOCK.HUT_ROOF);
-      for (let yy = deck + H + 1; yy < y; yy++) for (const x of [-a, a]) if (Math.abs(z - cz) <= b) put(x, yy, z, 'WOOD', PLANK_Y);
+      for (let yy = deck + H + 1; yy < y; yy++) for (const x of [-a, a]) if (Math.abs(z - cz) <= b) put(x, yy, z, 'PLANKS', PLANK_Y);
     }
   }
 }
@@ -219,31 +219,31 @@ function watchtower(api) {
   const F = 1 + S.TURNS * pitch, D = Math.round(S.DECK * T);
   footing();
   // a plank floor, the corner posts up to the roof, and X braces on the sides (the front left open)
-  box(-h, 0, -h, h, 0, h, 'WOOD', PLANK_X);
+  box(-h, 0, -h, h, 0, h, 'PLANKS', PLANK_X);
   const top = F + Math.round(HUMAN.DOOR_H * T) + 1;
   const brace = Math.round(S.BRACE_EVERY * T);
   for (let y = 1; y + brace <= F; y += brace)
     for (const [a, b] of [[[-h, -h], [h, -h]], [[-h, -h], [-h, h]], [[h, -h], [h, h]]]) {
       const o = a[0] !== b[0] ? PLANK_X : PLANK_Z;
-      rod(vec(a[0], y, a[1]), vec(b[0], y + brace, b[1]), 0.5, 'WOOD', o);
-      rod(vec(b[0], y, b[1]), vec(a[0], y + brace, a[1]), 0.5, 'WOOD', o);
+      rod(vec(a[0], y, a[1]), vec(b[0], y + brace, b[1]), 0.5, 'PLANKS', o);
+      rod(vec(b[0], y, b[1]), vec(a[0], y + brace, a[1]), 0.5, 'PLANKS', o);
     }
-  box(-1, 1, -1, 1, F - 1, 1, 'WOOD', PLANK_Y); // the newel
+  box(-1, 1, -1, 1, F - 1, 1, 'PLANKS', PLANK_Y); // the newel
   const rOut = Math.max(h - post - 0.5, STAIR.CLEAR_R);
-  const tread = spiral(api, { rIn: STAIR.NEWEL, rOut, y0: 1, y1: F - 1, a0: DOOR_ANGLE + TOWER.DOOR_TURN * TAU, pitch, el: 'WOOD', o: PLANK_X });
+  const tread = spiral(api, { rIn: STAIR.NEWEL, rOut, y0: 1, y1: F - 1, a0: DOOR_ANGLE + TOWER.DOOR_TURN * TAU, pitch, el: 'PLANKS', o: PLANK_X });
   // the platform overhangs the frame, railed, round the stairwell
-  box(-D, F, -D, D, F, D, 'WOOD', PLANK_X);
+  box(-D, F, -D, D, F, D, 'PLANKS', PLANK_X);
   box(-h + post + 1, F, -h + post + 1, h - post - 1, F, h - post - 1, 'AIR');
-  landing(api, { tread, rOut: rOut + 1, F, el: 'WOOD', o: PLANK_X });
+  landing(api, { tread, rOut: rOut + 1, F, el: 'PLANKS', o: PLANK_X });
   for (let z = -D; z <= D; z++)
-    for (let x = -D; x <= D; x++) if (Math.max(Math.abs(x), Math.abs(z)) === D) box(x, F + 1, z, x, F + HUMAN.RAIL_H, z, 'WOOD', PLANK_Y);
+    for (let x = -D; x <= D; x++) if (Math.max(Math.abs(x), Math.abs(z)) === D) box(x, F + 1, z, x, F + HUMAN.RAIL_H, z, 'PLANKS', PLANK_Y);
   // a hipped roof, one cell thick, with the corner posts running up into it
   for (let i = 0; i <= D; i++) {
-    box(-D + i, top + i, -D + i, D - i, top + i, D - i, 'WOOD', PLANK_X);
+    box(-D + i, top + i, -D + i, D - i, top + i, D - i, 'PLANKS', PLANK_X);
     if (i < D) box(-D + i + 1, top + i, -D + i + 1, D - i - 1, top + i, D - i - 1, 'AIR');
   }
   for (const sx of [-1, 1])
-    for (const sz of [-1, 1]) box(sx * h, 1, sz * h, sx * (h - post), top + D - h, sz * (h - post), 'WOOD', PLANK_Y);
+    for (const sz of [-1, 1]) box(sx * h, 1, sz * h, sx * (h - post), top + D - h, sz * (h - post), 'PLANKS', PLANK_Y);
 }
 
 function ruin(api) {
@@ -388,14 +388,14 @@ export function well({ put, box, footing, T }) {
     }
   // windlass: posts on the parapet, an axle across, a rope and a bucket
   const rz = Math.ceil(R / 2) + 1;   // the roof's half-depth: its ridge rz cells above the eaves
-  for (const s of [-1, 1]) box(s * px, H + 1, 0, s * px, ph + rz - 1, 0, 'WOOD', PLANK_Y);
-  box(-px + 1, ph - 1, 0, px - 1, ph - 1, 0, 'WOOD', PLANK_X);
+  for (const s of [-1, 1]) box(s * px, H + 1, 0, s * px, ph + rz - 1, 0, 'PLANKS', PLANK_Y);
+  box(-px + 1, ph - 1, 0, px - 1, ph - 1, 0, 'PLANKS', PLANK_X);
   box(0, ph - 1 - WELL.ROPE, 0, 0, ph - 2, 0, 'WOOD', PLAIN);
   box(0, ph - 2 - WELL.ROPE, 0, 0, ph - 2 - WELL.ROPE, 0, 'METAL');
   // a gable roof along x over the posts
   for (let i = 0; i <= rz; i++) {
-    box(-px - 1, ph + i, -(rz - i), px + 1, ph + i, -(rz - i), 'WOOD', PLANK_X);
-    box(-px - 1, ph + i, rz - i, px + 1, ph + i, rz - i, 'WOOD', PLANK_X);
+    box(-px - 1, ph + i, -(rz - i), px + 1, ph + i, -(rz - i), 'PLANKS', PLANK_X);
+    box(-px - 1, ph + i, rz - i, px + 1, ph + i, rz - i, 'PLANKS', PLANK_X);
   }
 }
 
@@ -424,27 +424,27 @@ export function mine({ put, box, footing, T }) {
   footing();
   // the gallery: carved out above a plank floor with rails, a timber set every few cells
   box(-x0, 1, -L, x0, h + 1, 0, 'AIR');
-  box(-w, 0, -L, w, 0, spur, 'WOOD', PLANK_X);
+  box(-w, 0, -L, w, 0, spur, 'PLANKS', PLANK_X);
   for (const x of [-1, 1]) box(x, 0, -L, x, 0, spur, 'METAL');
   for (let z = 0; z >= -L; z -= every) {
-    for (const s of [-1, 1]) box(s * x0, 1, z, s * x0, h, z, 'WOOD', PLANK_Y);
-    box(-x0, h + 1, z, x0, h + 1, z, 'WOOD', PLANK_X);
+    for (const s of [-1, 1]) box(s * x0, 1, z, s * x0, h, z, 'PLANKS', PLANK_Y);
+    box(-x0, h + 1, z, x0, h + 1, z, 'PLANKS', PLANK_X);
     // its battery in the beam: a lamp touching a battery stays lit (Noita's mines are lit by lamps that break)
     if ((-z / every) % MINE.LAMP_EVERY === 1) { put(0, h + 1, z, 'BATTERY'); put(0, h, z, 'LAMP'); }
   }
   // the portal: heavier posts and a header with a little gable over it
-  for (const s of [-1, 1]) box(s * x0, 0, 0, s * (x0 + 1), h + 1, 1, 'WOOD', PLANK_Y);
-  box(-x0 - 2, h + 2, 0, x0 + 2, h + 2, 1, 'WOOD', PLANK_X);
-  for (let i = 0; i <= x0 + 1; i++) box(-x0 - 1 + i, h + 3 + i, 0, x0 + 1 - i, h + 3 + i, 0, 'WOOD', PLANK_X);
+  for (const s of [-1, 1]) box(s * x0, 0, 0, s * (x0 + 1), h + 1, 1, 'PLANKS', PLANK_Y);
+  box(-x0 - 2, h + 2, 0, x0 + 2, h + 2, 1, 'PLANKS', PLANK_X);
+  for (let i = 0; i <= x0 + 1; i++) box(-x0 - 1 + i, h + 3 + i, 0, x0 + 1 - i, h + 3 + i, 0, 'PLANKS', PLANK_X);
   // the spur's buffer stop, and a cart of rubble on the rails
-  box(-w, 1, spur, w, 2, spur, 'WOOD', PLANK_X);
+  box(-w, 1, spur, w, 2, spur, 'PLANKS', PLANK_X);
   const [cw, ch, cl] = MINE.CART.map((n) => Math.round(n * T)), cz = spur - cl;
   box(-(cw >> 1), 1, cz, cw >> 1, ch, cz + cl - 1, 'METAL');
   box(-(cw >> 1) + 1, 2, cz + 1, (cw >> 1) - 1, ch, cz + cl - 2, 'STONE');
   // crates at the end of the gallery, against the face
   const c = Math.max(1, Math.round(MINE.CRATE * T));
-  box(-w, 1, -L, -w + c - 1, 2 * c, -L + c - 1, 'WOOD', PLANK_Y);
-  box(w - c + 1, 1, -L, w, c, -L + c - 1, 'WOOD', PLANK_Y);
+  box(-w, 1, -L, -w + c - 1, 2 * c, -L + c - 1, 'PLANKS', PLANK_Y);
+  box(w - c + 1, 1, -L, w, c, -L + c - 1, 'PLANKS', PLANK_Y);
 }
 
 // ---------------------------------------------------------------- wreck
@@ -507,16 +507,16 @@ export function wreck({ put, rod, vec, footing, rnd, T: size }) {
         const gash = hx * side > 0 && hy > gash0 && hy < gash1 && Math.abs(z) < gashZ;
         if ((z < stern || gash) && !rib) continue; // stove in or torn open: ribs only
         if (rnd() < WRECK.PLANK_GAPS) continue;
-        put(x, y, z, 'WOOD', rib ? (top ? PLANK_X : PLANK_Y) : PLANK_Z);
+        put(x, y, z, 'PLANKS', rib ? (top ? PLANK_X : PLANK_Y) : PLANK_Z);
       }
   // the mast: a stump on the deck, heeled with her; the rest of it on the sand beside
   // (the hull's frame to the world's: x = hx c - hy s, y = hx s + hy c - sink)
   const zm = WRECK.MAST_AT * L, dk = deck(zm) - 1;
   const up = vec(-s, c, 0), base = vec(-dk * s, dk * c - sink, zm);
-  rod(base, base.clone().addScaledVector(up, B * WRECK.MAST), 1, 'WOOD', PLANK_Y);
+  rod(base, base.clone().addScaledVector(up, B * WRECK.MAST), 1, 'PLANKS', PLANK_Y);
   // the rest of the mast on the sand, off her high side
   const mx = side * (B / 2 + WRECK.SPAR_OFF * T);
-  rod(vec(mx, 0, WRECK.SPAR[0] * L), vec(mx + side * 2, 0, WRECK.SPAR[1] * L), 0.5, 'WOOD', PLANK_Z);
+  rod(vec(mx, 0, WRECK.SPAR[0] * L), vec(mx + side * 2, 0, WRECK.SPAR[1] * L), 0.5, 'PLANKS', PLANK_Z);
   // her anchor off the bow, lying flat: a shank with a ring, a crown and two arms
   const az = L / 2 + WRECK.ANCHOR_OFF * T, al = WRECK.ANCHOR * T, [f0, f1] = WRECK.FLUKE.map((f) => f * T);
   rod(vec(0, 0, az), vec(0, 0, az + al), 0.5, 'METAL');
@@ -553,14 +553,14 @@ export function bridge({ put, box, rod, vec, footing, T }, variant) {
     box(-xs, deck, z0, xs, deck, zm, MASONRY);
   }
   // the deck, and the trusses along its sides
-  box(-hw, deck, -half, hw, deck, half, 'WOOD', PLANK_X);
+  box(-hw, deck, -half, hw, deck, half, 'PLANKS', PLANK_X);
   for (const x of [-xs, xs]) {
-    box(x, deck, -half, x, deck, half, 'WOOD', PLANK_Z);   // bottom chord
-    box(x, top, -half, x, top, half, 'WOOD', PLANK_Z);     // top chord: the handrail
+    box(x, deck, -half, x, deck, half, 'PLANKS', PLANK_Z);   // bottom chord
+    box(x, top, -half, x, top, half, 'PLANKS', PLANK_Z);     // top chord: the handrail
     for (let z = -half; z <= half; z += panel) {
-      box(x, deck + 1, z, x, top - 1, z, 'WOOD', PLANK_Y); // posts
+      box(x, deck + 1, z, x, top - 1, z, 'PLANKS', PLANK_Y); // posts
       const z2 = Math.min(half, z + panel);
-      if (z2 > z) rod(vec(x, deck + 1, z < 0 ? z : z2), vec(x, top - 1, z < 0 ? z2 : z), 0.5, 'WOOD', PLANK_Z);
+      if (z2 > z) rod(vec(x, deck + 1, z < 0 ? z : z2), vec(x, top - 1, z < 0 ? z2 : z), 0.5, 'PLANKS', PLANK_Z);
     }
   }
 }

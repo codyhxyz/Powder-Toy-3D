@@ -82,7 +82,7 @@ export const MAT = {
   // the Noita stuff a biome is dense with (each maps to the elements.js key of its name by default)
   TOXIC: 16, BLOOD: 17, ACID: 18, LAVA: 19, SLIME: 20, MUD: 21, WHISKEY: 22,
   TELEPORTATIUM: 23, LEVITATIUM: 24, BERSERKIUM: 25, HEALTHIUM: 26, POLYMORPHINE: 27,
-  GUNPOWDER: 28, TNT: 29, FUNGUS: 30, MEAT: 31, NUGGETS: 32, CLAY: 33, PLANT: 34, WOOD: 35,
+  GUNPOWDER: 28, TNT: 29, FUNGUS: 30, MEAT: 31, NUGGETS: 32, CLAY: 33, PLANT: 34, PLANKS: 35,
   GLASS: 36,   // acid-proof: what an acid pit is lined with
   TORCH: 37,   // a wall torch's head (its light: elements.js WALL_TORCH), on a BEAM stick
   // ...and the Coal Pits' and Snowy Depths' own (HOTCOAL: coal laid down burning, the kit's temps)
@@ -100,10 +100,10 @@ export const MAT_NAMES = Object.keys(MAT);
 export const WANG_OUT = 255;
 // The default palette: code -> element key (elements.js). A kit overrides any.
 export const DEFAULT_PALETTE = {
-  AIR: 'EMPTY', ROCK: 'ROCK', SOFT: 'LIMESTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE',
+  AIR: 'EMPTY', ROCK: 'ROCK', SOFT: 'LIMESTONE', BEAM: 'PLANKS', RAIL: 'METAL', RUBBLE: 'RUBBLE',
   WATER: 'WATER', OIL: 'OIL', GOLD: 'GOLD', CRYSTAL: 'CRYSTAL', COAL: 'COAL', MOSS: 'MOSS',
   GRAVEL: 'STONE', METAL: 'METAL', SAND: 'SAND', ICE: 'ICE',
-  // WOOD: timber that isn't the kit's BEAM (crates, barrels, scaffolds) when BEAM is remapped
+  // PLANKS: sawn timber that isn't the kit's BEAM (crates, barrels, scaffolds) when BEAM is remapped
   ...Object.fromEntries(Object.keys(MAT).filter((n) => MAT[n] >= 16).map((n) => [n, n])),
   TORCH: 'WALL_TORCH',
   HOTCOAL: 'COAL',

@@ -9,6 +9,8 @@ export const RIPPLE_SLOPE = 0.035;
 // Carlo of the shader's hash13 gives 0.1105). A ripple octave's mean square
 // slope (x and z, GGX α²) is then 2·VNOISE_GRAD_VAR·slope².
 export const VNOISE_GRAD_VAR = (6 / 5) * (1 / 6) * (26 / 35) ** 2;
+// Light bending off: how far a straight look is nudged against the surface's normal (liquidGLSL cheapBend).
+export const BEND_CHEAP_NUDGE = 0.12;
 // Transparent media: liquids (smooth surfaces) and crisp glass. WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2), pasted after surfaceGLSL
 // (reflectHit meets voxels with crispHit, the floor with floorAlb). The
@@ -93,6 +95,17 @@ fn envReflectGI(gi: Probe, n: vec3f, v: vec3f, rough: f32, sunVis: vec3f) -> vec
 const IFACE_NUDGE: f32 = 0.03;
 const IFACE_PROBE: f32 = 0.5;
 
+// Settings → Light bending (FU.bending; the user asked for the switch,
+// 2026-10-24). Off, water and glass are looked straight through: the ray goes
+// on with only a nudge of BEND_CHEAP_NUDGE (per unit direction) against the
+// surface's normal, ripples included, as Source's cheap water offsets its
+// refraction texture by the normal map, instead of bending at Snell's angle,
+// and the way out costs nothing (no total internal reflection, no inner
+// reflection's probe). Rays stay parallel to their neighbours' too.
+const BEND_CHEAP_NUDGE: f32 = ${glf(BEND_CHEAP_NUDGE)};
+// the straight look through a surface of normal n (toward the eye side of rd)
+fn cheapBend(rd: vec3f, n: vec3f) -> vec3f { return normalize(rd - n * BEND_CHEAP_NUDGE); }
+
 // Light scattered toward the eye inside a liquid or glass, per unit
 // (1 - transmittance): the scattered share of the extinction (SCATALB) of the
 // light arriving at p. sunVis is the sun's visibility there, including its
@@ -122,20 +135,16 @@ fn interiorScatter(id: i32, p: vec3f, sunVis: vec3f, T: f32) -> vec3f {
   return SCATALB(id) * interiorLight(p, sunVis) + emission(id, T);
 }
 
-// Liquid in the air shows its colour. Water is clear (elements.js sigma: a
-// cell of it lets 95-99% through), so a lone drop, a pour or spray, drawn
-// truly, is a clear bead against the sky: from a player's view nearly
-// invisible, a cloud of glass bubbles. Noita and The Powder Toy draw every
-// liquid pixel in its body colour, however small, which is why their pours
-// always read. So where the fields mark liquid a thin feature (the thin mask,
-// shaders/fields.js: drops, streams, spray; never a pool's bulk), the light
-// crossing it is absorbed and scattered as through THIN_BODY_CELLS of it: the
-// blue-green a pool shows a few metres deep. Pools are left as they are.
-const THIN_BODY_CELLS: f32 = 24.0;   // cells (7 m): water's body colour, the depth a deep pool shows
+// Liquid in the air is absorbed along the length it really is. Water is
+// clear (elements.js WATER_ABSORB_M: a cell of it lets 90-99.6 % through), so
+// a drop or spray is a clear bead that shows itself by its glints and what it
+// bends, as real spray does, and a pour by its whitewater (gfx/foam.js). (It
+// was drawn in the body colour of 7 m of water, Noita's and The Powder Toy's
+// rule that every liquid pixel shows its colour, which made each splash a
+// scatter of opaque blue balls.) Absorbing liquids (oil, blood, acid) colour
+// even a drop on their own. p: unused, kept for the callers' shape.
 fn thinBodySeg(p: vec3f, seg: f32) -> f32 {
-  var thin = 0.0;
-  if (gThin) { thin = fieldTex(tFT, p)[CH_LIQUID]; }
-  return mix(seg, max(seg, THIN_BODY_CELLS), thin);
+  return seg;
 }
 
 // Beer–Lambert through a segment of length seg inside element id.
@@ -257,10 +266,13 @@ var<private> gReflK: vec3f = vec3f(0.0);    // the weight its value has in the c
 // A reflection from ro along rd0 (env: what the ray sees if it meets nothing,
 // envReflectGI at the interface). The pixel's first one near enough the eye is
 // traced (gReflTraced): true, and the caller adds R's weight to gReflK; later
-// ones, and those far from the eye, are env.
+// ones, and those far from the eye, are env. Settings → Reflections off
+// (FU.reflections; the user asked for the switch, 2026-10-24) traces none:
+// every surface shows env, the sky darkened where the probes see no sky
+// (envReflectGI), so a cave's pool still doesn't mirror a blue sky.
 fn reflectDefer(ro: vec3f, rd0: vec3f, env: vec3f) -> bool {
   let wf = 1.0 - smoothstep(REFL_FP_LO, REFL_FP_HI, footprint(ro));
-  let traced = !gReflTraced && wf > 0.0;
+  let traced = !gReflTraced && wf > 0.0 && FU.reflections != 0u;
   if (traced) {
     gReflTraced = true;
     gReflPend = true; gReflRo = ro; gReflRd = rd0; gReflEnv = env; gReflWf = wf;
@@ -435,12 +447,16 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
       *col += *trans * lampSpecSeen(hp, n, LampSpecIn(-*rd, rough, vec3f(f0 * f0), vec3f(1.0, 0.0, 0.0), 0.0, true));
     }
     *trans *= 1.0 - F;
-    let rt = refract(*rd, n, 1.0 / ior);
+    let rt = select(cheapBend(*rd, n), refract(*rd, n, 1.0 / ior), FU.bending != 0u);
     *rd = rt;
     *ro = hp + rt * IFACE_NUDGE - geometric * IFACE_NUDGE;
     return true;
   }
   if (dot(n, *rd) < 0.0) { n = -n; }
+  if (FU.bending == 0u) {   // (straight out: Light bending off)
+    *ro = hp + *rd * IFACE_NUDGE + geometric * IFACE_NUDGE;
+    return false;
+  }
   let rt = refract(*rd, -n, ior);
   if (dot(rt, rt) < 1e-6) {           // total internal reflection
     let rr = reflect(*rd, -n);

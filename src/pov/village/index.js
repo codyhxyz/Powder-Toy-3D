@@ -69,13 +69,15 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     toolModel?.dispose(); toolModel = null;
     toolMaterials.forEach(m => m.dispose()); toolMaterials = [];
     if (key) {
-      toolModel = attachModel(avatar.hand, key.toLowerCase(), null, { arm: false });
-      toolModel.obj.position.set(0, -0.8, 0); toolModel.obj.rotation.x = -0.9; toolModel.obj.scale.setScalar(0.7);
-      toolModel.obj.traverse(o => {
+      // the village's flat look, on the parts and, once loaded, the tool's scan (models.js SCANS)
+      const flat = (o) => {
         if (!o.isMesh) return;
-        const material = new THREE.MeshBasicMaterial({ color: o.material.color ?? '#888888', vertexColors: !!o.geometry.attributes.color });
+        const material = new THREE.MeshBasicMaterial({ color: o.material.color ?? '#888888', map: o.material.map ?? null, vertexColors: !!o.geometry.attributes.color });
         toolMaterials.push(material); o.material = material;
-      });
+      };
+      toolModel = attachModel(avatar.hand, key.toLowerCase(), null, { arm: false, onScan: (scan) => scan.traverse(flat) });
+      toolModel.obj.position.set(0, -0.8, 0); toolModel.obj.rotation.x = -0.9; toolModel.obj.scale.setScalar(0.7);
+      toolModel.obj.traverse(flat);
     }
   }
   async function punch(kick = false) {

@@ -88,33 +88,33 @@ export function spineDeck({ m = 'ROCK', holes = [0, 1], gap = null, spurs = [0, 
   for (const u of planked) {
     const c = u ? C1 : C0;
     out.push({ box: [[c - PLANK_W, SPINE, -1], [c + PLANK_W, SPINE + HEAD, U + 1]], m: 'AIR' });
-    out.push({ box: [[c - PLANK_W, SPINE - 1, -1], [c + PLANK_W, SPINE, U + 1]], m: 'WOOD', appearance: 'plank-z' });
+    out.push({ box: [[c - PLANK_W, SPINE - 1, -1], [c + PLANK_W, SPINE, U + 1]], m: 'PLANKS', appearance: 'plank-z' });
   }
   for (const [a, b] of strips) out.push({ box: [[a[0], SPINE, a[1]], [b[0], SPINE + HEAD, b[1]]], m: 'AIR' });
   for (const [a, b] of strips) out.push({ box: [[a[0], SPINE - DECK_T, a[1]], [b[0], SPINE, b[1]]], m });
   return out;
 }
 // a timber plank along x over a gap, its top the spine's (Noita's plank bridges)
-export const plankX = (x0, x1, z = MID, y = SPINE) => ({ box: [[x0, y - 1, z - PLANK_W], [x1, y, z + PLANK_W]], m: 'WOOD', appearance: 'plank-x' });
+export const plankX = (x0, x1, z = MID, y = SPINE) => ({ box: [[x0, y - 1, z - PLANK_W], [x1, y, z + PLANK_W]], m: 'PLANKS', appearance: 'plank-x' });
 // a floating blob: a rough ellipsoid of island (its top flattened by a slab where it is walked on)
 export const blob = (c, r, m = 'ROCK', rough = ROUGH_BODY) => ({ ball: [c, r], m, rough, salt: salt++ });
 // a vein or lens of mat threading an island's material (coal seams, gold, marbling)
 export const vein = (c, r, mat, inside = 'ROCK', rough = 1.5) => ({ ball: [c, r], m: mat, only: inside, rough });
 // a basin let into an island's top at (x, y, z): a lens of liquid where island was (a pool
 // sitting inside a blob), its surface at y
-export const basin = (x, y, z, rx, depth, rz, liquid, inside = 'ROCK') => ({ ball: [[x, y, z], [rx, depth, rz]], m: liquid, appearance: liquid === 'WOOD' ? 'plank-x' : 'none', only: [].concat(inside) });
+export const basin = (x, y, z, rx, depth, rz, liquid, inside = 'ROCK') => ({ ball: [[x, y, z], [rx, depth, rz]], m: liquid, appearance: liquid === 'PLANKS' ? 'plank-x' : 'none', only: [].concat(inside) });
 // a pocket sealed inside an island (water or toxic you dig into, oil that seeps out of a cut face)
 export const pocket = (c, r, liquid, inside = 'ROCK') => ({ ball: [c, r], m: liquid, only: [].concat(inside) });
 // a heap of powder on a surface at y (its slope a body walks over: a cell up a step)
 export const HEAP_SLOPE = 0.55;
 export const heap = (x, y, z, r, m) => ({ ball: [[x, y, z], [r, r * HEAP_SLOPE, r]], m, only: 'AIR', rough: 0.6 });
 // a timber post / a vertical chain (a 1-cell column) from y0 up to y1
-export const post = (x, z, y0, y1, m = 'WOOD') => ({ box: [[x, y0, z], [x + 1, y1, z + 1]], m, appearance: m === 'WOOD' || m === 'BEAM' ? 'plank-y' : 'none' });
+export const post = (x, z, y0, y1, m = 'PLANKS') => ({ box: [[x, y0, z], [x + 1, y1, z + 1]], m, appearance: m === 'PLANKS' || m === 'BEAM' ? 'plank-y' : 'none' });
 // a barrel standing at (x, y, z): a timber shell round a fill (OIL: it burns; GUNPOWDER: a powder
 // keg; WHISKEY, HEALTHIUM: Noita's caches). Timber insulates: what's in it keeps its warmth.
 export const BARREL_R = 1.6, BARREL_H = 4;
 export const barrel = (x, y, z, fill) => [
-  { cyl: [[x, y, z], BARREL_R, BARREL_H], axis: 'y', m: 'WOOD', appearance: 'plank-y' },
+  { cyl: [[x, y, z], BARREL_R, BARREL_H], axis: 'y', m: 'PLANKS', appearance: 'plank-y' },
   { cyl: [[x, y + 1, z], BARREL_R - 0.9, BARREL_H - 2], axis: 'y', m: fill },
 ];
 // a timber cage (posts and a rim) round a heap of powder at (x, y, z): Noita fences its loose
@@ -122,8 +122,8 @@ export const barrel = (x, y, z, fill) => [
 export function cage(x, y, z, r, fill, h = 4) {
   const out = [heap(x, y, z, r, fill), { ball: [[x, y, z], [r - 0.5, h - 1, r - 0.5]], m: fill, only: 'AIR' }];
   for (const [dx, dz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) out.push(post(Math.round(x + dx * r), Math.round(z + dz * r), y, y + h));
-  out.push({ box: [[x - r, y + h - 1, z - r], [x + r + 1, y + h, z - r + 1]], m: 'WOOD', appearance: 'plank-x' }, { box: [[x - r, y + h - 1, z + r], [x + r + 1, y + h, z + r + 1]], m: 'WOOD', appearance: 'plank-x' });
-  out.push({ box: [[x - r, y, z - r], [x + r + 1, y + 1, z + r + 1]], m: 'WOOD', appearance: 'plank-x', only: 'AIR' });
+  out.push({ box: [[x - r, y + h - 1, z - r], [x + r + 1, y + h, z - r + 1]], m: 'PLANKS', appearance: 'plank-x' }, { box: [[x - r, y + h - 1, z + r], [x + r + 1, y + h, z + r + 1]], m: 'PLANKS', appearance: 'plank-x' });
+  out.push({ box: [[x - r, y, z - r], [x + r + 1, y + 1, z + r + 1]], m: 'PLANKS', appearance: 'plank-x', only: 'AIR' });
   return out;
 }
 // a mine cart at (x, y, z) along x: an iron box full of coal (or scrap), on rails
@@ -138,13 +138,13 @@ export const railsX = (x0, x1, z, y = SPINE) => [
 // a scaffold tower: four posts from y0 up to a deck at y1 (its top), standing in the void
 export function scaffold(x, z, y0, y1, w = 4) {
   return [post(x, z, y0, y1), post(x + w, z, y0, y1), post(x, z + w, y0, y1), post(x + w, z + w, y0, y1),
-    { box: [[x, y1 - 1, z], [x + w + 1, y1, z + w + 1]], m: 'WOOD', appearance: 'plank-x' },
-    { box: [[x, Math.round((y0 + y1) / 2), z], [x + w + 1, Math.round((y0 + y1) / 2) + 1, z + 1]], m: 'WOOD', appearance: 'plank-x' }];
+    { box: [[x, y1 - 1, z], [x + w + 1, y1, z + w + 1]], m: 'PLANKS', appearance: 'plank-x' },
+    { box: [[x, Math.round((y0 + y1) / 2), z], [x + w + 1, Math.round((y0 + y1) / 2) + 1, z + 1]], m: 'PLANKS', appearance: 'plank-x' }];
 }
 // a platform hung on two chains from an anchor over it (Noita's swing over a drop): its top at y,
 // along x from x0 (w long) at z, the chains up to y1
 export const swing = (x0, w, z, y, y1, chain = 'METAL') => [
-  { box: [[x0, y - 1, z - 2], [x0 + w, y, z + 2]], m: 'WOOD', appearance: 'plank-x' },
+  { box: [[x0, y - 1, z - 2], [x0 + w, y, z + 2]], m: 'PLANKS', appearance: 'plank-x' },
   post(x0, z, y, y1, chain), post(x0 + w - 1, z, y, y1, chain),
 ];
 // An open tile takes any colour on its sides and lets a shaft in from above anywhere (no

@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { volumeFrag } from '../src/shaders/render.js';
 import { DETAIL } from '../src/gfx/detail.js';
 import { fieldBlurFrag, fieldPeakFrag } from '../src/shaders/fields.js';
-import { CHANNELS, gauss5, bulkPeak, bulkPeakCubic, THIN_MIN_PEAK } from '../src/gfx/materials.js';
+import { CHANNELS, gauss5, bulkPeak, bulkPeakCubic, THIN_MIN_PEAK, ISO } from '../src/gfx/materials.js';
 
 const clean = (s) => s.replace(/\/\/[^\n]*/g, '').replace(/\s+/g, ' ').trim();
 function body(code, name) {
@@ -70,7 +70,12 @@ const grid = { nx: 32, ny: 32, nz: 32 };
 const blur = clean(fieldBlurFrag(grid, true)), peak = clean(fieldPeakFrag(grid));
 assert.match(blur, /const NORM_FLOOR: f32 = 0.02;/);
 assert.match(blur, /let o0 = ok \* sv \/ max\(d, vec4f\(NORM_FLOOR\)\);/);
-assert.match(peak, /let k = max\(vec4f\(1.0\), P.bulk \/ max\(acc, vec4f\(THIN_MIN_PEAK\)\)\);/);
+// a feature's own bulk peak (a liquid's by its fill: gfx/materials.js DROP_RADIUS_K) lies between the
+// channel's at the centre's mirror and P.bulk at THIN_RADIUS (rr in [-1, 1]), so it too stays <= 1
+assert.match(peak, /let rr = r \* abs\(r\) \/ \(THIN_RADIUS \* THIN_RADIUS\);/);
+assert.match(peak, /let r = min\(.*vec4f\(THIN_RADIUS\)\);/s);
+assert.match(peak, /let bulk = ISO_LEVEL \/ \(1.0 - \(1.0 - ISO_LEVEL \/ P.bulk\) \* rr\);/);
+assert.match(peak, /let k = max\(vec4f\(1.0\), bulk \/ max\(acc, vec4f\(THIN_MIN_PEAK\)\)\);/);
 assert.match(peak, /textureStore\(fieldThin, p, boosted \* smoothstep\(vec4f\(THIN_MASK_LO\), vec4f\(THIN_MASK_HI\), k\)\);/);
 for (const smoothing of [0, 0.05, 0.25, 0.5, 1, 2, 10, 100]) for (const channel of CHANNELS) {
   const weights = gauss5(Math.max(channel.sigma * smoothing, 0.05));
@@ -78,6 +83,10 @@ for (const smoothing of [0, 0.05, 0.25, 0.5, 1, 2, 10, 100]) for (const channel 
   assert(Math.abs(weights.reduce((a, b) => a + b, 0) - 1) < 1e-6);
   const bulk = (channel.cubic ? bulkPeakCubic : bulkPeak)(weights);
   assert(Number.isFinite(bulk) && bulk >= 0 && bulk <= 1);
+  for (const rr of [-1, -0.25, 0, 0.5, 1]) {
+    const own = ISO / (1 - (1 - ISO / bulk) * rr);
+    assert(Number.isFinite(own) && own > 0 && own <= Math.max(bulk, ISO) + 1e-9);
+  }
 }
 assert((1.01 / 0.02) * (1 / THIN_MIN_PEAK) < 65504, 'boosted surface remains finite in rgba16float');
 console.log('PASS finite surface-field bound and [0,1] thin-mask writer contract');

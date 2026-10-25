@@ -73,6 +73,7 @@ fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
+fn brickFilm(f: u32) -> bool { return brickHas(f, BRICK_FILM); }       // a film here or beside (gfx/film.js filmHit)
 ${occupancyReadWGSL}
 
 // Certify the entire brick's sampling support, not just its cells. At a brick

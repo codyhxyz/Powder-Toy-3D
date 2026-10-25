@@ -139,7 +139,7 @@ int wcHouseMaterial(int x, int y, int z) {
   if (!front && !back && !side) return E_EMPTY;
   if (y >= WC_LOW + WC_WINDOW_LO && y < WC_LOW + WC_WINDOW_HI &&
       ((side && abs(b) < WC_WINDOW_HALF) || (back && abs(a) < WC_WINDOW_HALF))) return E_GLASS;
-  return materialWord(E_WOOD, AP_PLANK_Y);
+  return materialWord(E_PLANKS, AP_PLANK_Y);
 }
 int wcHouse(int x, int y, int z) { return materialId(wcHouseMaterial(x, y, z)); }
 
@@ -177,13 +177,13 @@ int wcBaseCellMaterial(int wx, int y, int wz) {
   int bz = upperBridge ? WC_MID_PATH_Z : z < 0 ? WC_RUN_RETURN_Z : WC_LANE_Z;
   int bh = upperBridge ? WC_MID : WC_LOW;
   if (abs(z - bz) < WC_PATH_HALF && abs(x - WC_RIVER_X) <= WC_BRIDGE_HALF) {
-    if (y >= bh - WC_DECK_THICK && y < bh) return materialWord(E_WOOD, AP_PLANK_Z);
-    if (abs(z - bz) == WC_PATH_HALF - 1 && y >= bh && y < bh + WC_BRIDGE_RAIL_H) return materialWord(E_WOOD, AP_PLANK_X);
-    if (abs(abs(x - WC_RIVER_X) - WC_BRIDGE_PILE_X) <= WC_PILE_HALF && abs(z - bz) >= WC_PATH_HALF - 2 && y >= WC_SEA && y < bh) return materialWord(E_WOOD, AP_PLANK_Y);
+    if (y >= bh - WC_DECK_THICK && y < bh) return materialWord(E_PLANKS, AP_PLANK_Z);
+    if (abs(z - bz) == WC_PATH_HALF - 1 && y >= bh && y < bh + WC_BRIDGE_RAIL_H) return materialWord(E_PLANKS, AP_PLANK_X);
+    if (abs(abs(x - WC_RIVER_X) - WC_BRIDGE_PILE_X) <= WC_PILE_HALF && abs(z - bz) >= WC_PATH_HALF - 2 && y >= WC_SEA && y < bh) return materialWord(E_PLANKS, AP_PLANK_Y);
   }
   if (abs(x - WC_PATH_X) <= WC_DOCK_HALF && z >= WC_DOCK_START && z < WC_DOCK_END) {
-    if (y >= WC_BEACH - WC_DECK_THICK && y < WC_BEACH) return materialWord(E_WOOD, AP_PLANK_X);
-    if (abs(x - WC_PATH_X) == WC_DOCK_HALF - 2 && thMod(z - WC_DOCK_PILE_Z, WC_DOCK_PITCH) < WC_DECK_THICK && y < WC_BEACH) return materialWord(E_WOOD, AP_PLANK_Y);
+    if (y >= WC_BEACH - WC_DECK_THICK && y < WC_BEACH) return materialWord(E_PLANKS, AP_PLANK_X);
+    if (abs(x - WC_PATH_X) == WC_DOCK_HALF - 2 && thMod(z - WC_DOCK_PILE_Z, WC_DOCK_PITCH) < WC_DECK_THICK && y < WC_BEACH) return materialWord(E_PLANKS, AP_PLANK_Y);
   }
 
   int dx = x - WC_RIVER_X, dz = z - WC_POND_Z;

@@ -253,6 +253,23 @@ const ACID_BOIL = {
 // 0.917 g/cm³, so what it leaves by volume is:
 // Its electrical conductivity (CRC, aqueous NaCl at 20 °C) is ~22 S/m, ~4×
 // sea water's 5: ions carry the current, so it conducts, but nothing like a metal.
+// Clean water's colour (render only: sigma below, gfx/materials.js LOOKS
+// scatter), from measured coefficients rather than a look. Absorption of pure
+// water at the sRGB primaries' bands, ~640, 550 and 460 nm (Pope & Fry 1997,
+// Appl. Opt. 36, 8710: 0.329, 0.0565, 0.0098 per metre): red goes first. Its
+// scattering is molecular, b = 0.00288·(500/λ)^4.32 per metre (Morel 1974),
+// so a body of it glows faintly blue. A cell (CELL_M) of it lets 90 %, 98 %
+// and 99.6 % of red, green and blue through: a puddle is clear, a pool metres
+// deep goes blue-green and a deep one dark blue, as real water does.
+export const WATER_ABSORB_M = [0.329, 0.0565, 0.0098];   // 1/m
+export const WATER_SCATTER_M = [0.001, 0.0019, 0.0041];  // 1/m
+export const WATER_SCATTER = WATER_SCATTER_M.map((b) => +(b * CELL_M).toPrecision(3));   // 1/cell
+const WATER_SIGMA = WATER_ABSORB_M.map((a, i) => +((a + WATER_SCATTER_M[i]) * CELL_M).toPrecision(3));   // 1/cell
+// Dissolved salt leaves water's absorption as it is (the sea's colours are
+// what lives and floats in it) and raises its scattering by ~30 % (Morel
+// 1974: b_seawater = 1.30 b_pure water).
+export const SALT_SCATTER_GAIN = 1.3;
+
 const BRINE = { rho: 1.197, water: 0.881, salt: 0.316, cp: 3.3, k: 0.57, boilT: 108.7, elec: 22 };
 const SALT_PILE = 1.3;                       // g/cm³: halite's 2.165 packed as sand is (60 % solid: 2.65 → SAND's 1.6)
 const ICE_RHO = 0.917;
@@ -380,6 +397,16 @@ const WHISKEY_BOIL = {
   puff: vapourVolumes(WHISKEY_MIX.ethanol / WHISKEY_MIX.ethanolM + WHISKEY_MIX.water / WATER_M, WHISKEY_MIX.boilT),
 };
 
+// Timber: what wood is, standing or sawn. WOOD (the tree: logs, trunks, roots,
+// bark) and PLANKS (sawn lumber: houses, docks, crates) are the same stuff,
+// Minecraft's log and planks: one material, two looks, so they burn, break,
+// rot, dig and sound alike and only the renderer tells them apart.
+const TIMBER = {
+  kind: K.SOLID, tool: 'axe', render: R.OPAQUE, var: 0.12,
+  cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
+  hard: 20, breakInto: 'SAWDUST', sound: 'thunk', rots: true,
+};
+
 const defs = [
   { key: 'EMPTY', abbr: 'AIR', name: 'Air', kind: K.EMPTY, render: R.NONE, color: '#000000',
     dens: 1, cond: 0.0005, cap: 0.02, drag: 0.1, jitter: 0.02, desc: 'Air. Carries heat and pressure; hot air rises.' },
@@ -407,7 +434,7 @@ const defs = [
     // fresh water conducts, weakly: ~0.005-0.05 S/m from its dissolved ions
     // (USGS, Specific conductance; pure water 5.5·10⁻⁶), 10⁸ times less than steel
     elec: 0.05,
-    sigma: [0.052, 0.014, 0.01], desc: 'Water. Conducts electricity, weakly. Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
+    sigma: WATER_SIGMA, desc: 'Water. Conducts electricity, weakly. Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
   { key: 'OIL', traits: ['biological'], abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
@@ -434,9 +461,11 @@ const defs = [
     dens: 0.5, cond: 0.04, cap: 0.3, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 1000, life: 1,
     rad: 0.01, spawn: 0.3, desc: 'Fire. Ignites flammable materials. Heats air. Hot, short-lived and rising.' },
 
-  { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, tool: 'axe', render: R.OPAQUE, color: '#7a4a26', var: 0.12,
-    cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
-    hard: 20, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
+  // Shown as "Tree" (the user's name for it, 2026-10-24): a trunk's wood with its
+  // bark, beside Planks, the sawn boards. The key and abbr stay WOOD, so saves,
+  // maps, constructions and the console's DEFAULT_PT_WOOD (TPT's) keep working.
+  { key: 'WOOD', abbr: 'WOOD', name: 'Tree', ...TIMBER, color: '#7a4a26',
+    desc: 'Tree, the wood of trunks and branches under its bark. Flammable: burns slowly above 300 °C and leaves ash behind.' },
   { key: 'PLANT', traits: ['growing'], abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
@@ -752,7 +781,7 @@ const defs = [
   { key: 'SALTWATER', traits: ['biological'], abbr: 'SLTW', name: 'Saltwater', kind: K.LIQUID, render: R.LIQUID, color: '#3f8ccc',
     dens: +(BRINE.rho * 10).toFixed(2), cond: condOf(BRINE.k), cap: capOf(BRINE.rho, BRINE.cp), drag: 0.012, flow: 0.85,
     spawn: 0.35, acidProof: true, conducts: true, elec: BRINE.elec, cold: BRINE_FREEZE, hot: BRINE_BOIL,
-    sigma: [0.052, 0.014, 0.01],
+    sigma: WATER_SIGMA.map((x, i) => +(x + (SALT_SCATTER_GAIN - 1) * WATER_SCATTER[i]).toPrecision(3)),
     desc: 'Saltwater, conducts electricity, difficult to freeze: only at −21 °C. Heavier than water. Boiling it leaves the salt behind.' },
   // Carbon dioxide: 1.52× air, so it sinks and pools in low places, and puts
   // out flames where it makes up CO2_SMOTHER of the air (react.js). Below
@@ -1167,6 +1196,11 @@ const defs = [
   { key: 'NOITA_LUSH', abbr: 'NSOL', name: 'Noita lush soil', kind: K.SOLID, render: R.OPAQUE, color: '#6d8d32', var: 0.14,
     cond: 0.03, cap: 0.5, hard: 15, breakInto: 'SAND', mossBed: true,
     desc: 'Green soil from Noita’s Jungle. Solid ground, not loose sand.' },
+  // Planks: sawn lumber, Minecraft's planks to WOOD's log (TIMBER above): the
+  // same timber, cut into boards, with no bark. What houses, docks, bridges,
+  // crates and fences are built of. Its colour is sawn softwood's.
+  { key: 'PLANKS', abbr: 'PLNK', name: 'Planks', ...TIMBER, color: '#a8794a',
+    desc: 'Planks, sawn wood. Flammable: burns slowly above 300 °C and leaves ash behind. What houses, docks and crates are built of.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1304,9 +1338,10 @@ export const BUILDS = [
   { id: -100, key: 'HOUSE', abbr: 'HOUS', name: 'House', color: '#b9774b',
     variants: [['cottage', 'Cottage'], ['cabin', 'Log cabin'], ['brick', 'Brick'], ['greenhouse', 'Greenhouse']],
     desc: 'House. Built from real materials: wooden walls burn, windows are glass, and the chimney draws smoke up from the fireplace.' },
-  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Tree', color: '#4f9a3c', shuffle: true,
+  // "Grow tree" (2026-10-24): "Tree" is the WOOD element's name now. Its key and abbr stay TREE.
+  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Grow tree', color: '#4f9a3c', shuffle: true,
     variants: [['oak', 'Oak'], ['pine', 'Pine'], ['birch', 'Birch'], ['palm', 'Palm'], ['willow', 'Willow'], ['dead', 'Dead']],
-    desc: 'Tree. A wooden trunk and plant leaves, grown from a new seed every time. Pick a kind or shuffle between them.' },
+    desc: 'Grow tree. A trunk of Tree and leaves of plant, grown from a new seed every time. Pick a kind or shuffle between them.' },
   { id: -102, key: 'CAMPFIRE', abbr: 'CAMP', name: 'Campfire', color: '#c75b30',
     variants: [['lit', 'Lit'], ['unlit', 'Unlit']],
     desc: 'Campfire. A teepee of logs in a ring of stones. The lit one is already burning.' },
@@ -1382,7 +1417,7 @@ export const PALETTE = [
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANKS', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },

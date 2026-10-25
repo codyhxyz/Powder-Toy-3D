@@ -68,10 +68,10 @@ const CABIN = { x0: 18, x1: 30, z0: MID + 5, z1: MID + 11, h: 8 };
 function cabin() {
   const { x0, x1, z0, z1, h } = CABIN, y0 = SPINE - 1;
   return [
-    { box: [[x0, y0, z0], [x1, y0 + h, z1]], m: 'WOOD', appearance: 'plank-x' },
+    { box: [[x0, y0, z0], [x1, y0 + h, z1]], m: 'PLANKS', appearance: 'plank-x' },
     { box: [[x0 + 1, y0 + 1, z0 + 1], [x1 - 1, y0 + h - 1, z1 - 1]], m: 'AIR' },
     { box: [[x0 + 4, y0 + 1, z0 - 1], [x0 + 8, y0 + 7, z0 + 1]], m: 'AIR' },                 // its doorway, onto the walkway
-    { box: [[x0 + 3, y0 - 2, z0 - 1], [x0 + 9, y0 + 1, z0 + 1]], m: 'WOOD', appearance: 'plank-x', only: 'AIR' },    // ...and a sill bridging the step to it
+    { box: [[x0 + 3, y0 - 2, z0 - 1], [x0 + 9, y0 + 1, z0 + 1]], m: 'PLANKS', appearance: 'plank-x', only: 'AIR' },    // ...and a sill bridging the step to it
     { box: [[x1 - 4, y0 + 1, z1 - 3], [x1 - 1, y0 + 3, z1 - 1]], m: 'GOLD' },
     { ball: [[x1 - 6, y0 + 1, z1 - 2], [1.5, 0.8, 1]], m: 'NUGGETS', only: 'AIR' },
     { box: [[x0 + 1, y0 + 1, z1 - 3], [x0 + 4, y0 + 3, z1 - 1]], m: 'ICE' },                  // a body frozen in a block of ice
@@ -146,7 +146,7 @@ const tiles = openTiles([
     prims: island(208, {
       blobs: [lowBlob(1, 0, [8, 3, 5])],
       dress: [...barrel(20, LOW, 4, 'WHISKEY'), ...barrel(24, LOW, 4, 'WHISKEY'), ...barrel(28, LOW, 5, 'HEALTHIUM'),
-      ...barrel(44, SPINE + 1, MID - 3, 'SLIME'), { box: [[17, LOW, 2], [31, LOW + 1, 3]], m: 'WOOD', appearance: 'plank-x' }],
+      ...barrel(44, SPINE + 1, MID - 3, 'SLIME'), { box: [[17, LOW, 2], [31, LOW + 1, 3]], m: 'PLANKS', appearance: 'plank-x' }],
     }),
     sites: [{ kind: 'loot', at: [24, LOW, 8] }],
   },
@@ -165,7 +165,7 @@ const tiles = openTiles([
     prims: island(210, {
       blobs: [lowBlob(1, 0, [7, 3, 5]), lowBlob(2, 1)],
       extra: [{ capsule: [[18, 1, 2], [30, LOW, 6], 1], m: 'GOLD', only: ['ROCK', 'ICE'], rough: 1 }],
-    dress: [heap(24, LOW, 4, 2, 'NUGGETS'), { box: [[42, LOW, 19], [45, LOW + 3, 22]], m: 'TNT' }, { box: [[41, LOW, 18], [46, LOW + 1, 23]], m: 'WOOD', appearance: 'plank-x', only: 'AIR' }],
+    dress: [heap(24, LOW, 4, 2, 'NUGGETS'), { box: [[42, LOW, 19], [45, LOW + 3, 22]], m: 'TNT' }, { box: [[41, LOW, 18], [46, LOW + 1, 23]], m: 'PLANKS', appearance: 'plank-x', only: 'AIR' }],
     }),
     sites: [{ kind: 'gold', at: [24, LOW + 1, 6] }],
   },
@@ -184,7 +184,7 @@ const tiles = openTiles([
     name: 'rare pool', weight: 0.5, max: 1,
     prims: island(212, {
       blobs: [blob([24, LOW - 1, 20], [8, 3.5, 4.5])],
-      extra: [basin(24, LOW, 20, 5.5, 2.5, 3.5, 'WOOD'), basin(24, LOW, 20, 4.5, 1.8, 2.7, 'LEVITATIUM', 'WOOD')],
+      extra: [basin(24, LOW, 20, 5.5, 2.5, 3.5, 'PLANKS'), basin(24, LOW, 20, 4.5, 1.8, 2.7, 'LEVITATIUM', 'PLANKS')],
       dress: [{ ball: [[24, 23, 20], [1.4, 2, 1.4]], m: 'CRYSTAL' }],
     }),
     sites: [onSpine(24, 1)],
@@ -206,7 +206,7 @@ export default {
   // torches on posts at the islands' rims where no wall takes one: one every ~20 cells of walk
   torches: { every: 20, max: 4, lights: ['TORCH', 'CRYSTAL'], posts: true },
   palette: {
-    ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
+    ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'PLANKS', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
     ICE: 'ICE', CRYSTAL: 'CRYSTAL', COAL: 'COAL', GRAVEL: 'STONE',
     // the lakes and the water under thin ice are brine, as the liquid left under sea ice is:
     // liquid at the Depths' −15 °C (saltwater freezes at −21), so it rests there. Fresh water

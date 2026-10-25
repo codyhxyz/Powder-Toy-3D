@@ -76,7 +76,7 @@ export function buildPreset(name, sim) {
     // wooden tower with gunpowder core
     const w0 = Math.round(20 * s), w1 = Math.round(34 * s);
     const zz0 = Math.round(80 * s), zz1 = Math.round(94 * s);
-    box(w0, 0, zz0, w1, Math.round(50 * s), zz1, E.WOOD, { appearance: Appearance.PLANK_Y });
+    box(w0, 0, zz0, w1, Math.round(50 * s), zz1, E.PLANKS, { appearance: Appearance.PLANK_Y });
     box(w0 + 3, Math.round(4 * s), zz0 + 3, w1 - 3, Math.round(46 * s), zz1 - 3, E.GUNPOWDER);
     box(w0 + 5, 0, zz0 - 6, w1 - 5, Math.round(3 * s), zz0, E.OIL);
 

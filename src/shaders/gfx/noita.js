@@ -68,6 +68,8 @@ export const NOITA_ELEMENT_LOOKS = [
   ['WOOD', 'NONE', 'planks'], ['WOOD', 'PLANK_X', 'planks'], ['WOOD', 'PLANK_Z', 'planks'],
   ['WOOD', 'PLANK_Y', 'grain'], ['WOOD', 'LOG_X', 'grain'], ['WOOD', 'LOG_Y', 'grain'],
   ['WOOD', 'LOG_Z', 'grain'], ['WOOD', 'BARK', 'grain'],
+  ['PLANKS', 'NONE', 'planks'], ['PLANKS', 'PLANK_X', 'planks'], ['PLANKS', 'PLANK_Z', 'planks'],
+  ['PLANKS', 'PLANK_Y', 'grain'],   // as WOOD's labels: Noita's wood_static_vertical
   ['COAL', 'NONE', 'coalStatic'], ['BROKENCOAL', 'NONE', 'coal'],
   ['METAL', 'NONE', 'steel'], ['SAND', 'NONE', 'sand'],
   ['GOLD', 'NONE', 'gold'], ['NUGGETS', 'NONE', 'gold'], ['BRICK', 'NONE', 'brick'],

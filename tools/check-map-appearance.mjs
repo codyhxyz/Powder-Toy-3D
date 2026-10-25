@@ -15,7 +15,7 @@ const town = willowCoveTwin(willowCove.params({ seed, size: WILLOW_SIZE }));
 for (const kind of [1, 5]) {
   // These shells are rotated ninety degrees in the actual town layout.
   const shelf = town.cfTownShellMaterial(8, 26, -5, 24, 18, 10, kind, E.EMPTY);
-  assert.equal(materialId(shelf), E.WOOD);
+  assert.equal(materialId(shelf), E.PLANKS);
   assert.equal(materialAppearance(shelf), A.PLANK_Z, 'hall/café shelf follows world Z');
 }
 let trees = 0;
