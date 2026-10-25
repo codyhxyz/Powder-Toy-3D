@@ -74,7 +74,8 @@ export const MarchParams = uniformStruct('MarchParams', {
   physSize: 'vec3i',    // ... its size in cells ...
   physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout ...
   physRing: 'u32',      // ... rotated by its ring, in bricks (shaders/common.js ringOf; sim.g.ring, 0 unringed)
-  boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside physics' window only (marchSpan)
+  boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside physics' window only (marchSpan) ...
+  drawLo: 'vec3i',      // ... where it comes to rest (world/window.js drawOrigin; physOrigin but while it walks there), physSize
 });
 /** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
 export const physParams = (sim) => {
@@ -281,7 +282,7 @@ fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f {
   gMarchExit = MESH_CUT_NONE;
   gMarchFace = false;
   if (P.boxed != 0u) {
-    let w = windowSpan(ro, rd, vec3f(P.physOrigin), vec3f(P.physOrigin + P.physSize));
+    let w = windowSpan(ro, rd, vec3f(P.drawLo), vec3f(P.drawLo + P.physSize));
     if (w.x > bh.x) { bh.x = w.x; bh.z = w.z; gMarchFace = true; }
     bh.y = min(bh.y, w.y);
     gMarchExit = w.y;
