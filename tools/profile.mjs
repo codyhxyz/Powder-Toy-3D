@@ -4,7 +4,7 @@
 //   node tools/profile.mjs --map island [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz]
 //     [--view realistic] [--frames 60] [--warmup 30] [--counters] [--out dir]
 //     [--url https://tpt3d.codyh.xyz] [--port N] [--size 1280x800] [--dpr 2]
-//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--knock "pass,pass"] [--no-cost] [--gpufeatures core|subgroups|f16,…]
+//     [--autores] [--paused] [--frozen] [--compare old/profile.json] [--knockout N] [--knock "pass,pass"] [--no-cost] [--gpufeatures core|subgroups|f16,…]
 //     [--chrome-arg --enable-dawn-features=disable_robustness]…   (repeatable: price a Chrome/Dawn switch)
 //   node tools/profile.mjs --self-test     # CPU only: arguments and the report path
 //
@@ -48,20 +48,24 @@ const BOOT_FRAMES = 600;               // frames xctrace may see before the pose
 // interval without a pass's work names the pass that holds the frame back when neither the timestamps
 // (whole submissions on Apple's tilers) nor Metal's trace (it drops intervals under load) can
 // (Descent, 2026-10-25: timestamps put ~100 ms in every render pass, Metal 2 ms in the world march)
+// --frozen: the simulation paused from boot (?paused=1, app.js), not only for the timed frames (--paused):
+// every run draws the map's first state, so two builds compare the same scene. (A running Lab grows
+// steam over its lava for as long as the boot and pipelines take: a build that boots 2 s sooner was
+// timed on more smoke, 2026-10-25.)
 const KNOCKOUT_FRAMES = 6;
 const KNOCKOUT_WARMUP = 2;
 const MAX_KNOCKOUTS = 8;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, knock: null, cost: true, setup: null, gpufeatures: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
-  const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, compare: null, target: null, knockout: 0, knock: null, cost: true, setup: null, gpufeatures: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
+  const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
   const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
@@ -274,6 +278,7 @@ async function main() {
     url.searchParams.set('map', o.map);
     url.searchParams.set('view', o.view);
     url.searchParams.set('profile', '1');
+    if (o.frozen) url.searchParams.set('paused', '1');
     // only these optional shader features (gpu/features.js): `core`, or a list such as `subgroups` (f16 off), to A/B one feature
     if (o.gpufeatures !== null) url.searchParams.set('gpufeatures', o.gpufeatures);
     slot.busyBefore = await gpuBusyPct();
@@ -321,7 +326,7 @@ async function main() {
       catch (e) { throw new Error(`${e.message.split('\n')[0]}\npage errors/warnings: ${errors.slice(0, 8).join('\n  ') || 'none'}`); }
       finally { clearTimeout(silent); }
     };
-    await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline,
+    await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused || o.frozen, deadline,
       knockout: o.knockout, knock: o.knock ? o.knock.split(',').map((x) => x.trim()).filter(Boolean) : null, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, cost: o.cost, setup: o.setup });
     await answered(page.evaluate(() => window.__profTool.prepare()));
     // Metal's encoder times over the poses' frames only: started after the boot's compiles, each pose's
