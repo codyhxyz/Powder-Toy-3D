@@ -57,6 +57,7 @@ import { tracerCommonWGSL, realisticTraceWGSL, SCENE_FORMATS, REALISTIC_LEVELS }
 import { materialStyleForView, isMaterialView } from '../../views.js';
 import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 import { reachWGSL } from './reach.js';
+import { shaderFeatures } from '../../gpu/features.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
 import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
@@ -594,10 +595,77 @@ struct ShadeOut {
   return o;
 }`,
 };
+// ---- The march's colour state in 16-bit floats (shader-f16 devices: gpu/features.js) ----
+// The march stage spills (GPU counters, Lab M5 2026-10-25: 752 B a thread): its loop carries more
+// registers than the GPU has. What it carries across steps as colour (the gathered radiance and
+// transmittance, the light inside a medium, the reference light under a liquid's surface, a pane's
+// reflection) is stored in f16 between uses, so it takes half the registers through the whole loop;
+// every use converts it to f32, so all the math, and every callee, stays f32 (a call that writes
+// it through a pointer gets an f32 copy, written back after: cF, tF, mF). Positions, distances,
+// cells, fields and the hit stay f32. f16 holds 3 decimal digits relative (10-bit mantissa) up to
+// 65504: transmittance in [0, 1] and HDR radiance well inside that. On a core device none of this
+// runs: the module is byte-identical to the f32 one.
+const HALF_STATE = { col: 'cF', trans: 'tF', mediumLight: 'mF', lightRef: null, paneEnv: null };
+const HALF_NAMES = Object.keys(HALF_STATE).join('|');
+const HALF_MARK = '@@';   // (marks rewritten names while the passes run; not WGSL, so a leftover fails validation)
+/**
+ * traceView's march (and the epilogue) with HALF_STATE stored as vec3h. Throws when the tracer no
+ * longer declares a value the way this expects (a CPU check runs it: tools/world-march-cpu-check.mjs).
+ * @param {string} code traceView from its signature through the march stage's epilogue
+ * @returns {string}
+ */
+export function halfMarchState(code) {
+  let out = code;
+  // the declarations, and f32 scratch for the callees that write through a pointer
+  for (const v of Object.keys(HALF_STATE)) {
+    const decl = new RegExp(`var ${v} = vec3f\\(([^)]*)\\);`);
+    if (!decl.test(out)) throw new Error(`march: half state: traceView no longer declares ${v} as var ${v} = vec3f(...)`);
+    out = out.replace(decl, `var ${HALF_MARK}${v} = vec3h($1);${v === 'col' ? ` var ${Object.values(HALF_STATE).filter(Boolean).map((s) => `${s}: vec3f`).join('; var ')};` : ''}`);
+  }
+  // statements that pass one by pointer: an f32 copy in, the result back out
+  const ptr = new RegExp(`&(${HALF_NAMES})\\b`, 'g');
+  for (let from = 0, m; (ptr.lastIndex = from, m = ptr.exec(out));) {
+    const i = m.index;
+    const end = out.indexOf(';', i);
+    let start = i;
+    for (;;) {   // back to the statement's start: the last ; { or } before it outside a line comment
+      start = Math.max(out.lastIndexOf(';', start - 1), out.lastIndexOf('{', start - 1), out.lastIndexOf('}', start - 1));
+      const lineStart = out.lastIndexOf('\n', start) + 1;
+      const comment = out.slice(lineStart, start).indexOf('//');
+      if (comment < 0) break;
+      start = lineStart + comment;
+    }
+    start += 1;
+    for (;;) {   // past the whitespace and any trailing comment of the statement before
+      while (/\s/.test(out[start])) start++;
+      if (!out.startsWith('//', start)) break;
+      start = out.indexOf('\n', start);
+    }
+    const stmt = out.slice(start, end + 1);
+    const vars = [...new Set([...stmt.matchAll(new RegExp(ptr.source, 'g'))].map((x) => x[1]))];   // (not ptr: matchAll would start at its lastIndex)
+    for (const v of vars) if (!HALF_STATE[v]) throw new Error(`march: half state: ${v} is passed by pointer but has no f32 scratch`);
+    const pre = vars.map((v) => `${HALF_STATE[v]} = vec3f(${HALF_MARK}${v}); `).join('');
+    const post = vars.map((v) => ` ${HALF_MARK}${v} = vec3h(${HALF_STATE[v]});`).join('');
+    const body = vars.reduce((s, v) => s.replaceAll(`&${v}`, `&${HALF_STATE[v]}`), stmt);
+    out = `${out.slice(0, start)}${pre}${body}${post}${out.slice(end + 1)}`;
+    from = start + pre.length + body.length;
+  }
+  // writes: the f32 value rounded to f16
+  out = out.replace(new RegExp(`(?<![\\w.@])(${HALF_NAMES})\\s*(\\+=|\\*=|=)(?!=)\\s*([^;]+);`, 'g'), (_, v, op, e) => (op === '='
+    ? `${HALF_MARK}${v} = vec3h(${e});`
+    : `${HALF_MARK}${v} = vec3h(vec3f(${HALF_MARK}${v}) ${op[0]} (${e}));`));
+  // reads: as f32
+  out = out.replace(new RegExp(`(?<![\\w.@&])(${HALF_NAMES})\\b`, 'g'), `vec3f(${HALF_MARK}$1)`);
+  return out.replaceAll(HALF_MARK, '');
+}
+
 // What each stage takes of the tracer
-const stageTrace = (stage, detail, format, optics) => {
+const stageTrace = (stage, detail, format, optics, f16 = false) => {
   const t = splitTrace(detail, format, optics);
-  if (stage === 'march') return `${t.before}${t.march.replace(TRACE_SIG, 'fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> GBuf {')}${marchEpilogueWGSL}`;
+  if (stage === 'march') {
+    const march = `${t.march.replace(TRACE_SIG, 'fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> GBuf {')}${marchEpilogueWGSL}`;
+    return `${t.before}${f16 ? halfMarchState(march) : march}`;
+  }
   if (stage === 'reflect') return `${t.before}${reflectWGSL}`;
   return `${t.before}${shadePrologueWGSL}${shadeTail(t.tail)}`;
 };
@@ -647,10 +715,12 @@ const renamed = (code) => RENAMES.reduce((s, [re, to]) => s.replace(re, to), cod
  * optics: the rich optics (thin water films, glass panes and blocks that bend light: shaders/render.js
  * volumeFrag's optics), else the lean view's flat glass, as the box volume compiles them until a grid
  * holds a film or glass (gfx/opticsScan.js): their code costs every pixel registers.
- * @param {{ view?: string, detail?: object, fixedReadFormat?: 2 | 3, stage?: string, optics?: boolean }} [opts]
+ * features: the device's optional shader features (gpu/features.js): with f16 the march stage keeps its
+ * colour state in f16 (halfMarchState); without, the module is the f32 one, byte for byte.
+ * @param {{ view?: string, detail?: object, fixedReadFormat?: 2 | 3, stage?: string, optics?: boolean, features?: { f16: boolean } }} [opts]
  * @returns {string}
  */
-export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixedReadFormat = 2, stage = 'whole', optics = true } = {}) {
+export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixedReadFormat = 2, stage = 'whole', optics = true, features = shaderFeatures() } = {}) {
   if (!isMaterialView(view)) throw new Error(`worldMarchFrag: ${view} is not a material view (the data views keep the box's march)`);
   if (stage !== 'whole' && (!MARCH_STAGES.includes(stage) || !marchSplits(detail))) throw new Error(`worldMarchFrag: no split stage ${stage} for this detail`);
   const whole = stage === 'whole';
@@ -677,9 +747,11 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     grainsGLSL(detail),
     volumeHazeGLSL,
     ...(whole ? [traceWorld(detail, fixedReadFormat, optics), entryWGSL()]
-      : [gbufWGSL(stage), stageTrace(stage, detail, fixedReadFormat, optics), stageEntryWGSL[stage]()]),
+      : [gbufWGSL(stage), stageTrace(stage, detail, fixedReadFormat, optics, features.f16), stageEntryWGSL[stage]()]),
   ].join('\n');
+  const half = features.f16 && stage === 'march';
   const code = [
+    ...(half ? ['enable f16;'] : []),
     prelude(physGrid, { state: false }),
     frameBindings(),
     brickInfoWGSL,

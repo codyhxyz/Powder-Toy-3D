@@ -66,6 +66,21 @@ assert(MarchParams.size > 0);
   n++;
   console.log(`ok composite; split G-buffer ${GBUF_BYTES_PER_PIXEL} B/pixel`);
 }
+// shader-f16 devices (gpu/features.js): the march stage keeps its colour state in f16 (halfMarchState);
+// every other stage, and every stage on a core device, is the f32 module byte for byte
+for (const [view, level, detail, stage, optics] of cases.filter((c) => c[3] === 'march')) {
+  const name = `march.${view}.${level}.march${optics ? '' : '.lean'}.f16`;
+  const code = worldMarchFrag(grids.lab, { view, detail, stage, optics, features: { f16: true, subgroups: false } });
+  assert(code.startsWith('enable f16;') && code.includes('var col = vec3h('), `${name}: no f16 colour state`);
+  const run = nagaSpawn(code, `${name}.wgsl`);
+  if (run.error || run.status !== 0) { console.error(`${name}:\n${(run.stderr || run.stdout || String(run.error)).slice(0, 4000)}`); process.exit(1); }
+  n++;
+}
+for (const stage of ['whole', 'reflect', 'shade']) {
+  const [view, , detail, , optics] = cases.find((c) => c[3] === stage);
+  assert.equal(worldMarchFrag(grids.lab, { view, detail, stage, optics, features: { f16: true, subgroups: false } }),
+    worldMarchFrag(grids.lab, { view, detail, stage, optics, features: { f16: false, subgroups: false } }), `${stage}: f16 changed a stage it keeps f32`);
+}
 
 // physSlot (the march's run-time slot in physics' window) is the prelude's slotOf, for every map's window
 // at an origin in its world

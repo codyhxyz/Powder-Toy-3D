@@ -285,7 +285,8 @@ export function costify(code, { binding, require } = {}) {
   } else {
     ins.push([fs[0] + entry.lastIndexOf(where.before) + 2, span(STORE)]);
   }
-  ins.push([0, span(storagePrelude(binding))]);
+  // (after the module's leading directives, `enable f16;` (shaders/world/march.js): WGSL wants them first)
+  ins.push([/^(?:[ \t]*(?:enable|requires)\b[^;\n]*;[ \t]*\n)*/.exec(code)[0].length, span(storagePrelude(binding))]);
   return splice(code, ins);
 }
 
