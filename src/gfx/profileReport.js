@@ -233,11 +233,13 @@ export function annotate(report, { cost = null, gpuCounters = null, gpuShared = 
 // against the real time of the pass they describe. Work is shown as work; only
 // the waterfall's pass gives the time.
 function costFindings(c, passes, context) {
-  const passName = c.pass ?? 'scene';
-  const pass = passes.find((p) => p.name === passName) ?? null;
+  // the passes the counted work ran in (the split world march: its three stages, their times summed)
+  const names = c.passes ?? [c.pass ?? 'scene'];
+  const passName = names.join(' + ');
+  const found = names.map((n) => passes.find((p) => p.name === n)).filter(Boolean);
   const [w, h] = context.canvas ?? [0, 0];
   const pixels = c.pixels ?? Math.round(w * (context.renderScale ?? 1)) * Math.round(h * (context.renderScale ?? 1));
-  const ms = pass?.median ?? null;
+  const ms = found.length === names.length ? found.reduce((a, p) => a + (p.median ?? 0), 0) : null;
   const nsPerPixel = ms !== null && pixels ? (ms * NS_PER_MS) / pixels : null;
   // "time high": the traced pass alone over VIEW_SHARE of a capped frame, per pixel
   const highNs = pixels ? (VIEW_SHARE * (MS_PER_S / CAP_FPS) * NS_PER_MS) / pixels : null;
@@ -250,7 +252,10 @@ function costFindings(c, passes, context) {
   let flag = null;
   if (timeHigh && judged && !outside.length) flag = `work normal, time high on ${passName} (${nsPerPixel.toFixed(2)} ns/px): shader occupancy/register pressure suspected; run --counters`;
   else if (timeHigh && outside.length) flag = `work high on ${passName}: ${outside.join(', ')} outside normal; the scene asks more of the shader per pixel`;
-  return { pass: passName, passMs: ms, pixels, nsPerPixel, highNsPerPixel: highNs, timeHigh, outside, counters: c.counters ?? {}, normal: c.normal ?? null, flag };
+  if (c.trusted === false) flag = `cost counters UNTRUSTED: ${c.reason}`;
+  return { pass: passName, passMs: ms, pixels, nsPerPixel, highNsPerPixel: highNs, timeHigh, outside, counters: c.counters ?? {}, normal: c.normal ?? null, flag,
+    trusted: c.trusted ?? null, reason: c.reason ?? null, covered: c.covered ?? null, path: c.path ?? null, samePicture: c.samePicture ?? null, exactShare: c.exactShare ?? null,
+    stages: c.stages ? Object.fromEntries(Object.entries(c.stages).map(([k, v]) => [k, { pass: v.pass, covered: v.covered, counters: v.counters }])) : null };
 }
 
 const setupKeys = ['map', 'mode', 'view', 'detail', 'canvas', 'renderScale', 'pixelRatio', 'taa', 'upscale', 'adaptive', 'autoRes',
@@ -310,9 +315,14 @@ export function formatReport(r) {
   if (r.cost) {
     out.push('');
     out.push(`work (agent C's cost counters, not time) on ${r.cost.pass}: ${f(r.cost.passMs, 3)} ms over ${r.cost.pixels} px = ${f(r.cost.nsPerPixel, 3)} ns/px (high above ${f(r.cost.highNsPerPixel, 3)})`);
+    if (r.cost.trusted !== null) {
+      out.push(`  ${r.cost.trusted ? `trusted: same picture as the live pipeline (${f(PCT * (r.cost.exactShare ?? 0), 2)} % bit-exact)` : `UNTRUSTED: ${r.cost.reason}`} · ${r.cost.path ?? '?'} · per pixel over ${r.cost.covered ?? '?'} covered px`);
+    }
+    const stages = r.cost.stages ? Object.entries(r.cost.stages) : [];
+    if (stages.length) out.push(`  ${pad('', 24)} ${'total (mean p50 p95 max)'.padEnd(52)}${stages.map(([k]) => lpad(`${k} mean`, 13)).join('')}`);
     for (const [k, v] of Object.entries(r.cost.counters)) {
       const nrm = r.cost.normal?.[k];
-      out.push(`  ${pad(k, 24)} mean ${lpad(f(v.mean), 8)}  p50 ${lpad(f(v.p50), 8)}  p95 ${lpad(f(v.p95), 8)}  max ${lpad(f(v.max), 8)}${nrm ? `  normal ${nrm[0]}–${nrm[1]}${r.cost.outside.includes(k) ? ' OUTSIDE' : ''}` : ''}`);
+      out.push(`  ${pad(k, 24)} mean ${lpad(f(v.mean), 8)}  p50 ${lpad(f(v.p50), 8)}  p95 ${lpad(f(v.p95), 8)}  max ${lpad(f(v.max), 8)}${stages.map(([, st]) => lpad(f(st.counters[k]?.mean), 13)).join('')}${nrm ? `  normal ${nrm[0]}–${nrm[1]}${r.cost.outside.includes(k) ? ' OUTSIDE' : ''}` : ''}`);
     }
     if (r.cost.flag) out.push(`  ⚑ ${r.cost.flag}`);
   }

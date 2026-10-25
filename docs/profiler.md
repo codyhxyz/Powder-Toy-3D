@@ -81,7 +81,7 @@ integers.
 
 ### Counters
 
-Twelve per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
+Twenty-four per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 
 | key | counts |
 | --- | --- |
@@ -96,7 +96,24 @@ Twelve per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 | `shading` | `shadeHit` calls |
 | `sunShadow` | `sunMapShadow` and `sunMapShadowAt` calls (`sunShadow`/`sunShadowAt` reach the map through them) |
 | `fieldReads` | field texture taps: `fieldTex` (1) and `cubicFetch8` (8) |
-| `cellReads` | `fetchAs`, `fetchBs`, `fetchNativeCore` (cell state) and `occIdOf` (occupancy ids) calls |
+| `cellReads` | `fetchAs`, `fetchBs`, `fetchNativeCore` (cell state) and `occIdOf` (occupancy ids) calls; the world: `wcCell` |
+| `cellStepsOwn` | `cellSteps` in a brick with cells of its own (the world: W's own `MATTER` bit, `wcInfo` bit 28; the box: a non-zero occupancy mask) |
+| `cellStepsDilated` | `cellSteps` in a brick with no cell of its own, visited for its flags alone (the world: W's 1-brick dilation; the box: the fields' or media's reach) |
+| `cellStepsInterior` | `cellSteps` in a brick flagged `BRICK_LIQUID_INTERIOR` (checked first) |
+| `skipBrick` | main-march `skipEmpty` jumps over the brick alone (the world: an occupied 16³ node; the box: `brickDist` radius 0) |
+| `skip16` | jumps over an empty 16³ node (the box: a cube of 3–15 bricks a side) |
+| `skip64` | jumps over an empty 64³ node (the box: a cube of 16 bricks a side or more) |
+| `skipCells` | cells the main march moved by its jumps (\|Δx\| + \|Δy\| + \|Δz\|) |
+
+The counted twin writes them to a write-only `rgba32uint` storage texture in group 0 (the next free
+binding), three times the scene target's height: the pixel's twelve words, four a row, in rows 3y to
+3y + 2 (slots past the last counter stay 0). It writes right after the trace, before the miss's
+discard, so a ray that crossed the box and hit nothing shows its cost too. (Twenty-four 16-bit counts
+don't fit beside the colour in the 32 bytes a sample may have, as the first twelve did.)
+
+The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
+`skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split). The
+main march's jumps are marked (`gCostMainSkip`) so a reflection's `skipEmpty` isn't counted as one.
 
 A count that reaches 65535 (the march: 32767) stops there; `saturated` says how many pixels did, and a
 warning says their counts are lower bounds.
@@ -147,14 +164,14 @@ counter redraws from the same capture; "capture again" takes a new one).
   its output), so the live pipelines are byte-identical with or without the cost view. No live pipeline
   is ever built from the counted text.
 - **Same picture, proven.** The counted variant still writes the normal colour and depth; its counters
-  go to two integer targets beside them. Each capture draws the live pipeline and the counted twin on the
+  go to a storage texture beside them. Each capture draws the live pipeline and the counted twin on the
   same frame state (the FrameUniforms the frame left: the same camera, TAA jitter, frame number, sun;
   the same mesh depth, shadow map, GI), neither TAA-resolved, and compares their colour texel by
   texel. If more than 0.01 % of the covered pixels differ by more than 1/1024, the result is
   `trusted: false` with the reason, and the overlay shows it as UNTRUSTED.
 - **Never timed.** The counted variant's speed is not the real shader's (its counters change its
   registers), so nothing in the result is a time, and the counts are labelled work.
-- **Exact readback.** Counters are integers in `rgba32uint`/`rg32uint` targets at the scene target's
+- **Exact readback.** Counters are integers in an `rgba32uint` storage texture at the scene target's
   real size (not the canvas's: the scene can be rendered at a fraction of it), read back as integers.
   No sRGB encode, exposure, tone map or TAA touches them. Stats cover only covered pixels, and the
   result says how many those were.
