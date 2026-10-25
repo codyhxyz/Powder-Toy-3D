@@ -40,7 +40,7 @@ function fixture() {
       };
       return {
         beginRenderPass: begin, beginComputePass: begin,
-        resolveQuerySet(q, first, count, dst, off) { ops.push(() => new BigUint64Array(dst.data, off, count).set(q.values.subarray(first, first + count))); },
+        resolveQuerySet(q, first, count, dst, off) { if (off % 256) throw new Error('resolveQuerySet: destination offset not a multiple of 256'); ops.push(() => new BigUint64Array(dst.data, off, count).set(q.values.subarray(first, first + count))); },
         copyBufferToBuffer(src, a, dst, b, size) { ops.push(() => new Uint8Array(dst.data, b, size).set(new Uint8Array(src.data, a, size))); },
         finish() { return { ops }; },
       };

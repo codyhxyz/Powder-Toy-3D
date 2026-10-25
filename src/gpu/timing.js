@@ -14,6 +14,7 @@ export const MAX_TIMED_PASSES = 1024;   // timed passes per frame (a split big-m
 // frame: a frame's dozen encoders (flushes) × the frames in flight took all 8 pools
 // before post began (tools/profile.mjs, Lab, 2026-10-25). Pools are per frame now.
 export const QUERY_POOLS = 8;
+const RESOLVE_ALIGN_SLOTS = 16;   // 256 bytes of resolved timestamps (2 × 8 bytes a slot)
 
 export class GpuTiming {
   constructor(gpu) {
@@ -100,14 +101,18 @@ export class GpuTiming {
       const finish = enc.finish.bind(enc);
       enc.finish = (...rest) => {
         if (record?.slots.length) {
-          // this encoder's own slots, in runs of consecutive indices
+          // Resolve from a 256-byte-aligned slot (ResolveQuerySet's destination offset must be a
+          // multiple of 256: RESOLVE_ALIGN_SLOTS) through this encoder's last slot, then copy only
+          // its own slots to the staging buffer. Slots of other encoders in that span resolve too
+          // and are never copied: each encoder's copy follows its own resolve in its own commands.
           const { pool, slots } = record;
+          const first = Math.floor(Math.min(...slots) / RESOLVE_ALIGN_SLOTS) * RESOLVE_ALIGN_SLOTS;
+          const end = Math.max(...slots) + 1;
+          enc.resolveQuerySet(pool.queries, first * 2, (end - first) * 2, pool.resolve, first * 16);
           for (let i = 0; i < slots.length;) {
             let j = i + 1;
             while (j < slots.length && slots[j] === slots[j - 1] + 1) j++;
-            const first = slots[i], count = j - i;
-            enc.resolveQuerySet(pool.queries, first * 2, count * 2, pool.resolve, first * 16);
-            enc.copyBufferToBuffer(pool.resolve, first * 16, pool.staging, first * 16, count * 16);
+            enc.copyBufferToBuffer(pool.resolve, slots[i] * 16, pool.staging, slots[i] * 16, (j - i) * 16);
             i = j;
           }
         }
