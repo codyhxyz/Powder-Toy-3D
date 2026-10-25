@@ -1315,6 +1315,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get reading() { return reading; },
     /** Current-frame weight TAA settles with (three's TAAUNode.currentFrameWeight: how long the view needs to converge). */
     get settleWeight() { return temporalOf()?.currentWeight ?? 1; },
+    /** The temporal upscaler (gpu/three.js createTemporalUpscaler), or null without one: tests. */
+    get temporal() { return temporalOf(); },
     /**
      * Render scale per axis the next render uses, of the output's pixels: the
      * preset's (UPSCALE); while adaptive (under an upscaling preset) × the

@@ -14,10 +14,13 @@ import {
   WebGPURenderer, ExternalTexture, WebGPUCoordinateSystem, RenderTarget, DepthTexture, QuadMesh, NodeMaterial,
   RGBAFormat, RedFormat, RGFormat, RGBAIntegerFormat, RedIntegerFormat,
   HalfFloatType, FloatType, UnsignedByteType, UnsignedIntType, IntType,
-  LinearFilter, NearestFilter, ClampToEdgeWrapping, NoColorSpace,
+  LinearFilter, NearestFilter, ClampToEdgeWrapping, NoColorSpace, RendererUtils, Vector2,
 } from 'three/webgpu';
-import { texture as textureNode } from 'three/tsl';
+import {
+  texture as textureNode, exp, float, Fn, max, uv, vec2, vec4, luminance, ivec2, mix, property, outputStruct, context,
+} from 'three/tsl';
 import TAAUNode from 'three/addons/tsl/display/TAAUNode.js';
+import { clipAABB, flickerReduction, sampleCurrentDepth, samplePreviousDepth } from 'three/addons/tsl/utils/TAAUtils.js';
 import { GraphicsFailure, deviceLostMessage, gpuErrorMessage } from './errors.js';
 
 /**
@@ -290,9 +293,10 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
  *   the scene's size, the node's inputs: its velocity (rg16float, this
  *   frame's unjittered NDC minus last frame's, the convention of three's
  *   VelocityNode, which TAAUNode reads) and the scene's colour (rgba16float);
- * - resolve(camera, depth, [w, h]): the node's frame (resolve, history copy,
- *   previous-depth copy: its own submits, after a flush of ours) at output size
- *   [w, h]; returns the resolved GPUTexture.
+ * - resolve(camera, depth, [w, h]): the node's frame (resolve, previous-depth
+ *   copy: its own submits, after a flush of ours) at output size [w, h];
+ *   returns the resolved GPUTexture, which holds until the resolve after next
+ *   (PingPongTAAUNode below: its history targets take turns).
  * Outside a RenderPipeline three never calls the view-offset hooks, and its
  * per-frame node update is once per gpu frame (createThreeRenderer), so the
  * node is built once by rendering a 1×1 quad that samples it (that render runs
@@ -300,6 +304,8 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
  * resolve per resolve() call. While it runs, the renderer's drawing-buffer
  * size, which TAAUNode takes as the output size, is [w, h].
  * @param {object} gpu with gpu.three (createThreeRenderer)
+ * @param {{ stock?: boolean }} [opts] stock: three's TAAUNode as it ships, not
+ *   PingPongTAAUNode (a test resolves both on the same inputs and compares)
  */
 // Reserve a sample without touching the committed jitter index/history. This
 // uses the real TAAU view-offset hooks (including their velocity override),
@@ -340,7 +346,183 @@ export function reserveTemporalJitter(node, camera, w, h) {
   } catch (e) {restore();throw e;}
 }
 
-export function createTemporalUpscaler(gpu) {
+/**
+ * three r186's TAAUNode with its history in two targets that take turns, so
+ * the frame's output-size work is the resolve alone. The same picture, bit
+ * for bit: resolving the same inputs as the stock node (createTemporalUpscaler
+ * { stock: true }) every frame, each with its own history, 0 of 4.1 M texels
+ * differed over 16 frames on Lab and Island (M5, 2026-10-25). Its two changes:
+ * - the node resolves into one target and then copies it into its history
+ *   (copyTextureToTexture, rgba16float at output size: at 2560×1600 33 MB
+ *   read and 33 MB written a frame, for plumbing). Here the resolve writes
+ *   one of two targets while it samples the other as history, and the target
+ *   written is the frame's output. The resolved image lives until the
+ *   resolve after next (the node's own until the next one);
+ * - its resolve samples a lock texture (its history target's second
+ *   attachment, rgba16float at output size) that only the resize seed ever
+ *   writes, with 0: the resolve's own lock output goes to a target with one
+ *   attachment, and the history copy takes attachment 0 alone. So the lock
+ *   it reads is always 0, `max(thin, 0 × decay)` is `max(thin, 0)`, and the
+ *   read (a bilinear tap a pixel, at output size) and the texture go.
+ * Only outside a RenderPipeline (the jitter's view-offset hooks are
+ * createTemporalUpscaler's). updateBefore and setup are the node's own
+ * (TAAUNode.js:377-489, :491-702) but for those two changes.
+ */
+const _taauQuad = /*@__PURE__*/ new QuadMesh();
+const _taauSize = /*@__PURE__*/ new Vector2();
+let _taauState;
+class PingPongTAAUNode extends TAAUNode {
+  constructor(beautyNode, depthNode, velocityNode, camera) {
+    super(beautyNode, depthNode, velocityNode, camera);
+    // the node's own targets go unused (never initialized: no GPU memory)
+    this._historyRenderTarget.dispose();
+    this._resolveRenderTarget.dispose();
+    this._pair = [0, 1].map((i) => {
+      const rt = new RenderTarget(1, 1, { depthBuffer: false, type: HalfFloatType });
+      rt.texture.name = `TAAU history ${i}`;
+      return rt;
+    });
+    this._written = 0;   // the target the next resolve writes
+    this._historyNode = textureNode(this._pair[1].texture);
+    this._textureNode.value = this._pair[0].texture;
+  }
+
+  setSize(w, h) {
+    for (const rt of this._pair) rt.setSize(w, h);
+  }
+
+  updateBefore(frame) {
+    const { renderer } = frame;
+    this._previousCameraWorldMatrix.value.copy(this._cameraWorldMatrix.value);
+    this._previousCameraProjectionMatrixInverse.value.copy(this._cameraProjectionMatrixInverse.value);
+    this._cameraNearFar.value.set(this.camera.near, this.camera.far);
+    this._cameraWorldMatrix.value.copy(this.camera.matrixWorld);
+    this._cameraWorldMatrixInverse.value.copy(this.camera.matrixWorldInverse);
+    this._cameraProjectionMatrixInverse.value.copy(this.camera.projectionMatrixInverse);
+    const { width, height } = renderer.getDrawingBufferSize(_taauSize);
+    _taauState = RendererUtils.resetRendererState(renderer, _taauState);
+    const write = this._pair[this._written], read = this._pair[1 - this._written];
+    const restart = read.width !== width || read.height !== height;
+    this.setSize(width, height);
+    if (restart) {
+      for (const rt of this._pair) renderer.initRenderTarget(rt);
+      // the history seeded with the beauty, bilinearly upscaled (the node's seed)
+      renderer.setRenderTarget(read);
+      _taauQuad.material = this._seedMaterial;
+      _taauQuad.name = 'TAAU.seed';
+      _taauQuad.render(renderer);
+      renderer.setRenderTarget(null);
+    }
+    this._historyNode.value = read.texture;
+    renderer.setRenderTarget(write);
+    _taauQuad.material = this._resolveMaterial;
+    _taauQuad.name = 'TAAU';
+    _taauQuad.render(renderer);
+    renderer.setRenderTarget(null);
+    this._textureNode.value = write.texture;
+    this._written = 1 - this._written;
+    // the scene's depth into the previous-depth texture (the node's, as is)
+    const currentDepth = this.depthNode.value;
+    const srcW = currentDepth.image?.width ?? 0, srcH = currentDepth.image?.height ?? 0;
+    if (srcW > 0 && srcH > 0) {
+      if (this._previousDepthRenderTarget.width !== srcW || this._previousDepthRenderTarget.height !== srcH) {
+        this._previousDepthRenderTarget.setSize(srcW, srcH);
+        renderer.initRenderTarget(this._previousDepthRenderTarget);
+      }
+      const dstDepth = this._previousDepthRenderTarget.depthTexture;
+      renderer.copyTextureToTexture(currentDepth, dstDepth);
+      this._previousDepthNode.value = dstDepth;
+    }
+    RendererUtils.restoreRendererState(renderer, _taauState);
+  }
+
+  setup(builder) {
+    if (builder.renderer.reversedDepthBuffer === true) this._previousDepthRenderTarget.depthTexture.type = FloatType;
+    const historyNode = this._historyNode;
+    // (one output: the node's second, the lock, goes to a target with one attachment and is dropped)
+    const colorOutput = property('vec4');
+    const outputNode = outputStruct(colorOutput);
+    const resolve = Fn(() => {
+      const uvNode = uv();
+      const inputSize = this.beautyNode.size();
+      const inputSizeF = vec2(inputSize);
+      const pIn = uvNode.mul(inputSizeF);
+      const closestTapF = pIn.sub(vec2(0.5).add(this._jitterOffset)).round();
+      const closestTap = ivec2(closestTapF);
+      const currentDepth = sampleCurrentDepth(this.depthNode, closestTapF, this._cameraNearFar);
+      const closestDepth = currentDepth.get('closestDepth');
+      const closestPositionTexel = currentDepth.get('closestPositionTexel');
+      const farthestDepth = currentDepth.get('farthestDepth');
+      const offsetUV = this.velocityNode.load(closestPositionTexel).xy.mul(vec2(0.5, -0.5));
+      const historyUV = uvNode.sub(offsetUV);
+      const previousDepth = samplePreviousDepth(this._previousDepthNode, historyUV, this._previousCameraProjectionMatrixInverse,
+        this._previousCameraWorldMatrix, this._cameraWorldMatrixInverse, this._cameraNearFar, this.camera);
+      const isValidUV = historyUV.greaterThanEqual(0).all().and(historyUV.lessThanEqual(1).all());
+      const isEdge = farthestDepth.sub(closestDepth).greaterThan(this.edgeDepthDiff);
+      const isDisocclusion = closestDepth.sub(previousDepth).greaterThan(this.depthThreshold);
+      const hasValidHistory = isValidUV.and(isEdge.or(isDisocclusion.not()));
+      const sumColor = vec4(0).toVar();
+      const sumWeight = float(0).toVar();
+      const moment1 = vec4(0).toVar();
+      const moment2 = vec4(0).toVar();
+      const offsets = [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+      for (const [x, y] of offsets) {
+        const tap = closestTap.add(ivec2(x, y));
+        const tapCenter = vec2(tap).add(vec2(0.5).add(this._jitterOffset));
+        const delta = pIn.sub(tapCenter);
+        const d2 = delta.dot(delta);
+        const w = exp(d2.mul(-2.29));
+        const c = this.beautyNode.load(tap).max(0);
+        sumColor.addAssign(c.mul(w));
+        sumWeight.addAssign(w);
+        moment1.addAssign(c);
+        moment2.addAssign(c.pow2());
+      }
+      const currentColor = sumColor.div(sumWeight.max(1e-5));
+      const N = float(offsets.length);
+      const mean = moment1.div(N);
+      const motionFactor = uvNode.sub(historyUV).mul(inputSizeF).length().div(this.maxVelocityLength).saturate();
+      const varianceGamma = mix(0.5, 1, motionFactor.oneMinus().pow2());
+      const variance = moment2.div(N).sub(mean.pow2()).max(0).sqrt().mul(varianceGamma);
+      const minColor = mean.sub(variance);
+      const maxColor = mean.add(variance);
+      const historyColor = historyNode.sample(historyUV);
+      const clippedHistoryColor = clipAABB(mean.clamp(minColor, maxColor), historyColor, minColor, maxColor);
+      const currentLuma = luminance(currentColor.rgb);
+      const meanLuma = luminance(mean.rgb).toConst();
+      const thinFeature = currentLuma.sub(meanLuma).abs().div(meanLuma).smoothstep(0, 0.2);
+      const isDepthChanged = closestDepth.sub(previousDepth).abs().greaterThan(this.depthThreshold);
+      const canLock = isValidUV.and(isDepthChanged.not());
+      const gatedThinFeature = canLock.select(thinFeature, float(0));
+      // (the node's max(thin, lock.r × decay): its lock texture is always 0, see above)
+      const lock = max(gatedThinFeature, float(0)).saturate();
+      const lockedHistoryColor = mix(clippedHistoryColor, historyColor, lock);
+      const currentWeight = float(this.currentFrameWeight).toVar();
+      currentWeight.assign(hasValidHistory.select(currentWeight.add(motionFactor).saturate(), 1));
+      const output = flickerReduction(currentColor, lockedHistoryColor, currentWeight);
+      colorOutput.assign(output);
+      return vec4(0);
+    });
+    const sharedContext = context(builder.getSharedContext());
+    this._resolveMaterial.contextNode = sharedContext;
+    this._resolveMaterial.colorNode = resolve();
+    this._resolveMaterial.outputNode = outputNode;
+    this._seedMaterial.colorNode = Fn(() => {
+      colorOutput.assign(this.beautyNode.sample(uv()));
+      return vec4(0);
+    })();
+    this._seedMaterial.contextNode = sharedContext;
+    this._seedMaterial.outputNode = outputNode;
+    return this._textureNode;
+  }
+
+  dispose() {
+    super.dispose();
+    for (const rt of this._pair) rt.dispose();
+  }
+}
+
+export function createTemporalUpscaler(gpu, { stock = false } = {}) {
   const renderer = gpu.three.renderer;
   const target = (name, format, filter) => {
     const rt = new RenderTarget(1, 1, {
@@ -356,7 +538,7 @@ export function createTemporalUpscaler(gpu) {
   // TAAUNode reads its input size from the beauty node's render target (TAAUNode.js:399, :513)
   const beauty = Object.assign(textureNode(color.texture), { isRTTNode: true, renderTarget: color });
   // (its depth: the scene's, set at the first resolve, before the node is built)
-  const node = new TAAUNode(beauty, textureNode(new DepthTexture(1, 1, FloatType)), textureNode(velocity.texture), null);
+  const node = new (stock ? TAAUNode : PingPongTAAUNode)(beauty, textureNode(new DepthTexture(1, 1, FloatType)), textureNode(velocity.texture), null);
   // our scene depth is depth32float; the copy into the previous-depth texture needs the same format
   // (TAAUNode switches it to FloatType only for a reversed depth buffer: TAAUNode.js:530)
   node._previousDepthRenderTarget.depthTexture.type = FloatType;
