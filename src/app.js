@@ -1843,7 +1843,11 @@ async function renderThumb(viewId, out, { build = true } = {}) {
     const drawStill = () => presentation.neutral(() => post.renderStill({
       prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); wv?.writeUniforms(frameValues(thumbCam, viewId, [0, 0])); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
-      opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
+      opaque: (p) => {
+        const drew = threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false;
+        if (wv && !b) worldPrepass(p, view, detail, null);   // (the split march's stages, as a frame records them)
+        return drew;
+      },
       draw(rp) {
         const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;   // the sea past its walls
         drawSkyFor(rp, view, sea);
@@ -1851,7 +1855,8 @@ async function renderThumb(viewId, out, { build = true } = {}) {
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: mapKind.boxFrame });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
-        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0 });
+        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0 });
+        prepassed = false;
         if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
@@ -2410,7 +2415,8 @@ function selectRenderView() {
 // Returns whether it drew.
 function drawVolume(rp) {
   const view = viewKeyOf(renderView), detail = frameDetail;
-  const meshDepth = cut.take();
+  const meshDepth = prepassed ? null : cut.take();   // (the split march took it before the scene pass)
+  prepassed = false;
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
   // The material views march the world in world cells (gfx/worldView.js), on every map.
   // Same look (data views, Plain and the rolling log, docs/seamless-world.md): heat, pressure,
@@ -2427,6 +2433,16 @@ function drawVolume(rp) {
     wakeWhen(pipe.ready);
   }
   return drew;
+}
+// The split world march's stages, recorded before the scene pass as passes of their own (gfx/worldView.js
+// prepass; its draw in the scene pass composites them): for the frame's view (renderView) or a still's.
+let prepassed = false;
+function worldPrepass(p, view = viewKeyOf(renderView), detail = frameDetail, warp = warpNow()) {
+  prepassed = false;
+  if (blocks || testNoVolume || testBoxMarch || !worldView?.draws(view, !!warp && warp.k !== 0) || !worldView.splits(detail)) return;
+  const meshDepth = cut.take();
+  prepassed = true;
+  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, target: p.sceneTarget.color });
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 let testBoxMarch = false;  // test.renderOnce({ boxMarch: true }): the box's march in place of the world's (A/B shots)
@@ -2547,9 +2563,10 @@ const frameHooks = {
     // the kept scene, then the opaque meshes over it, depth-tested against its depth
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
-    if (frameMode === 'capture') return false;   // (the volume uncut: the meshes go over it in the meshes hook)
+    if (frameMode === 'capture') { worldPrepass(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
     const drew = threeMeshes(p, false);
     if (drew && !blocks) cut.capture(p.sceneTarget.depth);
+    worldPrepass(p);
     return drew;
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },

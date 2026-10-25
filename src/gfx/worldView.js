@@ -6,7 +6,13 @@
 //   const view = createWorldView(gpu, sim, { volume });   // volume: gfx/volume.js (its shadow map, its noise)
 //   prepare:  writeFrameUniforms(gpu, values); view.writeUniforms(values);
 //   compute:  physics, then view.update(gpu.frame, { boxes, camera, sun })   // W writeback → F → L
+//   before the scene pass: view.prepass(gpu.frame, { view, detail, meshDepth, marchNear, aerCopy, target })
 //   draw:     view.draw(rp, { view: 'realistic', detail, meshDepth, marchNear, aerCopy })
+//
+// The split march (shaders/world/march.js, "The split march"): prepass records its stages as passes
+// of their own ('world march', 'world reflect', 'world shade') into a G-buffer the size of the scene
+// target; draw then composites their picture into the scene pass. A detail variant that doesn't
+// split (the grains), or a draw with no prepass before it, draws the whole march in the scene pass.
 //
 // FrameUniforms in world cells: the window's FrameUniforms (gfx/uniforms.js) hold the camera,
 // the volume's model and the lamps, wand lights and dig mark in physics' window cells, which the
@@ -20,6 +26,8 @@ import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
   worldMarchFrag, worldMarchPipeline, MarchParams, physParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
+  MARCH_STAGES, marchSplits, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, GBUF, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
+  COMPOSITE_NAME, COMPOSITE_LAYOUT_NAMES, stagePipeName,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
 // The owners' classes. Until W, F and L land these are the stand-ins (shaders/world/stubs.js); the
@@ -67,6 +75,10 @@ export function createWorldView(gpu, sim, { volume }) {
     copy: worldCopy.layout,
     group2: gpu.layout(WORLD_MARCH_LAYOUT_NAMES[2], group2Entries),
   };
+  // each split stage's group 0 (the frame's four and its G-buffer textures) and the composite's
+  const stageL = Object.fromEntries(MARCH_STAGES.map((st) => [st,
+    gpu.layout(worldMarchLayoutNames(st)[0], WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0])]));
+  const compositeL = gpu.layout(COMPOSITE_LAYOUT_NAMES[0], COMPOSITE_LAYOUT);
   const fu = frameUniformsOf(gpu);
   const uniforms = gpu._worldFrameUniforms ??= gpu.uniforms(FrameUniformsStruct, 'FrameUniforms (world cells)');
   const last = { viewProj: new Matrix4(), model: new Matrix4() };
@@ -93,15 +105,38 @@ export function createWorldView(gpu, sim, { volume }) {
     const key = `g2|${entries.map((e) => idOf(e.resource.buffer ?? e.resource)).join(',')}`;
     return cached(key, () => gpu.bindGroup(L.group2, entries, label('group 2')));
   }
-  function frameGroup(depth) {
+  function frameGroup(depth, stage = 'whole') {
     const plane = sim.decoPlane ?? { buffer: dummy.plane, offset: 0, size: dummy.plane.size };
-    const key = `g0|${idOf(depth)}|${idOf(plane.buffer)}|${plane.offset}|${plane.size}`;
-    return cached(key, () => gpu.bindGroup(L.frame, [
+    const extra = stage === 'whole' ? [] : stageTextures(stage);
+    const key = `g0|${stage}|${idOf(depth)}|${idOf(plane.buffer)}|${plane.offset}|${plane.size}|${extra.length ? idOf(gb) : ''}`;
+    return cached(key, () => gpu.bindGroup(stage === 'whole' ? L.frame : stageL[stage], [
       { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } },
       { binding: 2, resource: depth.createView({}) },
       { binding: 3, resource: { buffer: plane.buffer, offset: plane.offset, size: plane.size } },
-    ], label('frame')));
+      ...extra.map(([binding, k]) => ({ binding, resource: gb.views[k] })),
+    ], label(stage === 'whole' ? 'frame' : `${stage} frame`)));
   }
+
+  // ---- the split march's G-buffer (shaders/world/march.js GBUF), the scene target's size ----
+  let gb = null;
+  function gbuffer(w, h) {
+    if (gb && gb.w === w && gb.h === h) return gb;
+    if (gb) { const old = gb; gpu.flush('world gbuffer resize'); Object.values(old.tex).forEach((t) => t.destroy?.()); }
+    const storage = new Set(stageTextures('march').filter(([, , wr]) => wr).map(([, k]) => k));
+    const tex = {}, views = {};
+    for (const [k, format] of Object.entries(GBUF)) {
+      const usage = GPUTextureUsage.TEXTURE_BINDING | (storage.has(k) ? GPUTextureUsage.STORAGE_BINDING : GPUTextureUsage.RENDER_ATTACHMENT);
+      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: [w, h], format, usage });
+      views[k] = tex[k].createView();
+    }
+    gb = { w, h, tex, views };
+    return gb;
+  }
+  const CLEAR = { D: { r: GBUF_NO_DEPTH, g: 0, b: 0, a: 0 } };
+  const attach = (k) => ({ view: gb.views[k], loadOp: 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
+  let compositePipe = null;
+  let prepared = false;   // a prepass this frame, for the next draw to composite
+  let compositeParams = null;
 
   // ---- pipelines ----
   const pipes = new Map();
@@ -123,12 +158,19 @@ export function createWorldView(gpu, sim, { volume }) {
     testVariant: globalThis.__worldTestVariant ?? null,   // (a test page may set it before boot: its first build is the variant)
     /** Whether this module draws `view` (the material views; the data views and Plain keep their paths). */
     draws: (v, curved = false) => isMaterialView(v) && !curved,
+    /** The view and detail the last prepass was asked for (tests). */
+    lastDraw: null,
+    /** The split march (a test switch: false draws the whole march, the A/B). */
+    split: globalThis.__worldSplit ?? true,
+    /** Whether `detail` draws through the split stages (prepass, then draw composites). */
+    splits(detail = {}) { return view.split && !view.testVariant && marchSplits(drawableDetail(detail, fallback)); },
     /**
      * The march's pipeline for a material view and its detail, made on first use. One module per
      * (view, detail) serves every map: the world's size is a uniform (W's WC.size).
      */
     pipeline(v, detail = {}, build = 'now') {
       const d = drawableDetail(detail, fallback);
+      if (view.splits(d)) return view.stages(v, d, build);
       const t = view.testVariant;   // (test.js-style hook: a scratch variant of the module, { name, filter(code) })
       const key = `${v}|${detailKey(d)}${t ? `|${t.name}` : ''}`;
       let p = pipes.get(key);
@@ -141,6 +183,72 @@ export function createWorldView(gpu, sim, { volume }) {
         }));
       } else if (build === 'now' && (p.state === 'idle' || p.state === 'pending')) p.build();
       return p;
+    },
+    /**
+     * The split march's pipelines for a view and its (drawable) detail, made on first use: one per
+     * stage and the composite, as one pipeline to its callers (state, ready, build, buildMs).
+     */
+    stages(v, d, build = 'now') {
+      const key = `${v}|${detailKey(d)}|split`;
+      let set = pipes.get(key);
+      if (!set) {
+        compositePipe ??= gpu.renderPipeline({
+          name: COMPOSITE_NAME, code: compositeWGSL(), layouts: [compositeL, gpu.L.EMPTY, gpu.L.EMPTY],
+          params: MarchParams, ...worldMarchPipeline('composite'), build,
+        });
+        const parts = Object.fromEntries(MARCH_STAGES.map((st) => [st, gpu.renderPipeline({
+          name: stagePipeName(v, d, st), code: worldMarchFrag(sim.g, { view: v, detail: d, stage: st }),
+          layouts: [stageL[st], L.copy, L.group2], params: MarchParams, ...worldMarchPipeline(st), build, first: build === 'now',
+        })]));
+        const all = [...Object.values(parts), compositePipe];
+        set = {
+          parts, composite: compositePipe, name: `world.${v}(${detailKey(d) || 'off'}) split`,
+          get state() {
+            const st = all.map((p) => p.state);
+            return st.includes('failed') ? 'failed' : st.every((x) => x === 'ready') ? 'ready' : st.includes('pending') ? 'pending' : 'idle';
+          },
+          ready: Promise.all(all.map((p) => p.ready)),
+          build() { for (const p of all) p.build(); return set.ready; },
+          get buildMs() { const ms = all.map((p) => p.buildMs); return ms.some((x) => x == null) ? null : Math.max(...ms); },
+        };
+        pipes.set(key, set);
+      } else if (build === 'now' && (set.state === 'idle' || set.state === 'pending')) set.build();
+      return set;
+    },
+    /**
+     * Records the split march's stages before the scene pass, each a pass of its own, into a
+     * G-buffer the size of `target` (the scene target's colour). Returns whether it did: draw()
+     * then composites them. False (nothing recorded) for a variant that doesn't split, while a
+     * pipeline builds, or before the world copy is ready.
+     * @param {object} frame gpu.frame
+     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, floorLines?: boolean, target: GPUTexture }} opts
+     */
+    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, target } = {}) {
+      prepared = false;
+      view.lastDraw = { view: v, detail };   // (tests: what the frame draws)
+      if (disposed || !view.splits(detail)) return false;
+      const set = view.pipeline(v, detail, 'now');
+      if (set.state !== 'ready') return false;
+      const copy = worldCopy.bindGroup;
+      if (!copy) return false;
+      gbuffer(target.width, target.height);
+      meshInv.multiplyMatrices(last.viewProj, last.model).invert();   // clip → world cells, the jittered camera's
+      const depth = meshDepth ?? dummy.depth;
+      const header = { ...sim.readHeader(), origin: [0, 0, 0] };
+      const params = {
+        meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
+        deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim),
+      };
+      const g2 = group2();
+      for (const st of MARCH_STAGES) {
+        const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map(attach) }, `world ${st}`);
+        try {
+          set.parts[st].draw(rp, { bind: [frameGroup(depth, st), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
+        } finally { rp.end(); }
+      }
+      compositeParams = params;
+      prepared = true;
+      return true;
     },
     /**
      * Writes the march's FrameUniforms: the frame's values (gfx/uniforms.js frameValues' shape),
@@ -183,6 +291,16 @@ export function createWorldView(gpu, sim, { volume }) {
      */
     draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true } = {}) {
       if (disposed) return false;
+      if (view.splits(detail)) {
+        // the split march's picture, recorded by prepass this frame, over the sky
+        if (!prepared) return false;
+        prepared = false;
+        const set = view.pipeline(v, detail, 'now');
+        const group = cached(`comp|${idOf(gb)}`, () => gpu.bindGroup(compositeL, [
+          { binding: 0, resource: gb.views.S }, { binding: 1, resource: gb.views.D }], label('composite')));
+        set.composite.draw(rp, { bind: [group, gpu.emptyGroup, gpu.emptyGroup], header: sim.readHeader(), params: compositeParams, count: WORLD_MARCH_VERTICES });
+        return true;
+      }
       const pipe = view.pipeline(v, detail, 'now');
       if (pipe.state !== 'ready') return false;
       const copy = worldCopy.bindGroup;
@@ -205,6 +323,8 @@ export function createWorldView(gpu, sim, { volume }) {
       disposed = true;
       gpu.flush('world view dispose');
       groups.clear();
+      if (gb) Object.values(gb.tex).forEach((t) => t.destroy?.());
+      gb = null;
       worldCopy.dispose?.();
       fields.dispose?.();
       light.dispose?.();
