@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ScenePlaques, nearbyPlaques, SCENE_PLAQUE_LIMIT } from '../src/lab/scenePlaques.js';
+import { ScenePlaques, nearbyPlaques, SCENE_PLAQUE_LIMIT, decodeScenePlaques } from '../src/lab/scenePlaques.js';
 
 const records = Array.from({ length: 120 }, (_, i) => ({
   cell: [i * 2, 2, 20], normal: [0, 0, -1], elementKey: `MAT_${i}`, text: `Material ${i}`,
@@ -34,4 +34,14 @@ test('manual signs retain their slots and generated plates survive a saved reloa
   assert.equal(new Set(signs.list.filter(s => s.sceneKey).map(s => s.sceneKey)).size, 14);
   owner.set([]); owner.update([30, 7, 20]);
   assert.equal(signs.list.length, 50);
+});
+test('full saved manifests keep old case positions and reject invalid records before restore', () => {
+  const saved = [{ cell: [12, 2, 16], normal: [0, 0, -1], text: 'Sand', elementKey: 'SAND' }];
+  const decoded = decodeScenePlaques(JSON.parse(JSON.stringify(saved)));
+  assert.deepEqual(decoded, saved);
+  assert.notEqual(decoded[0].cell, saved[0].cell);
+  for (const value of [null, {}, Array(1025).fill(saved[0]), [{ ...saved[0], cell: [NaN, 2, 3] }],
+    [{ ...saved[0], normal: [1, 1, 0] }], [{ ...saved[0], elementKey: 'UNKNOWN' }]]) {
+    assert.throws(() => decodeScenePlaques(value), /Invalid scene plaque/);
+  }
 });

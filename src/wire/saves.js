@@ -16,6 +16,7 @@ import { putSave, getSave, cleanName } from '../saves/local.js';
 import { SIM_MODE_KEYS, SIM_MODE_DEFAULTS } from '../simModes.js';
 import { mapOf } from '../maps.js';
 import { ARENA_PRESETS } from '../presets.js';
+import { decodeScenePlaques } from '../lab/scenePlaques.js';
 
 const SAVE_THUMB_BG = '#0e1117';   // what a thumbnail's clear pixels (a box has no sky) sit on: the page's background
 const SAVE_THUMB_TYPE = 'image/jpeg', SAVE_THUMB_QUALITY = 0.82;
@@ -164,6 +165,12 @@ const savesWire = {
       load: (d) => { if (Number.isFinite(d.clock)) { app.day.clock = d.clock; app.updateSun(); } },
     });
     registerSaveSection('signs', { save: () => app.signs?.toJSON(), load: (d) => app.signs?.fromJSON(d), absent: () => app.signs?.clear() });
+    registerSaveSection('scenePlaques', {
+      strict: true, save: () => app.getScenePlaques?.() ?? undefined,
+      validate: data => { if (data !== undefined) decodeScenePlaques(data); },
+      load: data => app.setScenePlaques?.(data),
+      absent: () => app.setScenePlaques?.([]),
+    });
     registerSaveSection('spawners', { save: () => app.spawners?.toJSON(), load: (d) => app.spawners?.fromJSON(d) });
     registerSaveSection('perkOrbs', { save: () => app.perkOrbs?.toJSON(), load: (d) => app.perkOrbs?.fromJSON(d) });
   },
@@ -211,6 +218,7 @@ const savesWire = {
     app.spawners?.fromJSON(x.spawners);
     app.perkOrbs?.fromJSON(x.perkOrbs);
     app.signs?.fromJSON(x.signs);
+    app.setScenePlaques?.(x.scenePlaques ?? []);
     if (x.industry) app.industry?.fromJSON(x.industry); else app.industry?.reset();
     app.save();
   },
@@ -303,6 +311,6 @@ export async function prepareSave(app, h) {
 }
 
 // What a box holds besides its cells (its scene, signs, spawners, perk orbs), for undoing a load.
-const sceneExtras = (app) => ({ preset: app.settings.preset, signs: app.signs?.toJSON(), spawners: app.spawners?.toJSON(), perkOrbs: app.perkOrbs?.toJSON(), industry: app.industry?.toJSON() });
+const sceneExtras = (app) => ({ preset: app.settings.preset, signs: app.signs?.toJSON(), scenePlaques: app.getScenePlaques?.(), spawners: app.spawners?.toJSON(), perkOrbs: app.perkOrbs?.toJSON(), industry: app.industry?.toJSON() });
 
 export default savesWire;

@@ -45,6 +45,7 @@ Manual signs keep their available slots.
 Saved generated keys prevent duplicate plaques after a snapshot loads.
 
 Saved snapshots preserve their physical state.
+They also preserve the complete plaque placement manifest, so later additions cannot relabel existing cases.
 They do not automatically rebuild their inventory when the registry changes.
 Reloading the map generates the current collection.
 
@@ -87,5 +88,21 @@ This command uses the existing raw-preset launch without an unnecessary player m
 It saves two story screenshots in `/tmp/tpt-preservation` and generates the menu image.
 Each command has its own 25-second total GPU-slot limit.
 
+The shipped menu artwork can also be generated without GPU use:
+
+```sh
+node tools/preservation-thumb.mjs
+```
+
+This tool adapts the existing Descent CPU renderer to the exact map geometry.
+Its software lighting is illustrative, not the game's material shader.
+Clear panes and gases are omitted from the preview sightline.
+
 The old comparison room modules and map entry are removed.
 The old preset name remains readable for saved snapshots.
+
+## Design reference
+
+[Valve's Portal developer commentary](https://theportalwiki.com/wiki/Portal_developer_commentary) describes observation rooms as both implied workplaces and light sources.
+The map adapts that public-room/backstage contrast.
+Its inventory generation and storage policies are specific to this game.

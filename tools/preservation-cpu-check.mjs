@@ -5,6 +5,7 @@ import { MAPS, mapByKey } from '../src/maps.js';
 import { buildPreservation, PRESERVATION_SIZE, PRESERVATION_SPAWN, PRESERVATION_GATES } from '../src/lab/preservation/index.js';
 import { createExhibitCatalog } from '../src/lab/catalog.js';
 import { buildPreset } from '../src/presets.js';
+import { renderPreservation } from './preservation-thumb.mjs';
 
 const [nx, ny, nz] = PRESERVATION_SIZE;
 const ids = new Uint8Array(nx * ny * nz);
@@ -125,4 +126,13 @@ test('an appended element is stocked without editing a chapter or map list', () 
   const added = buildPreservation({ box() {}, set() {}, elements: [...ELEMENTS, extra] });
   assert.equal(added.plaques.filter(p => p.elementKey === 'NEW_STOCK').length, 1);
   assert(added.stocks.some(entry => entry.key === 'NEW_STOCK' && entry.category === 'powder'));
+});
+
+test('software preview traces the real public and empty-chamber geometry without GPU use', () => {
+  for (const pose of ['arrival', 'final']) {
+    const { rgb, materials } = renderPreservation(32, pose);
+    assert.equal(rgb.length, 32 * 32 * 3);
+    assert(materials.has(E.CERAMIC) && materials.has(E.METAL));
+    assert(new Set(rgb).size > 10);
+  }
 });

@@ -1,6 +1,25 @@
 import { MAX_SIGNS } from '../shaders/probe.js';
+import { itemByKey } from '../elements.js';
 
 export const SCENE_PLAQUE_LIMIT = 32;
+
+// Save the whole placement manifest, not just the currently visible plates.
+// A future registry addition must not relabel an older snapshot's cases.
+export function decodeScenePlaques(records) {
+  if (!Array.isArray(records) || records.length > 1024) throw new Error('Invalid scene plaque manifest.');
+  return records.map(record => {
+    if (!record || !Array.isArray(record.cell) || record.cell.length !== 3 ||
+      !record.cell.every(n => Number.isInteger(n) && Math.abs(n) <= 0x7fffffff) ||
+      !Array.isArray(record.normal) || record.normal.length !== 3 ||
+      !record.normal.every(Number.isInteger) || record.normal.reduce((n, v) => n + Math.abs(v), 0) !== 1 ||
+      typeof record.text !== 'string' || record.text.length > 80 ||
+      record.elementKey != null && itemByKey(record.elementKey)?.key !== record.elementKey) {
+      throw new Error('Invalid scene plaque record.');
+    }
+    return { cell: [...record.cell], normal: [...record.normal], text: record.text,
+      ...(record.elementKey ? { elementKey: record.elementKey } : {}) };
+  });
+}
 
 export function nearbyPlaques(records, eye, limit = SCENE_PLAQUE_LIMIT) {
   return records.map((record, i) => ({

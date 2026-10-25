@@ -25,7 +25,9 @@ mkdirSync(out, { recursive: true });
 let browser;
 try {
   browser = await launchBrowser({ lifetimeMs: 25000, why: visualOnly ? 'Preservation story viewpoints, authentic material lighting; no body compilation' : 'Preservation first-person entry and material inspector' });
-  const page = await newTestPage(browser, { mode: 'ui', viewport: { width: 800, height: 600 } });
+  const page = await newTestPage(browser, {
+    mode: 'ui', viewport: visualOnly ? { width: 400, height: 400 } : { width: 800, height: 600 },
+  });
   page.setDefaultTimeout(13000);
   const errors = [];
   page.on('pageerror', error => { errors.push(String(error)); console.error('page error:', String(error)); });
@@ -76,6 +78,8 @@ try {
     }
     await render(page);
     await page.screenshot({ path: `${out}/arrival.png` });
+    console.log('arrival checkpoint captured');
+    if (bake) execFileSync('magick', [`${out}/arrival.png`, '-resize', '400x400^', '-gravity', 'center', '-extent', '400x400', '-quality', '85', 'public/maps/preservationLab.webp']);
   }
   if (!visualOnly) {
     await page.evaluate(() => {
@@ -104,7 +108,6 @@ try {
     await page.screenshot({ path: `${out}/empty-chamber.png` });
   }
   assert.deepEqual(errors, []);
-  if (bake) execFileSync('magick', [`${out}/arrival.png`, '-resize', '400x400^', '-gravity', 'center', '-extent', '400x400', '-quality', '85', 'public/maps/preservationLab.webp']);
   console.log(visualOnly ? `PASS full-size authored story viewpoints: ${out}` :
     `PASS Preservation entry at ${initial.feet}, ${initial.signs} nearby plaques, inspector and saved generated keys${uiOnly ? '' : `; story screenshots ${out}`}`);
 } finally {

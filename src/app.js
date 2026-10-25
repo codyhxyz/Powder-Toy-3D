@@ -44,6 +44,7 @@ import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS, freshPresetKey } from './presets.js';
 import { enterAuthoredMap } from './lab/entry.js';
+import { decodeScenePlaques } from './lab/scenePlaques.js';
 import { preservationManifest } from './lab/preservation/index.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
@@ -721,6 +722,9 @@ function pickedNow(cell, o) {
 
 // Multiplayer guests follow the host's grid size (a box: never World).
 function setGrid(dims, meta = null) {
+  // Replica terrain is not proof of this client's authored map identity.
+  // Keep its local manifest disabled even if the guest later plays on solo.
+  if (mp.replica) savedScenePlaques = [];
   if (replicaMap?.id === meta?.id && mapKind.streamed === (meta?.mode === 'world') && [sim.g.nx, sim.g.ny, sim.g.nz].every((n, i) => n === dims[i])) return true;
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
   if (meta?.mode === 'world') {
@@ -938,9 +942,14 @@ function loadPreset(name, undoable = true) {
     try { if (ctx.industry) industry = { preset: settings.preset, data: ctx.industry.toJSON() }; }
     catch (error) { hud.toast(error.message); return false; }
     sim.snapshot(sceneLabel(name));
-    if (industry) sim.history.at(-1).note = { industry };
+    const scenePlaques = ctx.getScenePlaques();
+    if (industry || scenePlaques) sim.history.at(-1).note = {
+      ...(industry ? { industry } : {}),
+      ...(scenePlaques ? { scenePlaques: { preset: settings.preset, records: decodeScenePlaques(scenePlaques) } } : {}),
+    };
   }
   settings.preset = name;
+  savedScenePlaques = null;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
   // A big map's world goes in once the passes it is written with are built (wire/world.js
   // loadScene), not behind the simulation's step kernels: its World load starts from it.
@@ -1371,6 +1380,7 @@ let eyedropper = false; // armed by the dock's Eyedropper or by I away from any 
 createBrand();
 const card = createCard();
 const elementInspector = createElementInspector();
+let savedScenePlaques = null;
 const hud = createHud({ onTogglePause: () => setPaused(!settings.paused) });
 hud.setPaused(settings.paused);
 const help = createHelp(() => help.setOpen(false));
@@ -1806,6 +1816,11 @@ async function undo() {
     if (note?.industry) {
       settings.preset = note.industry.preset;
       ctx.industry?.fromJSON(note.industry.data);
+      save();
+    }
+    if (note?.scenePlaques) {
+      settings.preset = note.scenePlaques.preset;
+      savedScenePlaques = decodeScenePlaques(note.scenePlaques.records);
       save();
     }
     pov?.worldReplaced();
@@ -3116,7 +3131,8 @@ function tick(now, renderOnly = false) {
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
   inspectElement: (key) => elementInspector.show(key),
-  getScenePlaques: () => !mp.replica && mapKind.presets && settings.preset === 'preservationLab' ? preservationManifest().plaques : null,
+  getScenePlaques: () => !mp.replica && mapKind.presets && settings.preset === 'preservationLab' ? (savedScenePlaques ?? preservationManifest().plaques) : null,
+  setScenePlaques: (records) => { savedScenePlaques = decodeScenePlaques(records); },
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
   setMode: startMode,
