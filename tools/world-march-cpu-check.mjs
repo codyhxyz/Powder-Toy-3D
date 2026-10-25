@@ -4,7 +4,7 @@
 // No GPU, no browser. node tools/world-march-cpu-check.mjs [--dump DIR]
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf } from '../src/shaders/world/march.js';
+import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf, MARCH_STAGES, marchSplits, compositeWGSL, COMPOSITE_LAYOUT, GBUF_BYTES_PER_PIXEL } from '../src/shaders/world/march.js';
 import { cellSlot, ringOf } from '../src/shaders/common.js';
 import { MAPS } from '../src/maps.js';
 import { REALISTIC_LEVELS } from '../src/shaders/render.js';
@@ -15,15 +15,17 @@ const dump = process.argv.includes('--dump') ? process.argv[process.argv.indexOf
 if (dump) mkdirSync(dump, { recursive: true });
 const grids = { lab: { nx: 128, ny: 64, nz: 128 }, window: { nx: 128, ny: 128, nz: 128 } };
 const materialViews = VIEWS.map((v) => v.key).filter(isMaterialView);
-const cases = [
+// each case's whole march, and its split stages (shaders/world/march.js MARCH_STAGES) where it splits
+const base = [
   ...Object.entries(REALISTIC_LEVELS).map(([k, d]) => ['realistic', k, d()]),
   ...materialViews.filter((v) => v !== 'realistic').map((v) => [v, 'balanced', REALISTIC_LEVELS.balanced()]),
 ];
+const cases = base.flatMap(([v, k, d]) => [[v, k, d, 'whole'], ...(marchSplits(d) ? MARCH_STAGES.map((st) => [v, k, d, st]) : [])]);
 let n = 0;
 for (const [gname, g] of Object.entries(grids)) {
-  for (const [view, level, detail] of cases) {
-    const name = `march.${view}.${level}.${gname}`;
-    const code = worldMarchFrag(g, { view, detail });
+  for (const [view, level, detail, stage] of cases) {
+    const name = `march.${view}.${level}${stage === 'whole' ? '' : `.${stage}`}.${gname}`;
+    const code = worldMarchFrag(g, { view, detail, stage });
     const res = [...code.matchAll(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]*)>)?\s+(\w+)\s*:\s*([^;]+);/g)];
     assert(res.every((r) => Number(r[1]) < 4), `${name}: groups`);
     const storage = res.filter((r) => r[3]?.startsWith('storage')).map((r) => r[4]);
@@ -31,7 +33,9 @@ for (const [gname, g] of Object.entries(grids)) {
     assert(storage.length <= 8, `${name}: ${storage.length} storage buffers (${storage.join(', ')})`);
     assert(textures.length <= 16, `${name}: ${textures.length} textures`);
     // every declared binding is in the layouts the pipeline is made with
-    const layouts = WORLD_MARCH_LAYOUTS();
+    const layouts = WORLD_MARCH_LAYOUTS(undefined, stage);
+    const layoutTextures = layouts.flat().filter((e) => e.texture || e.storageTexture).length;
+    assert(layoutTextures <= 16, `${name}: its layouts hold ${layoutTextures} textures`);
     for (const r of res) {
       const [grp, b] = [Number(r[1]), Number(r[2])];
       assert(layouts[grp].some((e) => e.binding === b), `${name}: group ${grp} binding ${b} (${r[4]}) has no layout entry`);
@@ -48,6 +52,13 @@ for (const [gname, g] of Object.entries(grids)) {
   }
 }
 assert(MarchParams.size > 0);
+{
+  const run = nagaSpawn(compositeWGSL(), 'composite.wgsl');
+  if (run.error || run.status !== 0) { console.error(`composite:\n${run.stderr || run.stdout}`); process.exit(1); }
+  assert.equal(COMPOSITE_LAYOUT.length, 2);
+  n++;
+  console.log(`ok composite; split G-buffer ${GBUF_BYTES_PER_PIXEL} B/pixel`);
+}
 
 // physSlot (the march's run-time slot in physics' window) is the prelude's slotOf, for every map's window
 // at an origin in its world
