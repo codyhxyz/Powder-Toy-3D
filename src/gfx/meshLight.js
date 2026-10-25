@@ -630,6 +630,13 @@ const waiting = new WeakMap();        // mesh → the layers it goes back to
  * @returns {number} how many meshes wait
  */
 const guardCompilations = new WeakMap();
+/**
+ * Whether mesh `o` is compiled and not waiting (guardMeshes): drawn as it is
+ * now. True with no device (nothing waits: Node, the icon bake's page).
+ * @param {object} o
+ * @returns {boolean}
+ */
+export const isPrepared = (o) => !meshGpu?.three || (preparedWith.has(o) && !waiting.has(o));
 export function guardMeshes(root, camera, { target, scene, skip, onReady, onPending } = {}) {
   if (!meshGpu?.three) return 0;
   let n = 0;

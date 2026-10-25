@@ -76,6 +76,9 @@
   border-color: var(--accent, #dcbc74);
 }
 
+.tpt-sign.is-specimen .tpt-sign-plate { cursor: pointer; }
+.tpt-sign.is-specimen .tpt-sign-text::after { content: ' ⓘ'; color: var(--accent, #dcbc74); }
+
 .tpt-sign:hover,
 .tpt-sign.is-editing {
   z-index: 100001 !important;
@@ -97,12 +100,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* hidden behind voxels: dim the plate and drop the stem */
-.tpt-sign.is-occluded .tpt-sign-plate { opacity: 0.35; }
+/* hidden behind voxels: not drawn at all (a dimmed plate only piled ghost text over the readable ones) */
+.tpt-sign.is-occluded .tpt-sign-plate,
 .tpt-sign.is-occluded .tpt-sign-stem,
-.tpt-sign.is-occluded .tpt-sign-dot { opacity: 0; }
-.tpt-sign.is-occluded .tpt-sign-plate:hover,
-.tpt-sign.is-occluded .tpt-sign-plate:focus { opacity: 1; }
+.tpt-sign.is-occluded .tpt-sign-dot { opacity: 0; pointer-events: none; }
+
+/* a plate that would cover a nearer one shrinks to its pin (signsDeclutter.js);
+   hovering the pin brings the plate back */
+.tpt-sign.is-collapsed .tpt-sign-plate,
+.tpt-sign.is-collapsed .tpt-sign-stem { opacity: 0; pointer-events: none; }
+.tpt-sign.is-collapsed .tpt-sign-dot { pointer-events: auto; cursor: pointer; }
 
 /* editing */
 .tpt-sign-edit,

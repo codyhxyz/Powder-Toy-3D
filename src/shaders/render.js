@@ -1,4 +1,5 @@
 import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
+import { filmCellsWGSL, filmTraceWGSL } from './gfx/film.js';
 import { compactDrawWGSL } from './compact.js';
 import { nativeMotionWGSL } from './v2/viewRead.js';
 import { RENDER_LAYOUT } from './bindings.js';
@@ -15,6 +16,7 @@ import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { volumeHazeGLSL } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
+import { glassWGSL, glassShapeWGSL } from './gfx/glass.js';
 import { presentationNearWGSL } from './gfx/presentation.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
@@ -744,7 +746,7 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-const realistic = (detail, curved = false, fixedReadFormat) => {
+const realistic = (detail, curved = false, fixedReadFormat, richOptics = true) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
@@ -825,6 +827,11 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var paneEnv = vec3f(0.0);   // what the current pane's front face reflects ...
   var paneAx = -1;            // ... and the axis of that face
   var paneRefl = false;       // ... and whether that is the pixel's traced reflection (reflectDefer)
+  // The glass run the ray is in is a block (gfx/glass.js glassShape n 0), its
+  // shape fixed where it went in; a pane's is looked up again cell by cell.
+  // (One bool across the march, not the shape: every value the loop carries
+  // costs every pixel registers, glass or not.)
+  var glassBlock = false;
   var mediumLight = vec3f(1.0);
   // sun visibility inside liquid: read at a reference point (where the ray
   // got in), then faded with depth below it
@@ -855,7 +862,9 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ifEnter = false;
   var ifLid = E_EMPTY;
   var ifMirror = false;
-  var ifT = 0.0;${grains ? `
+  var ifT = 0.0;
+  var ifFilmH = 0.0;         // a film's depth (0: the interface is no film's): the floor under it keeps filmTint (gfx/film.js), after the refraction
+  var filmKey = -1;          // the cell whose film the ray went into (filmCellKey): not met again from inside (the restart sits on its top)${grains ? `
   var altRefl = false;   // the hand-off band's stored path (gAltCol) came after a traced reflection` : ''}
 
   var lastB = vec3i(-1);
@@ -915,7 +924,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     if (ifPend) {
       ifPend = false;
       // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
+      var tint = vec3f(1.0);
+      if (ifFilmH > 0.0) { tint = filmTint(ifLid, ifFilmH, rd); ifFilmH = 0.0; }   // (rd: still the way the ray met the film)
       let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
+      trans *= tint;
       tCut -= ifT;
       rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
       tEnter = 0.0;
@@ -1010,7 +1022,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           if (th > tCut) { cut = true; break; }
           let hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
-          let path = crystalInterface(gCrys, hp, nh, rd, gCrysKind == CRYS_CUT, liq, bends < MAX_BENDS,
+          let path = crystalInterface(gCrys, hp, nh, rd, gCrysKind == CRYS_CUT, liq, bends < MAX_BENDS && FU.bending != 0u,
                                       max(tCut - th, 0.0), fetchA(cell).y, &col, &trans);
           if (path.clipped != 0u) { cut = true; break; }
           if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
@@ -1043,6 +1055,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       } else {
         let hp = ro + rd * tEnter;
         if (!anyHit) { anyHit = true; hitPos = hp; }
+        var gNext = false;     // glass bends: the ray restarts gT along it, toward gRd
+        var gT = 0.0;
+        var gRd = rd;
         let original = sourceMaterial(id, worldPos(hp), nFace);
         if (original.kind != 0u) {
           if (id != prevCrisp) {
@@ -1052,6 +1067,123 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
               alpha, original.flags, &col, &trans);
           }
         } else {
+${richOptics ? `
+        // Glass (gfx/glass.js): a wall one cell thick is a pane through the
+        // cell's middle; thicker glass is a block that bends light at its
+        // faces. Every bend restarts the ray at one site, below.
+        let tEnd = min(tExit, tCut);
+        let ior = IOR(id);
+        let inAir = liq == E_EMPTY;
+        // (a block's run keeps its shape; a pane's is looked up again cell by cell)
+        var paneS = GlassShape(0, -1, -1, 0.0, -1, -1, 0.0);
+        var paneM = 0u;
+        if (id != prevCrisp || !glassBlock) {
+          paneM = glassNeighbours(cell, id);
+          paneS = glassShape(cell, id, paneM);
+          glassBlock = paneS.n == 0;
+        }
+        if (paneS.n > 0) {
+          // ---- a pane (Minecraft's glass panes, Teardown's windows): a sheet through the cell's middle, or an L corner's two half sheets ----
+          let t0s = sheetHit(ro, rd, tEnter, cell, paneS.a0, paneS.r0, paneS.s0);
+          let t1s = sheetHit(ro, rd, tEnter, cell, paneS.a1, paneS.r1, paneS.s1);
+          let first = t0s <= t1s;
+          let tp = min(t0s, t1s);
+          let pa = select(paneS.a1, paneS.a0, first);
+          let pr = select(paneS.r1, paneS.r0, first);
+          if (tp < tEnd) {
+            let q = ro + rd * tp;
+            var nP = vec3f(0.0);
+            nP[pa] = -sign(rd[pa]);
+            let w = glassWave(q, nP, rd);
+            let smudge = glassSmudge(q);
+            let cosi = max(abs(dot(w, rd)), GLASS_COS_MIN);
+            // both faces, and the light between them (Stokes: 2F / (1 + F))
+            let F1 = fresnelSchlick(cosi, ior) * select(GLASS_IN_LIQUID_F, 1.0, inAir);
+            let F = 2.0 * F1 / (1.0 + F1);
+            mediumLight = vec3f(1.0);
+            if (FU.shadows != 0u) { mediumLight = sunShadowAt(q + nP * IFACE_PROBE); }
+            let gi = surfProbe(q, nP);
+            gSkyIn = skyInAt(gi);
+            paneEnv = envReflectGI(gi, w, -rd, glassRough(id, smudge), mediumLight);
+            paneRefl = panes < GLASS_TRACED_PANES && reflectDefer(q + nP * REFL_START, reflect(rd, w), paneEnv);
+            paneAx = pa;
+            panes++;
+            col += trans * F * paneEnv;
+            if (paneRefl) { gReflK += trans * F; }
+            trans *= 1.0 - F;
+            glassHaze(q, smudge, mediumLight, &col, &trans);
+            absorbGlass(id, cell, q, PANE_CELLS / cosi, 1.0 / cosi, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: a cell's paint)
+            paneEdge(id, q, paneEdgeDist(q, cell, pa, pr, paneM), footprint(q), mediumLight, &col, &trans);
+            // Light crosses nearly straight: only the faces' waviness
+            // deviates it. (A corner's second half sheet is met after a
+            // restart too: the march takes one sheet a step.)
+            let more = max(t0s, t1s) < tEnd;
+            if (bends < MAX_BENDS && (FU.bending != 0u || more)) {
+              gNext = true; gT = tp;
+              gRd = select(rd, paneDeviate(rd, w, nP, ior), FU.bending != 0u);
+            }
+          }
+        } else {
+          // ---- a block: Snell at its faces (glassBend), soda-lime's green through long paths ----
+          let nOut = select(IOR(liq), 1.0, inAir);
+          if (id != prevCrisp) {
+            let w = glassWave(hp, nFace, rd);
+            let smudge = glassSmudge(hp);
+            let F = fresnelSchlick(abs(dot(w, rd)), ior) * select(GLASS_IN_LIQUID_F, 1.0, inAir);
+            mediumLight = vec3f(1.0);
+            if (FU.shadows != 0u) { mediumLight = sunShadowAt(hp + nFace * IFACE_PROBE); }
+            let gi = surfProbe(hp, nFace);
+            gSkyIn = skyInAt(gi);
+            paneEnv = envReflectGI(gi, w, -rd, glassRough(id, smudge), mediumLight);
+            paneRefl = panes < GLASS_TRACED_PANES && reflectDefer(hp + nFace * REFL_START, reflect(rd, w), paneEnv);
+            paneAx = ax;
+            panes++;
+            col += trans * F * paneEnv;
+            if (paneRefl) { gReflK += trans * F; }
+            trans *= 1.0 - F;
+            glassHaze(hp, smudge, mediumLight, &col, &trans);
+            if (bends < MAX_BENDS) { gNext = true; gT = tEnter; gRd = glassBend(rd, w, nFace, nOut / ior, true); }
+          }
+          if (!gNext) {
+            absorbGlass(id, cell, hp, tEnd - tEnter, tEnd - tEnter, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: gfx/deco.js)
+            // Leaving the block, its far face reflects too (into air; less
+            // into liquid; none against something opaque, which it touches,
+            // the floor included, nor behind a mesh) and bends the ray out,
+            // or reflects all of it back in (total internal reflection).
+            let xa = argmin3(tMax);
+            var nc = cell;
+            nc[xa] += istp[xa];
+            var nid = E_EMPTY;
+            if (!outside(nc)) { nid = eid(fetchA(nc)); }
+            if (tExit < tCut && nc.y >= 0 && RCLASS(nid) != R_GLASS && RCLASS(nid) != R_OPAQUE) {
+              var nX = vec3f(0.0);
+              nX[xa] = f32(istp[xa]);
+              let hx = ro + rd * tExit;
+              let intoLiquid = SURFCH(nid) == CH_LIQUID;
+              let bend = FU.bending != 0u && bends < MAX_BENDS;
+              var rt = rd;
+              var wx = nX;
+              if (bend) {
+                wx = -glassWave(hx, -nX, rd);
+                rt = glassBend(rd, -wx, -nX, ior / select(1.0, IOR(nid), intoLiquid), false);
+              }
+              if (dot(rt, rt) < 1e-6) {
+                gNext = true; gT = tExit; gRd = reflect(rd, wx);   // (all of it back inside)
+              } else {
+                let F = fresnelSchlick(abs(dot(wx, rd)), ior) * select(1.0, GLASS_IN_LIQUID_F, intoLiquid);
+                var env = paneEnv;
+                // (inside the block: no sun highlight, as liquid.js's exit; Light bending off: the front face's, no probe)
+                if (bend && xa != paneAx) { env = envSky(surfProbe(hx, -nX), reflect(rd, wx)); }
+                else if (paneRefl) { gReflK += trans * F; }   // (the front face's traced reflection again)
+                col += trans * F * env;
+                trans *= 1.0 - F;
+                if (bend) { gNext = true; gT = tExit; gRd = rt; }
+              }
+            }
+          }
+        }
+` : `
+        // (the lean view's glass: flat faces, no bending, base's; the rich view's below, once the grid holds glass: gfx/opticsScan.js)
         if (id != prevCrisp) {
           // glass interface (flat faces: no bending)
           let F = fresnelSchlick(abs(dot(nFace, rd)), IOR(id)) * select(GLASS_IN_LIQUID_F, 1.0, liq == E_EMPTY);
@@ -1090,9 +1222,24 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           col += trans * F * env;
           trans *= 1.0 - F;
         }
-        }
+`}        }
         prevCrisp = id;
         phiStale = true;
+        if (gNext) {
+          // the one restart of glass's bends (a GPU compiler inlines each copy)
+          if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+          bends++;
+          tCut -= gT;
+          ro = ro + rd * gT + gRd * IFACE_NUDGE;
+          rd = safeDir(gRd);
+          cell = vec3i(floor(ro));
+          ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+          tEnter = 0.0; lastB = vec3i(-1); ax = 1;
+          mNext = jit * MEDIA_STEP;${curved ? `
+          meshBudget = tCut;
+          warpRestart(&walk, ro, rd);` : ''}
+          continue;
+        }
       }
     } else {
       prevCrisp = E_EMPTY;
@@ -1102,6 +1249,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       var tEv = tExit;
       var evN = vec3f(0.0);   // forced normal (else from the field)
       var phiB = vec4f(0.0);
+      var film = false;       // the event is a film's top (gfx/film.js): its normal is evN
+      var filmLid = E_EMPTY;
+      var filmH = 0.0;
       // In certified liquid, keep every DDA segment, absorption, mixed ID,
       // paint, mesh cut and grain test. Only omit impossible surface events.
       // The else marks phi stale so leaving the certificate resamples the
@@ -1160,7 +1310,17 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         phiStale = true;
       }
 
-      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
+${richOptics ? `
+      // a film on the floor, thinner than the fields show (gfx/film.js): only
+      // from air, only nearer than what the fields found, and only in a brick
+      // the brick pass found a film's cells in (BRICK_FILM: everywhere else
+      // filmHit's 3×3 of reads finds nothing)
+      if (liq == E_EMPTY && brickSurf(flags) && brickFilm(flags) && ev != EV_OPAQUE && filmCellKey(cell) != filmKey) {
+        var fN = vec3f(0.0, 1.0, 0.0);
+        let tF = filmHit(cell, ro, rd, tEnter, tEv, &fN, &filmLid, &filmH);
+        if (tF < tEv) { tEv = tF; ev = EV_ENTER; evCh = CH_LIQUID; evN = fN; film = true; }
+      }
+` : ''}      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
       // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
       // (grainEvent reads the cell's state only for a grain element's cell: its cand)
       var ga = vec4f(0.0);
@@ -1182,7 +1342,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         else if (SURFCH(id) == CH_LIQUID) { liq = id; }
         mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
         let own = SURFCH(id) == CH_LIQUID;
-        // (painted liquid: gfx/deco.js; drops and pours show their colour: gfx/liquid.js thinBodySeg)
+        // (painted liquid: gfx/deco.js; drops absorb along their real length: gfx/liquid.js thinBodySeg)
         var tOwn = AMBIENT;   // (the cell's temperature where it is the liquid's own)
         if (own) { tOwn = fetchA(cell).y; }
         absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, tOwn, &col, &trans);
@@ -1206,10 +1366,12 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           break;
         } else {
           // liquid surface: refract in or out
-          let geometric = surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER));
+          var geometric = evN;
+          if (!film) { geometric = surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER)); }
           var n = liquidRipple(hp, geometric);
           var lid = liq;
-          if (ev == EV_ENTER) { lid = liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER); }
+          if (ev == EV_ENTER) { lid = select(liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER), filmLid, film); }
+          if (film) { ifFilmH = filmH; filmKey = filmCellKey(cell); }
           n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)
           if (bends < MAX_BENDS) {
             bends++;
@@ -1218,6 +1380,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             continue;
           }
           // out of bends: switch medium, keep straight
+          if (film) { trans *= filmTint(lid, filmH, rd); ifFilmH = 0.0; }
           liq = select(E_EMPTY, lid, ev == EV_ENTER);
           if (ev == EV_ENTER) {
             lightRef = vec3f(1.0);
@@ -1354,7 +1517,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
 // common part as they are, over the world copy's readers: params is its own struct (VolumeParams'
 // fields and more), declared as P.
 export const tracerCommonWGSL = (params) => tracerWGSL(params);
-export const realisticTraceWGSL = (detail, fixedReadFormat) => realistic(detail, false, fixedReadFormat);
+export const realisticTraceWGSL = (detail, fixedReadFormat, optics = true) => realistic(detail, false, fixedReadFormat, optics);
 
 /**
  * The box's vertex entry `vs`: the 14-vertex triangle strip of the cube
@@ -1495,13 +1658,18 @@ function nativeVolumeReads(code) {
  * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat } = {}) => {
+// optics: the rich optics, thin water films (gfx/film.js) and glass as panes
+// and blocks that bend light (gfx/glass.js); without them no films and base's
+// flat glass. The view compiles without them until a grid holds a film or
+// glass (gfx/opticsScan.js, gfx/volume.js): their code costs every pixel
+// registers, on screen or not.
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat, optics = true } = {}) => {
   readFormatWGSL(fixedReadFormat);
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
   const nativeIds = !debug && (fixedReadFormat === 2 || fixedReadFormat === 3);
   const parts = [
-    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
+    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}${optics ? '' : ', lean optics'}`,
     lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, fixedReadFormat }),
     ...(nativeIds ? [volumeIdWGSL(fixedReadFormat)] : []),
     tracerWGSL(),
@@ -1509,7 +1677,10 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }), decoViewGLSL,
     liquidGLSL,
     decoSurfGLSL,
+    glassShapeWGSL,
+    glassWGSL,
     liquidDetailGLSL(d, { fixedReadFormat }),
+    filmCellsWGSL, filmTraceWGSL,
     mediaGLSL(d),
     grainsGLSL(d),
   ];
@@ -1518,7 +1689,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   // material views only; behind the rest is the page's painted gradient,
   // gfx/post.js), so they keep no haze, on every map alike. The data views'
   // colours are readings, not light.
-  if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, fixedReadFormat));
+  if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, fixedReadFormat, optics));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
@@ -1683,6 +1854,7 @@ export const shadowRes = (g) => Math.min(1024, 4 * Math.max(g.nx, g.ny, g.nz));
  */
 export const shadowFrag = (g) => /* wgsl */ `
 ${lib(g, { variant: 'LIGHTING_SHADOW', aeration: false })}
+${glassShapeWGSL}
 ${shadowOpticsWGSL().slice(1)}${shadowTilesWGSL(g)}
 // A workgroup per tile of the list src/derived.js shadowTiles made (the tiles
 // whose rays crossed a change, or all of them), a thread per texel.

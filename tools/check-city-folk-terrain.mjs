@@ -9,7 +9,7 @@ import { willowCove as scene, willowCoveTwin, CITY_FOLK_TERRAIN as C, WILLOW_LAN
 const P = scene.params({ size: scene.size, seed: 20261008 });
 const T = willowCoveTwin(P);
 const cell = (x, y, z) => T.cfTerrainCell(x, y, z);
-const dry = id => [E.ROCK, E.WOOD, E.BRICK, E.SANDSTONE, E.PLANT, E.SAND].includes(id);
+const dry = id => [E.ROCK, E.WOOD, E.PLANKS, E.BRICK, E.SANDSTONE, E.PLANT, E.SAND].includes(id);
 let walked = 0;
 const visited = new Set();
 function sample(x, z, previous) {
@@ -83,7 +83,7 @@ for (const b of C.landmarks.bridges) {
   const [x, z] = b.at;
   assert(T.cfRiver(x, z), `bridge crosses a watercourse ${x},${z}`);
   assert(T.cfBridge(x, z));
-  assert.equal(cell(x, b.floor - 1, z), E.WOOD, 'timber deck');
+  assert.equal(cell(x, b.floor - 1, z), E.PLANKS, 'timber deck');
   assert.equal(cell(x, T.cfWater(x, z) - 1, z), E.WATER, 'river under bridge');
   assert(dry(cell(x - 20, T.cfHeight(x - 20, z) - 1, z)), 'west bank connection');
   assert(dry(cell(x + 20, T.cfHeight(x + 20, z) - 1, z)), 'east bank connection');
@@ -134,9 +134,11 @@ assert(midEdges.size > 10 && highEdges.size > 5, 'winding cliffs, not ruler-stra
 // Full old authored region golden. Everywhere outside it was/is uniform sea;
 // that region also covers original cottages, furniture sites and door routes.
 const legacy = willowCoveTwin(scene.params({ size: scene.legacySize, seed: P.seed }));
+// PLANKS counts as WOOD: sawn timber split off later (elements.js TIMBER), same cells, same physics.
+const timber = (id) => (id === E.PLANKS ? E.WOOD : id);
 const golden = new Uint16Array(401 * 401 * 80);
 let i = 0;
-for (let z = -200; z <= 200; z++) for (let x = -200; x <= 200; x++) for (let y = 0; y < 80; y++) golden[i++] = legacy.wcCell(x + 512, y, z + 512);
+for (let z = -200; z <= 200; z++) for (let x = -200; x <= 200; x++) for (let y = 0; y < 80; y++) golden[i++] = timber(legacy.wcCell(x + 512, y, z + 512));
 assert.equal(createHash('sha256').update(new Uint8Array(golden.buffer)).digest('hex'), '1fbc36d0ba57628e816eba5c47336d988293c0d93fd5c8c0ea01ea122303bce2', 'EXACT old-save authored geometry');
 for (let z = -512; z < 512; z += 19) for (let x = -512; x < 512; x += 17) {
   if (Math.abs(x) <= 200 && Math.abs(z) <= 200) continue;

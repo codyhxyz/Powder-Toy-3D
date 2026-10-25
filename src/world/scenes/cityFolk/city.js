@@ -13,7 +13,7 @@ int cfCityShopMaterial(int x, int y, int z, int cx, int cz, int style) {
   int dx = x - cx, dz = z - cz, ay = y - CITY_FLOOR;
   if (abs(dx) > CITY_HOUSE_HALF_X + 2 || abs(dz) > CITY_HOUSE_HALF_Z + 2) return E_EMPTY;
   int roof = CITY_WALL_H + (style == 1 ? thDiv(CITY_HOUSE_HALF_X - min(abs(dx), CITY_HOUSE_HALF_X), 3) : 0);
-  if (ay >= CITY_WALL_H && ay < roof + 2) return style == 1 ? materialWord(E_WOOD, AP_PLANK_Z) : E_METAL;
+  if (ay >= CITY_WALL_H && ay < roof + 2) return style == 1 ? materialWord(E_PLANKS, AP_PLANK_Z) : E_METAL;
   if (abs(dx) > CITY_HOUSE_HALF_X || abs(dz) > CITY_HOUSE_HALF_Z) return E_EMPTY;
   if (ay < 0 || ay >= CITY_WALL_H) return E_EMPTY;
   bool wall = abs(dx) >= CITY_HOUSE_HALF_X - 1 || abs(dz) >= CITY_HOUSE_HALF_Z - 1;
@@ -21,11 +21,11 @@ int cfCityShopMaterial(int x, int y, int z, int cx, int cz, int style) {
   if (!wall) return E_EMPTY;
   if (front && abs(dx) <= CITY_DOOR_HALF && ay < CITY_DOOR_H) return E_EMPTY;
   if (front && ay >= 4 && ay <= 12 && abs(dx) >= 9 && abs(dx) <= 23) return E_GLASS;
-  if (front && ay >= 16 && ay <= 19 && abs(dx) <= 18) return style == 0 ? materialWord(E_WOOD, AP_PLANK_X) : style == 1 ? E_GLASS : E_METAL;
+  if (front && ay >= 16 && ay <= 19 && abs(dx) <= 18) return style == 0 ? materialWord(E_PLANKS, AP_PLANK_X) : style == 1 ? E_GLASS : E_METAL;
   // Emporium masonry, timber tailor bays, theatre's colonnade.
   if (style == 2 && front && thMod(dx + CITY_HOUSE_HALF_X, 8) < 2) return E_ROCK;
-  if (style == 1 && (thMod(dx + CITY_HOUSE_HALF_X, 12) < 2 || ay == 14)) return materialWord(E_WOOD, ay == 14 ? AP_PLANK_X : AP_PLANK_Y);
-  return style == 0 ? E_BRICK : style == 1 ? materialWord(E_WOOD, AP_PLANK_Y) : E_ROCK;
+  if (style == 1 && (thMod(dx + CITY_HOUSE_HALF_X, 12) < 2 || ay == 14)) return materialWord(E_PLANKS, ay == 14 ? AP_PLANK_X : AP_PLANK_Y);
+  return style == 0 ? E_BRICK : style == 1 ? materialWord(E_PLANKS, AP_PLANK_Y) : E_ROCK;
 }
 int cfCityShop(int x, int y, int z, int cx, int cz, int style) { return materialId(cfCityShopMaterial(x, y, z, cx, cz, style)); }
 int cfCityStopMaterial(int x, int y, int z, int cx, int cz) {
@@ -34,11 +34,11 @@ int cfCityStopMaterial(int x, int y, int z, int cx, int cz) {
   if (abs(dx) <= 10 && dz >= -8 && dz <= 4) {
     if (ay >= 11 && ay < 13) return E_METAL;
     if (ay >= 0 && ay < 11 && (dz == -8 || (abs(dx) == 10 && dz < 0))) return E_GLASS;
-    if (ay >= 0 && ay < 4 && dz >= -6 && dz <= -4 && abs(dx) <= 7) return materialWord(E_WOOD, AP_PLANK_X);
+    if (ay >= 0 && ay < 4 && dz >= -6 && dz <= -4 && abs(dx) <= 7) return materialWord(E_PLANKS, AP_PLANK_X);
   }
   // Route marker beside, never on, the boarding footprint.
   if (dx >= 12 && dx <= 13 && dz >= -7 && dz <= -6 && ay >= 0 && ay < 14) return E_METAL;
-  if (dx >= 10 && dx <= 15 && dz >= -8 && dz <= -5 && ay >= 12 && ay < 16) return materialWord(E_WOOD, AP_PLANK_X);
+  if (dx >= 10 && dx <= 15 && dz >= -8 && dz <= -5 && ay >= 12 && ay < 16) return materialWord(E_PLANKS, AP_PLANK_X);
   return E_EMPTY;
 }
 int cfCityStop(int x, int y, int z, int cx, int cz) { return materialId(cfCityStopMaterial(x, y, z, cx, cz)); }

@@ -45,6 +45,8 @@ import { liquidDetailGLSL } from '../gfx/liquidDetail.js';
 import { mediaGLSL } from '../gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from '../gfx/grains.js';
 import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from '../gfx/deco.js';
+import { glassWGSL, glassShapeWGSL } from '../gfx/glass.js';
+import { filmCellsWGSL, filmTraceWGSL } from '../gfx/film.js';
 import { volumeHazeGLSL } from '../farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY } from '../../gfx/meshCut.js';
 import { ddaWalk } from '../dda.js';
@@ -166,6 +168,13 @@ fn fetchNativeAeration(c: vec3i) -> vec3f {
   if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
   return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
 }
+// a V2 cell's core (shaders/common.js fetchNativeCore), its x and y words (id, fill): what the thin
+// films' cell helpers read (gfx/film.js filmLiquid); zero outside physics' window, as the aeration
+fn fetchNativeCore(c: vec3i) -> vec4u {
+  if (!inPhys(c)) { return vec4u(0u); }
+  let core = aeration[2u * physSlot(c)];
+  return vec4u(core.x, core.y, 0u, 0u);
+}
 
 // ---- the cells: the world copy ----
 fn fetchA(p: vec3i) -> vec4f { return wcA(p); }
@@ -190,6 +199,7 @@ fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }
+fn brickFilm(f: u32) -> bool { return brickHas(f, BRICK_FILM); }   // (gfx/film.js filmHit; W's words don't set it yet: no thin films in the march)
 // (the box's occupancy masks and id bytes: the world copy reads the cell itself)
 fn occMaskOf(id: u32) -> vec2u { return vec2u(0xffffffffu); }
 fn occCellId(m: vec2u, id: u32, c: vec3i) -> i32 { return eid(wcA(c)); }
@@ -354,7 +364,7 @@ const decoWorld = () => rewrite(decoViewGLSL, [
 // The floor's grid lines are a small map's (mapKind.boxFrame); under a big map's sea the world's
 // floor is plain ground (Same look as the box era: its floor lines were never drawn on a big map).
 const floorWorld = (code) => rewrite(code, [
-  ['return mix(GROUND_ALB, FLOOR_LINE_ALB, line);', 'return mix(GROUND_ALB, FLOOR_LINE_ALB, line * f32(P.floorLines));'],
+  ['return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line);', 'return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line * f32(P.floorLines));'],
 ], 'gfx/surface.js floorAlb');
 // The tracer sets F's level at every brick it enters (and keys its bricks by coordinate).
 // At a brick's first step (the walk entering a brick, before its info is read), the heightfield skip
@@ -402,7 +412,7 @@ const FAR_STEP_WGSL = (grains) => `    if (farBrick && flags != 0u${grains ? ' &
       }
     }
 `;
-const traceWorld = (detail, format) => rewrite(realisticTraceWGSL(detail, format), [
+const traceWorld = (detail, format, optics) => rewrite(realisticTraceWGSL(detail, format, optics), [
   ['      bid = brickId(bc);\n', `      bid = brickId(bc);\n      marchLod(ro + rd * tEnter);\n      farBrick = liq == E_EMPTY && distance(ro + rd * tEnter, gEye) > farLimit;\n      if (farBrick) { gFieldLevel = max(gFieldLevel, FAR_FIELD_LEVEL); gFieldBlend = 0.0; fieldPickAt(ro + rd * tEnter); }\n`],
   ['  var lastB = vec3i(-1);\n', '  var lastB = vec3i(-1);\n  var farBrick = false;          // the walk is at a far brick\'s first step (farStep)\n  let farLimit = farAt();        // this pixel\'s dithered switch to distance blocks\n'],
   ['    if (flags == 0u) {\n      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);', `${FAR_STEP_WGSL(GRAINS_ANY(detail))}    if (flags == 0u) {\n      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);`],
@@ -476,8 +486,8 @@ export const marchSplits = (detail = {}) => !GRAINS_ANY(detail);
 const SPLIT_AT = "  // ---- the pixel's traced reflection, marched once";
 const TRACE_SIG = 'fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {';
 // the tracer cut at its one shading call site: everything before traceView, the march, the tail
-function splitTrace(detail, format) {
-  const code = traceWorld(detail, format);
+function splitTrace(detail, format, optics) {
+  const code = traceWorld(detail, format, optics);
   const at = code.indexOf(SPLIT_AT), fn = code.indexOf(TRACE_SIG);
   if (at < 0 || fn < 0 || fn > at) throw new Error('march: the realistic tracer no longer has its post-march shading section where the split cuts it');
   return { before: code.slice(0, fn), march: code.slice(fn, at), tail: code.slice(at) };
@@ -709,8 +719,8 @@ struct ShadeOut {
 }`,
 };
 // What each stage takes of the tracer
-const stageTrace = (stage, detail, format) => {
-  const t = splitTrace(detail, format);
+const stageTrace = (stage, detail, format, optics) => {
+  const t = splitTrace(detail, format, optics);
   if (stage === 'march') return `${t.before}${t.march.replace(TRACE_SIG, 'fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> GBuf {')}${marchEpilogueWGSL}`;
   if (stage === 'reflect') return `${t.before}${reflectWGSL}`;
   return `${t.before}${shadePrologueWGSL}${shadeTail(t.tail)}`;
@@ -758,15 +768,18 @@ const renamed = (code) => RENAMES.reduce((s, [re, to]) => s.replace(re, to), cod
  * The world's size is a run-time uniform (WC.size): one module per (view, detail) serves every map.
  * @param {{ nx: number, ny: number, nz: number }} physGrid
  * stage: 'whole' (the one-pass march), or one of MARCH_STAGES (the split march, above).
- * @param {{ view?: string, detail?: object, fixedReadFormat?: 2 | 3, stage?: string }} [opts]
+ * optics: the rich optics (thin water films, glass panes and blocks that bend light: shaders/render.js
+ * volumeFrag's optics), else the lean view's flat glass, as the box volume compiles them until a grid
+ * holds a film or glass (gfx/opticsScan.js): their code costs every pixel registers.
+ * @param {{ view?: string, detail?: object, fixedReadFormat?: 2 | 3, stage?: string, optics?: boolean }} [opts]
  * @returns {string}
  */
-export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixedReadFormat = 2, stage = 'whole' } = {}) {
+export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixedReadFormat = 2, stage = 'whole', optics = true } = {}) {
   if (!isMaterialView(view)) throw new Error(`worldMarchFrag: ${view} is not a material view (the data views keep the box's march)`);
   if (stage !== 'whole' && (!MARCH_STAGES.includes(stage) || !marchSplits(detail))) throw new Error(`worldMarchFrag: no split stage ${stage} for this detail`);
   const whole = stage === 'whole';
   const shading = [
-    `// world ${whole ? 'march' : stage}: ${view}, detail ${Object.keys(detail).filter((k) => detail[k]).sort().join(' ') || 'off'}`,
+    `// world ${whole ? 'march' : stage}: ${view}, detail ${Object.keys(detail).filter((k) => detail[k]).sort().join(' ') || 'off'}${optics ? '' : ', lean optics'}`,
     glslMod,
     materialsGLSL(),
     worldCoreWGSL(),
@@ -779,12 +792,15 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     floorWorld(surfaceGLSL(detail, { sourceAppearance: false })), decoWorld(),
     liquidGLSL,
     decoSurfGLSL,
+    glassShapeWGSL,
+    glassWGSL,
     liquidDetailGLSL(detail, { fixedReadFormat }),
+    filmCellsWGSL, filmTraceWGSL,
     mediaGLSL(detail),
     grainsGLSL(detail),
     volumeHazeGLSL,
-    ...(whole ? [traceWorld(detail, fixedReadFormat), entryWGSL()]
-      : [gbufWGSL(stage), stageTrace(stage, detail, fixedReadFormat), stageEntryWGSL[stage]()]),
+    ...(whole ? [traceWorld(detail, fixedReadFormat, optics), entryWGSL()]
+      : [gbufWGSL(stage), stageTrace(stage, detail, fixedReadFormat, optics), stageEntryWGSL[stage]()]),
   ].join('\n');
   const code = [
     prelude(physGrid, { state: false }),
@@ -836,10 +852,11 @@ export const worldMarchLayoutNames = (stage = 'whole') => (stage === 'whole' ? W
 // ---- check-wgsl (and its operator gate, tools/check-wgsl-operators.mjs) ----
 // The realistic view at the detail levels shaders/render.js checks, and the other material views
 // at the cost tiers' defaults. warm: false until the menu's warm-up (src/preload.js) builds the
-// world march in place of the box's realistic volume.
-const marchCheck = (name, view, detail, stage = 'whole') => ({
+// world march in place of the box's realistic volume. (Checked with the rich optics, as the box's
+// volume is: they hold the lean code's paths and more; optics: false is the lean variant.)
+const marchCheck = (name, view, detail, stage = 'whole', optics = true) => ({
   name, view, detail, kind: 'render', warm: false,
-  code: (g) => worldMarchFrag(g, { view, detail, stage }),
+  code: (g) => worldMarchFrag(g, { view, detail, stage, optics }),
   layouts: () => WORLD_MARCH_LAYOUTS(undefined, stage),
   layoutNames: worldMarchLayoutNames(stage),
   params: MarchParams,
@@ -855,7 +872,7 @@ const compositeCheck = () => ({
 });
 const detailName = (detail) => Object.keys(detail).filter((k) => detail[k]).sort().join(',') || 'off';
 /** A split stage's pipeline name (gfx/worldView.js and the warm-up agree on it). */
-export const stagePipeName = (view, detail, stage) => `world.${view}(${detailName(detail)})${stage === 'whole' ? '' : `.${stage}`}`;
+export const stagePipeName = (view, detail, stage, optics = true) => `world.${view}(${detailName(detail)})${optics ? '.optics' : ''}${stage === 'whole' ? '' : `.${stage}`}`;
 export const WGSL_CHECK = () => [
   ...['off', 'balanced', 'full'].map((k) => marchCheck(`world.realistic.${k}`, 'realistic', REALISTIC_LEVELS[k]())),
   ...['off', 'balanced'].flatMap((k) => MARCH_STAGES.map((st) => marchCheck(`world.realistic.${k}.${st}`, 'realistic', REALISTIC_LEVELS[k](), st))),
@@ -866,12 +883,13 @@ export const WGSL_CHECK = () => [
  * The menu's warm-up entry (src/preload.js) for a session drawing material view `view` with the
  * drawable detail `detail` (the box volume's warm entry's): the march's pipeline as gfx/worldView.js
  * makes it, same name, code, layouts and params, so Start finds it built. Built on physics' grid.
+ * The lean optics' variant: what a map draws until it holds a film or glass (gfx/worldView.js pipeline).
  */
 export const warmMarchCheck = (view, detail) => ({
-  ...marchCheck(stagePipeName(view, detail, 'whole'), view, detail),
+  ...marchCheck(stagePipeName(view, detail, 'whole', false), view, detail, 'whole', false),
   physicsGrid: true,
 });
 /** The same, as the frame draws it: the split stages and the composite, or the whole march (warmMarchCheck). */
 export const warmMarchChecks = (view, detail) => (marchSplits(detail)
-  ? [...MARCH_STAGES.map((st) => ({ ...marchCheck(stagePipeName(view, detail, st), view, detail, st), physicsGrid: true })), compositeCheck()]
+  ? [...MARCH_STAGES.map((st) => ({ ...marchCheck(stagePipeName(view, detail, st, false), view, detail, st, false), physicsGrid: true })), compositeCheck()]
   : [warmMarchCheck(view, detail)]);

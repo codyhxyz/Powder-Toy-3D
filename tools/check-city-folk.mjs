@@ -194,16 +194,18 @@ test('I03 exhaustive exact legacy cells against immutable pre-feature generator'
   const old = await import(`data:text/javascript;base64,${Buffer.from(src).toString('base64')}`);
   const dims = scene.legacySize, p = scene.params({ size: dims, seed });
   const expected = old.willowCoveTwin(p), actual = willow.willowCoveTwin(p);
+  // Sawn timber became PLANKS (elements.js TIMBER) after the baseline: the same cells, WOOD's physics.
+  const timber = (id) => (id === E.PLANKS ? E.WOOD : id);
   // Confidence that the immutable callable is meaningful, not an empty or
   // accidentally bypassed baseline. Still compare every generated ID below.
   for (const [x, y, z, id] of [[404, 24, 572, E.WOOD], [404, 28, 572, E.GLASS],
     [548, 43, 388, E.WATER], [512, 0, 512, E.ROCK], [0, 127, 0, E.EMPTY]]) {
     assert.equal(expected.wcCell(x, y, z), id, 'legacy baseline sentinel');
-    assert.equal(actual.wcCell(x, y, z), id, 'legacy composed sentinel');
+    assert.equal(timber(actual.wcCell(x, y, z)), id, 'legacy composed sentinel');
   }
   let comparisons = 0, nonempty = 0;
   for (let z = 0; z < dims[2]; z++) for (let x = 0; x < dims[0]; x++) for (let y = 0; y < dims[1]; y++) {
-    const a = actual.wcCell(x, y, z), b = expected.wcCell(x, y, z);
+    const a = timber(actual.wcCell(x, y, z)), b = expected.wcCell(x, y, z);
     if (a !== b) assert.fail(`legacy changed at ${x},${y},${z}: ${b}->${a}`);
     comparisons++; if (b !== E.EMPTY) nonempty++;
   }
@@ -219,7 +221,7 @@ test('I04 original cottages, doors, furniture coordinates and village behavior',
   ]);
   for (const x of HOMES) {
     for (let dx = -4; dx < 4; dx++) for (let dz = -12; dz < -10; dz++) for (let y = 24; y < 35; y++) assert.equal(cell(x + dx, y, HOME_Z + dz), E.EMPTY);
-    assert.equal(cell(x - 12, 24, HOME_Z), E.WOOD); assert.equal(cell(x - 12, 28, HOME_Z), E.GLASS);
+    assert.equal(cell(x - 12, 24, HOME_Z), E.PLANKS); assert.equal(cell(x - 12, 28, HOME_Z), E.GLASS);
     entrance({ entry: [x, HOME_Z - 11], floor: 24 }, `original cottage ${x}`);
   }
   assert.match(execFileSync(process.execPath, ['tools/check-village-interactions.mjs'], { encoding: 'utf8' }), /OK|pass/i);
@@ -350,7 +352,7 @@ test('F02/F03/F04 connected meander/fork/falls, river island, separate ponds, be
   };
   coves.forEach(p => { const [x, z] = at(p); assert(z >= 140); assert(shore(x) + 3 < Math.max(shore(x - 80), shore(x + 80)), 'physical cove indents southern coastline'); });
   const bridges = records(need(terrain().bridges, 'terrain.bridges')); assert(bridges.length > M.bridges.length);
-  bridges.forEach(b => { const p = at(b), h = body(p, 'bridge'); assert.equal(cell(p[0], h - 1, p[1]), E.WOOD); });
+  bridges.forEach(b => { const p = at(b), h = body(p, 'bridge'); assert.equal(cell(p[0], h - 1, p[1]), E.PLANKS); });
 });
 
 test('F13-F18 all town identities, entrances, new homes and plots compose and connect to plaza', async () => {

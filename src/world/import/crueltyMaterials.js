@@ -8,7 +8,8 @@ const base = {
   ROCK: ['plain_wall_dark_cracked.png', '1.png', 'BlackWall.png', 'Granite1.png', 'Granite2.png', 'GreyWall.png', 'RedWall.png', 'OliveWall.png', 'WhiteWall.png', 'Stone1.png', 'Stone2.png', 'Stone2face.png', 'Stone2green.png', 'Stone3.png', 'Stone4.png', 'Stone5.png', 'Stone6.png', 'Stone_Tile.png', 'Stone_Tile_dark.png', 'Stone_Wall_1.png', 'Stone_wall_2.png', 'TealWall.png', 'Wall_Crusty.png', 'Wall_Crusty_face.png', 'alien_1.png', 'alien_2.png', 'arches.png', 'blue_yellow.png', 'catacomb.png', 'cobble1.png', 'cobble2.png', 'cyber_1.png', 'cyber_2.png', 'flower.png', 'frog1.png', 'greenwall.png', 'joe2.png', 'maario.png', 'pizzahouse.png', 'plain_wall.png', 'plain_wall2.png', 'plain_wall_dark.png', 'plain_wall_greenred.png', 'bl_red_cyan.png', 'bluewall.png', 'building_1.png', 'building_2.png', 'building_3.png', 'building_3_no_logo.png', 'greyface.png', 'greyfacedstrct.png', 'moss.png', 'moss2.png', 'moss2dstrct.png', 'flesh.tres', 'flesh_tile.png', 'flesh2.png', 'noise.tres'],
   LIMESTONE: ['Marble1.tres', 'Marble1red.tres', 'Marble1green.tres', 'MarbleFace1.png', 'blackmarble.png'],
   CERAMIC: ['Red_Tile.png', 'Diamond_Tile_blue.png', 'Diamond_Tile_green.png', 'Diamond_Tile.png', 'Teal_Tile.png', 'Teal_Tile2.png', 'Tile_Wall.png', 'bathroom.png', 'freak_tile.png', 'mosaic_1.png', 'non_slip_tile.png', 'psycho_tile.png', 'star_tile.png', 'chessboard.png'],
-  WOOD: ['Wood3.png', 'Wood1.png', 'Wood2.tres', 'Wood_Door2.png', 'greenplank.png', 'rug1.png', 'wood_door.tres', 'woodbottomwall.png'],
+  // Sawn and built: boards, doors, rugs on boards (Minecraft's planks, elements.js PLANKS); WOOD is a tree's
+  PLANKS: ['Wood3.png', 'Wood1.png', 'Wood2.tres', 'Wood_Door2.png', 'greenplank.png', 'rug1.png', 'wood_door.tres', 'woodbottomwall.png'],
   METAL: ['Elevator1.png', 'chainlink.tres', 'grate.png', 'metal_door.png', 'divinedoor.png', 'airduct.png', 'helldoor.png', 'profanedoor.png'],
   GLASS: ['glass1.tres', 'glass_green.tres'],
   WATER: ['water.tres', 'red_water.png'],
@@ -31,7 +32,7 @@ const extra = {
 };
 Object.assign(extra, {
   ROCK: [...extra.ROCK, 'res://Maps/textures/apartment/ceiling.png', 'res://Maps/textures/apartment/crungewallpaper.png', 'res://Maps/textures/apartment/grandma.png', 'res://Maps/textures/apartment/grandma2.png', 'res://Maps/textures/apartment/grandma3.png', 'res://Maps/textures/sewer/sewerwall.png', 'res://Maps/textures/sewer/sewerwalldark.png', 'res://Maps/textures/sewer/sewerwallneon.png', 'res://Maps/textures/sewer/slimecarpet.png', 'res://Maps/textures/sewer/orb.png', 'res://Maps/textures/mall/store_strength.png'],
-  WOOD: [...extra.WOOD, 'res://Maps/textures/apartment/whitedoor.png', 'res://Maps/textures/apartment/cupboard.png'],
+  PLANKS: ['res://Maps/textures/apartment/whitedoor.png', 'res://Maps/textures/apartment/cupboard.png'],
   METAL: [...extra.METAL, 'res://Maps/textures/apartment/oven.png', 'res://Maps/textures/sewer/sewerpipe.png'],
   CERAMIC: ['res://Maps/textures/apartment/bluetilekitchen.png', 'res://Maps/textures/mall/reddish_tile.png', 'res://Maps/textures/mall/pale_green_tile.png'],
 });
@@ -42,7 +43,8 @@ export const MATERIAL_LOSSES = {
   LIMESTONE: 'Closest existing carbonate behavior for marble; not a separate marble palette. Acid/heat/break behavior is ours, not source script parity.',
   CERAMIC: 'Existing brittle, acid-proof fired tile; source patterns/glazes omitted. Different toughness/melting from original game geometry.',
   METAL: 'Conductive/breakable metal; no source door motion, container contents, grate holes below cell resolution or screen circuitry is invented.',
-  WOOD: 'Burnable/breakable organic substrate; rug fiber and painted doors use existing wood rather than a new cosmetic element.',
+  WOOD: 'Burnable/breakable organic substrate for trees and organic props.',
+  PLANKS: 'Sawn timber, WOOD\'s behaviour; rug fiber and painted doors use planks rather than a new cosmetic element.',
   GLASS: 'Transparent brittle panel; colored panes and display graphics omitted. Screens are not programmable/electrical devices.',
   WATER: 'Existing liquid; colored/swamp water is not classified as blood/toxic without source mechanic evidence. Surface-only voxel liquid can drain.',
   PLANT: 'Existing rooted, flammable plant for turf; our water-driven growth differs from static source grass. Grass soil backing is not invented.',

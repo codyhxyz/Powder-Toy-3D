@@ -15,17 +15,19 @@ const dump = process.argv.includes('--dump') ? process.argv[process.argv.indexOf
 if (dump) mkdirSync(dump, { recursive: true });
 const grids = { lab: { nx: 128, ny: 64, nz: 128 }, window: { nx: 128, ny: 128, nz: 128 } };
 const materialViews = VIEWS.map((v) => v.key).filter(isMaterialView);
-// each case's whole march, and its split stages (shaders/world/march.js MARCH_STAGES) where it splits
+// each case's whole march, and its split stages (shaders/world/march.js MARCH_STAGES) where it splits,
+// with the rich optics and lean (gfx/worldView.js draws lean until the grid holds a film or glass)
 const base = [
   ...Object.entries(REALISTIC_LEVELS).map(([k, d]) => ['realistic', k, d()]),
   ...materialViews.filter((v) => v !== 'realistic').map((v) => [v, 'balanced', REALISTIC_LEVELS.balanced()]),
 ];
-const cases = base.flatMap(([v, k, d]) => [[v, k, d, 'whole'], ...(marchSplits(d) ? MARCH_STAGES.map((st) => [v, k, d, st]) : [])]);
+const cases = base.flatMap(([v, k, d]) => [[v, k, d, 'whole'], ...(marchSplits(d) ? MARCH_STAGES.map((st) => [v, k, d, st]) : [])])
+  .flatMap((c) => [[...c, true], [...c, false]]);
 let n = 0;
 for (const [gname, g] of Object.entries(grids)) {
-  for (const [view, level, detail, stage] of cases) {
-    const name = `march.${view}.${level}${stage === 'whole' ? '' : `.${stage}`}.${gname}`;
-    const code = worldMarchFrag(g, { view, detail, stage });
+  for (const [view, level, detail, stage, optics] of cases) {
+    const name = `march.${view}.${level}${stage === 'whole' ? '' : `.${stage}`}${optics ? '' : '.lean'}.${gname}`;
+    const code = worldMarchFrag(g, { view, detail, stage, optics });
     const res = [...code.matchAll(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]*)>)?\s+(\w+)\s*:\s*([^;]+);/g)];
     assert(res.every((r) => Number(r[1]) < 4), `${name}: groups`);
     const storage = res.filter((r) => r[3]?.startsWith('storage')).map((r) => r[4]);

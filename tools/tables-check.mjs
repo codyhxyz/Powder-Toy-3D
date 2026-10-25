@@ -237,6 +237,7 @@ async function layoutChecks(lab, M, { check }, times) {
       if (type.startsWith('texture_storage_3d')) return `textureStore(${name}, vec3i(0), vec4f(1.0));`;
       if (type === 'sampler') return `_ = textureSampleLevel(tFS, ${name}, vec3f(0.5), 0.0);`;
       if (type.startsWith('texture_3d')) return `_ = textureLoad(${name}, vec3i(0), 0);`;
+      if (type.startsWith('texture_2d_array')) return `_ = textureLoad(${name}, vec2i(0), 0, 0);`;
       if (type.startsWith('texture_2d')) return `_ = textureLoad(${name}, vec2i(0), 0);`;
       const rw = M.RENDER_LAYOUT[variant].find((e) => e.binding === binding).buffer.type === 'storage';
       return rw ? `${name}[0] = ${name}[0];` : `_ = ${name}[0];`;

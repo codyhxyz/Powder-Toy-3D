@@ -59,6 +59,7 @@ const extent = 200, width = extent * 2 + 1, height = C.SKY;
 const ids = new Uint16Array(width * width * height);
 const legacy = willowCoveTwin(scene.params({ size: scene.legacySize, seed: P.seed }));
 const legacyIds = new Uint16Array(ids.length);
+const timber = (id) => (id === E.PLANKS ? E.WOOD : id);
 const index = (x, y, z) => ((z + extent) * width + x + extent) * height + y;
 const counts = new Map();
 for (let z = -extent; z <= extent; z++) {
@@ -67,13 +68,14 @@ for (let z = -extent; z <= extent; z++) {
       const id = cell(x, y, z);
       assert(Number.isInteger(id) && ELEMENTS[id], `invalid cell ${x},${y},${z}: ${id}`);
       ids[index(x, y, z)] = id;
-      legacyIds[index(x, y, z)] = legacy.wcCell(x + 512, y, z + 512);
+      legacyIds[index(x, y, z)] = timber(legacy.wcCell(x + 512, y, z + 512));
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
   }
 }
 // Golden geometry from production b81b9063, before the expansion: old saves
 // retain every authored cell, rather than silently changing their generator.
+// (PLANKS counts as WOOD: sawn timber split off later, same cells, same physics.)
 assert.equal(createHash('sha256').update(new Uint8Array(legacyIds.buffer)).digest('hex'),
   '1fbc36d0ba57628e816eba5c47336d988293c0d93fd5c8c0ea01ea122303bce2');
 
@@ -128,7 +130,7 @@ const at = (x, y, z) => x >= -extent && x <= extent && z >= -extent && z <= exte
   ? ids[index(x, y, z)] : cell(x, y, z);
 const solid = (id) => ELEMENTS[id].kind === K.SOLID;
 const drySupport = (id) => solid(id) || id === E.SAND;
-for (const id of [E.ROCK, E.WATER, E.SAND, E.PLANT, E.WOOD, E.BRICK, E.GLASS]) assert(counts.get(id) > 0);
+for (const id of [E.ROCK, E.WATER, E.SAND, E.PLANT, E.WOOD, E.PLANKS, E.BRICK, E.GLASS]) assert(counts.get(id) > 0);
 assert(!counts.has(E.CLONE), 'the finite pond must not silently acquire an untyped source');
 
 // Deterministic samples, fixed topology across seeds, world and slab edges.
@@ -199,23 +201,23 @@ for (const [x, z] of M.cottages) {
     assert.equal(at(x + dx, C.LOW - 1, z + dz), E.BRICK);
     for (let y = C.LOW; y < C.LOW + C.DOOR_H; y++) assert.equal(at(x + dx, y, z + dz), E.EMPTY, 'hollow cottage');
   }
-  assert.equal(at(x - C.HOUSE_HALF, C.LOW, z), E.WOOD);
+  assert.equal(at(x - C.HOUSE_HALF, C.LOW, z), E.PLANKS);
   assert.equal(at(x - C.HOUSE_HALF, C.LOW + C.WINDOW_LO, z), E.GLASS);
   assert.equal(at(x, C.LOW + C.WALL_H + C.ROOF_H - 1, z), E.BRICK);
 }
 for (const [x, z] of M.bridges) {
   const h = z < C.MID_Z ? C.MID : C.LOW;
   for (let y = h - C.FREEBOARD; y < h - C.DECK_THICK; y++) assert.equal(at(x, y, z), E.EMPTY, 'clearance over water');
-  for (let y = h - C.DECK_THICK; y < h; y++) assert.equal(at(x, y, z), E.WOOD);
+  for (let y = h - C.DECK_THICK; y < h; y++) assert.equal(at(x, y, z), E.PLANKS);
   for (const side of [-1, 1]) {
     const px = x + side * C.BRIDGE_PILE_X, pz = z + C.PATH_HALF - 2;
-    for (let y = C.SEA; y < h; y++) assert.equal(at(px, y, pz), E.WOOD, 'continuous bridge pile');
+    for (let y = C.SEA; y < h; y++) assert.equal(at(px, y, pz), E.PLANKS, 'continuous bridge pile');
     assert(solid(at(px, C.SEA - 1, pz)), 'anchored bridge pile');
   }
 }
 for (const z of [C.DOCK_PILE_Z, C.DOCK_PILE_Z + C.DOCK_PITCH]) {
   const x = C.PATH_X + C.DOCK_HALF - 2;
-  for (let y = C.FLOOR; y < C.BEACH; y++) assert.equal(at(x, y, z), E.WOOD, 'dock pile reaches seabed');
+  for (let y = C.FLOOR; y < C.BEACH; y++) assert.equal(at(x, y, z), E.PLANKS, 'dock pile reaches seabed');
   assert.equal(at(x, C.FLOOR - 1, z), E.ROCK);
 }
 

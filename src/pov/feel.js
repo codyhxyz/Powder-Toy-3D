@@ -161,7 +161,12 @@ export function createFeel({ hud }) {
       addTrauma(TRAUMA_BOMB * clamp01(radius / WAND_BLAST_RADIUS_FULL) * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
     }),
     // a tool's own screen shake (the laser cannon's beam): trauma 0..1 of rumble, the player's only
-    povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addRumble(x); }),
+    // (`level`: a sustained shake, held every frame the source lasts: the rumble is raised to it, not stacked)
+    povEvents.on('shake', ({ trauma: x = 0, level = 0, by }) => {
+      if (!live || by) return;
+      addRumble(x);
+      if (level > 0) rumble = Math.max(rumble, Math.min(1, level));
+    }),
     povEvents.on('drunk', ({ seconds = 0, by }) => {
       if (!live || by) return;   // an NPC's drink isn't the player's head
       drunk = Math.min(DRUNK_MAX_S, drunk + seconds);

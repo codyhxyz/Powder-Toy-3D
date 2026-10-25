@@ -1,0 +1,28 @@
+.material-inspector {
+  color: var(--text);
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  padding: 24px;
+  user-select: text;
+  background: var(--panel-solid);
+}
+.material-inspector::backdrop { background: rgba(0, 0, 0, .6); }
+.material-inspector h2 { margin: 8px 64px 12px 0; font-size: 24px; }
+.material-inspector h3 { margin: 22px 0 8px; font-size: 15px; }
+.material-inspector li { margin: 7px 0; }
+.material-inspector-close {
+  float: right;
+  padding: 7px 12px;
+  background: var(--raise);
+  border: 1px solid var(--line-hi);
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+}
+.material-inspector-kicker { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.material-inspector-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.material-inspector-tags span { background: var(--raise); padding: 4px 8px; border-radius: 4px; }
+.material-inspector-note, .material-inspector dd { color: var(--muted); }
+.material-inspector summary { cursor: pointer; }
+.material-inspector dt { margin-top: 12px; font-weight: 650; }
+.material-inspector dd { margin: 4px 0 0; }

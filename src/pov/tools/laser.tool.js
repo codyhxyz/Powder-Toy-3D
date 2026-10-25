@@ -44,12 +44,13 @@ import { gridSpace } from '../space.js';
 // (vfx.js's flash, the shot's sound); laser { from, to, dir, radius, hit } in
 // world space (vfx.js's beam); laser:aim { from, to, amount } in world space every
 // frame it charges (vfx.js's thin red sighting beam, which thickens as it fills,
-// as the Spartan Laser's does in Halo 3); shake { trauma }.
+// as the Spartan Laser's does in Halo 3); shake { trauma } on the shot, shake { level } every frame it charges (feel.js's rumble).
 
 export const CHARGE_S = 3;     // s to full charge (Halo's Spartan Laser, about three)
 export const REFIRE_S = 2;     // s of standby after a shot before it charges again (Halo's, about two)
 const BODY_CLEARANCE = 0.3;    // cells: the beam starts this far outside the body
 const SHAKE = 1;               // rumble a shot adds to the screen shake (0..1, feel.js, roll only): all of it
+const CHARGE_RUMBLE = 0.5;     // rumble the screen reaches at full charge (it grows with the charge; the shot itself is SHAKE)
 const TREMBLE = 0.035;         // cells the gun shudders in the hands at full charge (it grows as the square of the charge)
 const GLOW_IDLE = 0.15;        // the charge strip's brightness when idle, as a share of full
 const GLOW_FULL = 4;           // ...and at full charge (HDR: it blooms)
@@ -153,6 +154,7 @@ export default {
           charge += dt;
           povEvents.emit('laser:charge', { amount: Math.min(1, charge / CHARGE_S), dt });
           aim(ctx, Math.min(1, charge / CHARGE_S));
+          povEvents.emit('shake', { level: CHARGE_RUMBLE * Math.min(1, charge / CHARGE_S) });
           if (charge >= CHARGE_S && fire(ctx)) {
             charge = 0; standby = REFIRE_S; armed = false;
           }

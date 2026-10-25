@@ -18,14 +18,13 @@
 // as not describing the real frame. Nothing here is timed: the counted
 // variant's speed is not the real shader's, so the result carries counts of
 // work (unit 'work') and no durations. Neither draw is TAA-resolved,
-// tone-mapped or sRGB-encoded: the counters are integers in integer targets,
+// tone-mapped or sRGB-encoded: the counters are integers in an integer storage texture,
 // and the colour compared is the volume's raw premultiplied output.
 // Stats cover only the pixels the volume covered (the box was hit and the
 // trace ran; misses inside the box count, the rays cost work), at the scene
 // target's real size, not the canvas's.
 
 import { COST_COUNTERS, COST_KINDS, COST_COVERED_BIT, COST_MAX, COST_MARCH_MAX, COST_STORAGE_FORMAT, COST_STORAGE_ROWS, COST_WORDS } from '../shaders/costView.js';
-import { MARCH_STAGES } from '../shaders/world/march.js';
 import { halfToFloat } from '../gpu/readback.js';
 import { isMaterialView } from '../views.js';
 
@@ -221,6 +220,20 @@ export function attachCostView(app) {
   const detailList = (d) => Object.keys(d ?? {}).filter((k) => d[k]).sort();
   const untrustedWhy = (what, diffShare, maxDiff) => `the counted variant drew a different ${what} than the live pipeline (${(100 * diffShare).toFixed(3)} % of covered pixels differ, up to ${maxDiff}): its counts do not describe the real frame`;
 
+  // The counted twins of what the frame draws, queued now (not awaited). A twin is a cold compile of
+  // the lit tracer (seconds: its text is new to the shader cache whenever the tracer or the counters
+  // change), so a tool that will capture queues it before it waits for pipelines to settle: the build
+  // overlaps the others and ends before any timed frame, instead of after them inside the slot.
+  // Resolves with the twins' names once queued; null when the view isn't a lit one.
+  async function prepare() {
+    const src = await freshFrame();
+    if (!isMaterialView(src.rec.view)) return null;
+    const twins = src.world
+      ? (src.rec.split ? Object.entries(src.rec.pipe.parts) : [['whole', src.rec.pipe]]).map(([st, p]) => app.worldView.costTwin(p, st))
+      : [app.vol.costTwin(src.rec.pipe)];
+    return twins.map((t) => t.name);
+  }
+
   async function capture({ kind } = {}) {
     if (kind !== undefined && !COST_KINDS.includes(kind)) throw new Error(`cost view: no counter ${kind} (${COST_KINDS.join(', ')})`);
     await gpu.pipelines.settled();
@@ -268,6 +281,8 @@ export function attachCostView(app) {
   }
 
   // ---- the world march (gfx/worldView.js): the split stages, or the whole march ----
+  // the split stages in their order (the record's pipelines: worldView builds them march, reflect, shade)
+  const stagesOf = (rec) => (rec.split ? Object.keys(rec.pipe.parts) : ['whole']);
   // Each stage's twin writes its counters into a storage texture of its own, read back as it is:
   // a stage's counts are the ones that stage made. The live chain and the counted chain each run
   // into a G-buffer of their own; every stage output a target holds is compared (G0, G1: the march;
@@ -277,7 +292,7 @@ export function attachCostView(app) {
     if (world && world.w === w && world.h === h && world.split === split && world.wv === wv) return world;
     if (world) { world.gbA?.destroy(); world.gbB?.destroy(); for (const t of [...Object.values(world.cost), world.colorLive, world.colorTwin, world.depth]) t?.destroy(); }
     const tex = (label, format, size = [w, h], usage = USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC) => gpu.createTexture({ label: `cost view ${label}`, size, format, usage });
-    const stages = split ? MARCH_STAGES : ['whole'];
+    const stages = split ? Object.keys(wv.lastRecorded?.pipe?.parts ?? {}) : ['whole'];
     world = {
       w, h, split, wv,
       cost: Object.fromEntries(stages.map((st) => [st, costTexture(`${st} counters`, w, h)])),
@@ -289,7 +304,7 @@ export function attachCostView(app) {
   };
   async function captureWorld(rec, kind) {
     const wv = app.worldView;
-    const stages = rec.split ? MARCH_STAGES : ['whole'];
+    const stages = stagesOf(rec);
     const liveOf = (r) => (r.split ? r.pipe.parts : { whole: r.pipe });
     let twinParts = Object.fromEntries(stages.map((st) => [st, wv.costTwin(liveOf(rec)[st], st)]));
     if (Object.values(twinParts).some((t) => t.state !== 'ready')) {
@@ -357,7 +372,7 @@ export function attachCostView(app) {
       ...(rec.split ? { stageOutputsDiffering: outputs } : {}),
       path: rec.split ? 'world split' : 'world whole',
       pass: rec.split ? 'world march' : 'scene',
-      passes: rec.split ? MARCH_STAGES.map((st) => `world ${st}`) : ['scene'],
+      passes: rec.split ? stages.map((st) => `world ${st}`) : ['scene'],
       view: rec.view, detail: detailList(rec.detail), curved: false, pipeline: rec.pipe.name,
     }, { vals, covered, count, w, h, stages: stageStats, kind, caps: COST_KINDS.map((_, s) => (s === 0 ? COST_MARCH_MAX : COST_MAX) * stages.length) });
   }
@@ -426,7 +441,7 @@ export function attachCostView(app) {
     }
   }
 
-  const cost = { kinds: COST_COUNTERS, capture, show };
+  const cost = { kinds: COST_COUNTERS, prepare, capture, show };
   if (app.prof) app.prof.cost = cost;
   return cost;
 }

@@ -47,6 +47,7 @@ const DEFAULT_DIR = path.join(os.tmpdir(), 'tpt-gpu-counters');
 const TABLES = {
   intervals: 'metal-gpu-intervals',
   encoders: 'metal-application-encoders-list',
+  labels: 'metal-object-label',
   spills: 'graphics-compiler-spill-events',
   counterInfo: 'gpu-counter-info',
   counterValues: 'gpu-counter-value',
@@ -232,6 +233,25 @@ async function parseTrace(xctrace, trace, pid) {
     const id = r['encoder-id']?.text;
     if (id) encoders.set(id, { label: r['encoder-label']?.fmt || '', cmdbuffer: r['cmdbuffer-label']?.fmt || '' });
   });
+  // Every Metal object's label as set (object id -> [[time, label]]). Under load the app-side encoder
+  // list above misses many encoders (Lab profile, 2026-10-25: half the intervals, most render work);
+  // their labels are still here, keyed by the same id the GPU intervals carry.
+  const objectLabels = new Map();
+  await exportTable(xctrace, trace, TABLES.labels, r => {
+    if (pid && Number(r.pid?.text) !== pid) return;
+    const id = r['object-id']?.text, label = r.label?.fmt;
+    if (!id || !label) return;
+    const list = objectLabels.get(id) ?? [];
+    list.push([num(r.timestamp), label]);
+    objectLabels.set(id, list);
+  });
+  const objectLabel = (id, at) => {   // the label the object had when its work started (ids can be reused)
+    const list = objectLabels.get(id);
+    if (!list) return '';
+    let best = list[0][1];
+    for (const [t, l] of list) if (t <= at) best = l;
+    return best;
+  };
   // GPU work per encoder per channel
   const work = new Map(); // encoder id -> { channels: {name: ns}, spans: [[start,end]], label }
   let first = Infinity, last = -Infinity;
@@ -244,7 +264,7 @@ async function parseTrace(xctrace, trace, pid) {
     if (!w) {
       // "CommandBuffer:Encoder  (process (pid)) 0xid": the label part as a fallback
       const raw = r['event-label']?.kids.find(k => k.tag === 'string')?.text ?? '';
-      work.set(id, w = { channels: {}, spans: [], fallback: raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw });
+      work.set(id, w = { channels: {}, spans: [], fallback: raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw, objectLabel: objectLabel(id, start) });
     }
     w.channels[ch] = (w.channels[ch] ?? 0) + dur;
     w.spans.push([start, start + dur]);
@@ -303,18 +323,50 @@ export const DAWN_PREFIX = /^Dawn_(?:Compute|Render)PassEncoder_?/;
 const USEFUL_COUNTER = /limiter|utilization|occupancy|bandwidth|spill|cache|miss/i;
 const OCCUPANCY_NAMES = /occupancy/i;
 
+/**
+ * The GPU's time split among the encoders running at each instant: an interval
+ * shared by k encoders gives each 1/k of it. Apple's GPUs overlap work (a
+ * render pass's vertex and fragment stages, compute beside fragment), so raw
+ * encoder durations can sum past the time the GPU was busy; these shares sum
+ * to exactly the busy time (the union of every interval), never more.
+ * @param {Map<string, { spans: number[][] }>} work encoder id -> its [start, end] spans (ns)
+ * @returns {{ share: Map<string, number>, unionNs: number }}
+ */
+export function exclusiveShares(work) {
+  const events = [];
+  for (const [id, w] of work) for (const [s, e] of w.spans) if (e > s) events.push([s, 1, id], [e, -1, id]);
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);   // ends before starts at one instant
+  const active = new Map(), share = new Map();
+  let unionNs = 0, prev = 0;
+  for (const [t, d, id] of events) {
+    if (active.size && t > prev) {
+      const each = (t - prev) / active.size;
+      for (const a of active.keys()) share.set(a, (share.get(a) ?? 0) + each);
+      unionNs += t - prev;
+    }
+    prev = t;
+    const n = (active.get(id) ?? 0) + d;
+    if (n > 0) active.set(id, n); else active.delete(id);
+  }
+  return { share, unionNs };
+}
+
 function summarize({ encoders, work, spills, counterNames, counterTotals, samples, windowNs }, meta) {
+  const { share, unionNs } = exclusiveShares(work);
   const groups = new Map();
   for (const [id, w] of work) {
     const e = encoders.get(id);
     // Dawn names a labelled encoder "Dawn_ComputePassEncoder_<WebGPU label>"
-    const label = (e?.label || w.fallback || `encoder ${id}`).replace(DAWN_PREFIX, '') || '(unlabelled)';
-    const g = groups.get(label) ?? { label, count: 0, totalNs: 0, channels: {}, spillEvents: 0, spilledBytesMax: 0, spilledBytesPerEncoder: 0, ids: [] };
+    // a Dawn-given label from either table first, then Metal's default names
+    const named = [e?.label, w.objectLabel, w.fallback].filter(Boolean);
+    const label = (named.find(l => DAWN_PREFIX.test(l)) ?? named[0] ?? `encoder ${id}`).replace(DAWN_PREFIX, '') || '(unlabelled)';
+    const g = groups.get(label) ?? { label, count: 0, totalNs: 0, ownNs: 0, channels: {}, spillEvents: 0, spilledBytesMax: 0, spilledBytesPerEncoder: 0, ids: [] };
     g.count++; g.ids.push(id);
     let busy = 0;
     for (const [ch, ns] of Object.entries(w.channels)) { g.channels[ch] = (g.channels[ch] ?? 0) + ns; busy = Math.max(busy, ns); }
-    // vertex and fragment of one render encoder overlap on a tiler: count the longer one
-    g.totalNs += busy;
+    // its share of the GPU's busy time (exclusiveShares); its own span, overlaps and all, beside it
+    g.totalNs += share.get(id) ?? 0;
+    g.ownNs += busy;
     const s = spills.get(id);
     if (s) { g.spillEvents += s.events; g.spilledBytesMax = Math.max(g.spilledBytesMax, s.max); g.spilledBytesPerEncoder = Math.max(g.spilledBytesPerEncoder, s.total); }
     groups.set(label, g);
@@ -336,8 +388,11 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
     return {
       label: g.label,
       count: g.count,
+      // share of the GPU's busy time (exclusiveShares): these sum to the busy time, so per-pass ms add up
       gpuMs: g.totalNs / g.count / NS_PER_MS,      // mean per encoder (≈ per frame for once-a-frame passes)
       totalMs: g.totalNs / NS_PER_MS,
+      // its own duration (longest channel), counting time it shared with concurrent encoders
+      ownMs: g.ownNs / g.count / NS_PER_MS,
       channels: Object.fromEntries(Object.entries(g.channels).map(([k, ns]) => [k, ns / g.count / NS_PER_MS])),
       spills: g.spillEvents ? { bytesMax: g.spilledBytesMax, bytesPerEncoder: g.spilledBytesPerEncoder, pipelinesPerEncoder: g.spillEvents / g.count } : null,
       occupancy: occ.length ? Object.fromEntries(occ) : null,
@@ -345,7 +400,7 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
       counters,
     };
   }).sort((a, b) => b.totalMs - a.totalMs);
-  const busyMs = byEncoder.reduce((s, e) => s + e.totalMs, 0);
+  const busyMs = unionNs / NS_PER_MS;   // = the sum of every byEncoder totalMs
   const windowMs = windowNs / NS_PER_MS;
   return {
     byEncoder,
@@ -353,8 +408,11 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
       ...meta,
       windowMs,
       gpuBusyMs: busyMs,
+      ownSumMs: byEncoder.reduce((t, e) => t + e.ownMs * e.count, 0),   // raw durations' sum: above gpuBusyMs by the overlap
       encoders: work.size,
-      labelled: [...encoders.values()].some(e => DAWN_PREFIX.test(e.label) && e.label.replace(DAWN_PREFIX, '')),
+      labelled: byEncoder.some(e => e.label !== '(unlabelled)' && !/^(Compute|Render|Blit) Command \d+$|^GPU Execution$|^encoder \d+$/.test(e.label)),
+      // GPU time no label reached: Metal's default names (Dawn's internal encoders: clears, query resolves, copies)
+      unlabelledMs: byEncoder.filter(e => e.label === '(unlabelled)' || /^(Compute|Render|Blit) Command \d+$|^GPU Execution$|^encoder \d+$/.test(e.label)).reduce((t, e) => t + e.totalMs, 0),
       top: byEncoder.slice(0, 5).map(e => ({ label: e.label, gpuMs: +e.gpuMs.toFixed(3), shareOfGpu: busyMs ? +(e.totalMs / busyMs).toFixed(3) : null })),
       spilling: byEncoder.filter(e => e.spills).sort((a, b) => b.spills.bytesMax - a.spills.bytesMax).slice(0, 10)
         .map(e => ({ label: e.label, bytesMax: e.spills.bytesMax, bytesPerEncoder: e.spills.bytesPerEncoder, gpuMs: +e.gpuMs.toFixed(3) })),
@@ -405,14 +463,20 @@ export async function startCounters({ pid, seconds = DEFAULT_SECONDS, dir = proc
     } else throw e;
   }
   const kill = () => { try { rec.child.kill('SIGKILL'); } catch {} };
-  process.once('exit', kill);
+  // if this process dies mid-recording: a kept trace is still saved (SIGINT: xctrace saves and exits by
+  // itself, --time-limit as the backstop), else xctrace is killed and its partial trace removed
+  const onExit = () => {
+    if (keep) { try { rec.child.kill('SIGINT'); } catch {} return; }
+    kill(); fs.rmSync(trace, { recursive: true, force: true }); fs.rmSync(template, { force: true });
+  };
+  process.once('exit', onExit);
   const startedAt = Date.now();
   let stopping = null;
   const stop = () => stopping ??= (async () => {
     if (rec.child.exitCode === null) rec.child.kill('SIGINT');
     const saved = await Promise.race([rec.exited, new Promise(r => setTimeout(r, SAVE_TIMEOUT_MS, 'timeout'))]);
     if (saved === 'timeout') { kill(); fail(`xctrace did not finish saving within ${SAVE_TIMEOUT_MS / 1000}s (killed)`); }
-    process.off('exit', kill);
+    process.off('exit', onExit);
     const recordedMs = Date.now() - startedAt;
     try {
       if (!fs.existsSync(trace)) fail(`xctrace saved no trace (exit ${saved}): ${rec.output().trim().slice(-400)}`);
@@ -427,12 +491,24 @@ export async function startCounters({ pid, seconds = DEFAULT_SECONDS, dir = proc
   return { pid, mode, trace, stop };
 }
 
+/** Parses a kept trace (TPT_XCTRACE_KEEP, --keep) for `pid` without recording. */
+export async function readTrace(trace, pid) {
+  if (!Number.isSafeInteger(pid)) fail('readTrace needs the GPU process pid the trace was recorded for');
+  return summarize(await parseTrace(xctracePath(), trace, pid), { pid, mode: 'file', trace });
+}
+
 // ---------- CLI ----------
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i < 0 ? d : args[i + 1]; };
   const main = async () => {
+    if (opt('trace')) {   // re-read a kept trace: --trace FILE --pid N
+      const result = await readTrace(opt('trace'), Number(opt('pid')));
+      if (opt('json')) fs.writeFileSync(opt('json'), JSON.stringify(result, null, 2));
+      printReport(result);
+      return;
+    }
     const pid = opt('pid') ? Number(opt('pid')) : findGpuProcess({ browserPid: opt('browser-pid') ? Number(opt('browser-pid')) : undefined });
     const seconds = Number(opt('seconds', DEFAULT_SECONDS));
     const c = await startCounters({ pid, seconds, dir: opt('dir'), keep: args.includes('--keep'), allProcesses: args.includes('--all-processes'), log: l => console.error(l) });
@@ -466,7 +542,8 @@ export async function start({ frames = 60, fps = 30 } = {}) {
   const gpu = findGpuProcess({ parentPid: process.pid });
   const pid = gpu?.pid ?? gpu;
   const seconds = Math.min(MAX_SECONDS, Math.max(DEFAULT_SECONDS, Math.ceil(frames / fps) + 2));
-  const h = await startCounters({ pid, seconds });
+  // TPT_XCTRACE_KEEP=1 keeps the trace (its path is in summary.trace) to re-read with --trace
+  const h = await startCounters({ pid, seconds, keep: !!process.env.TPT_XCTRACE_KEEP });
   return {
     async stop() {
       const r = await h.stop();

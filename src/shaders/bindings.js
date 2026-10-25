@@ -77,6 +77,11 @@ export const FRAME_UNIFORMS = [
   ['materialStyle', 'f32', 'Artwork derived from view: 0 Realistic, 1 Cozy, 2 Noita'],
   ['sourceAppearance', 'vec4u', 'far grid appearance tail: first Y plane, word count, width, depth'],
   ['sourceStyle', 'u32', 'source appearance enabled for the Cruelty Squad material view'],
+  // appended: Settings → Lighting's Reflections and Light bending (gfx/liquid.js reflectDefer, opticsBend)
+  ['reflections', 'u32', 'uReflections (bool): traced reflections, else the environment'],
+  ['bending', 'u32', 'uBending (bool): real refraction, else a straight look with a nudge'],
+  // appended: the small maps' scanned floor (gfx/materials.js FLOOR_TEX; shaders/gfx/surface.js floorAlb)
+  ['floorTex', 'f32', 'the floor photo\'s first layer in the material textures, -1 until it loads'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));
@@ -104,8 +109,14 @@ ${FrameUniforms.wgsl}
 //   bit 15     BRICK_MATTER: the brick holds matter
 //   bit 16     BRICK_LIQUID_INTERIOR: every final-field texel is strictly inside
 //              liquid and outside opaque channels (not a material/air flag)
+//   bit 17     BRICK_FILM: a film (shaders/gfx/film.js) in the brick, or dry
+//              floor beside liquid its lip may reach: the view's film test
+//              (filmHit) runs only in these bricks
+//   bit 18     BRICK_FILM_CELLS: a film's own cells in the brick
+//   bit 19     BRICK_GLASS_CELLS: crisp glass in the brick (with bit 18:
+//              gfx/opticsScan.js, the view takes its rich optics while any brick has one)
 // Matter bricks set bit 15; air-only bricks only bits 5-7; empty bricks are 0.
-export const BRICK_INFO = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16, AIR_SHIFT: 5, GAS_SHIFT: 8, MATTER: 1 << 15, LIQUID_INTERIOR: 1 << 16 };
+export const BRICK_INFO = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16, AIR_SHIFT: 5, GAS_SHIFT: 8, MATTER: 1 << 15, LIQUID_INTERIOR: 1 << 16, FILM: 1 << 17, FILM_CELLS: 1 << 18, GLASS_CELLS: 1 << 19 };
 export const AIR = { HOT: 1, PRESSURE: 2, FLOW: 4 };
 export const BRICK_GAS_DIV = 64;   // cells per brick: gas share = count / this
 // JS twins, for tools and the brick kernel's tests (bits: the BRICK_* sum, air: the AIR sum).
@@ -127,6 +138,9 @@ const BRICK_OPAQUE: u32 = ${BRICK_INFO.OPAQUE}u;
 const BRICK_THIN: u32 = ${BRICK_INFO.THIN}u;
 const BRICK_MIXED: u32 = ${BRICK_INFO.MIXED}u;
 const BRICK_LIQUID_INTERIOR: u32 = ${BRICK_INFO.LIQUID_INTERIOR}u;
+const BRICK_FILM: u32 = ${BRICK_INFO.FILM}u;
+const BRICK_FILM_CELLS: u32 = ${BRICK_INFO.FILM_CELLS}u;
+const BRICK_GLASS_CELLS: u32 = ${BRICK_INFO.GLASS_CELLS}u;
 const AIR_HOT: u32 = ${AIR.HOT}u;
 const AIR_PRESSURE: u32 = ${AIR.PRESSURE}u;
 const AIR_FLOW: u32 = ${AIR.FLOW}u;
@@ -176,13 +190,23 @@ const LIGHTING_BINDINGS = [
   [19, 'aeration', 'array<vec2u>', readBuffer],         // whitewater's aeration, both copies (G4)
 ];
 const FAR_BINDINGS = new Set([11, 12, 13]);
+// L.LIGHTING's own: the material textures (one 2d array: gfx/materialTextures.js)
+// and their sampler (repeat, trilinear). Past every variant's additions (20, 21),
+// so no variant's number means two things.
+export const MAT_TEX_BINDING = 22;
+export const MAT_TEX_SAMPLER_BINDING = 23;
 const storageTex = (format, viewDimension) => ({ storageTexture: { access: 'write-only', format, viewDimension } });
 // The writer variants (docs/webgpu.md F6): the same numbers with the bindings
 // the kernel writes as storage. A texture is never sampled and storage-written
 // in one dispatch.
 const VARIANTS = {
-  // the volume (fragment) and the read-only probes (compute)
-  LIGHTING: { stages: STAGE.FRAGMENT | STAGE.COMPUTE, swap: {} },
+  // the volume (fragment) and the read-only probes (compute); and the scanned
+  // material textures and their sampler (gfx/materialTextures.js), which only
+  // the views that draw materials read (shaders/gfx/surface.js matTex*)
+  LIGHTING: { stages: STAGE.FRAGMENT | STAGE.COMPUTE, swap: {}, add: [
+    [MAT_TEX_BINDING, 'tMatTex', 'texture_2d_array<f32>', { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
+    [MAT_TEX_SAMPLER_BINDING, 'matTexSampler', 'sampler', { sampler: { type: 'filtering' } }],
+  ] },
   // the shadow kernel: the map and its .x copy, written in one dispatch
   LIGHTING_SHADOW: { stages: STAGE.COMPUTE, swap: {
     8: ['texture_storage_2d<rgba32float, write>', storageTex('rgba32float', '2d')],

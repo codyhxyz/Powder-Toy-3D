@@ -61,6 +61,31 @@ The header says `PROFILE (trusted)`, or `UNTRUSTED:` followed by every reason. B
 - **A new report line or check.** Add it to `buildReport` (and `formatReport`) in `src/gfx/profileReport.js`, with a case in `tools/profile-cpu-check.mjs`.
 - **A new thing measured around the capture.** Collect it in `tools/profile.mjs`, outside the timed frames, and add it through `annotate()`.
 
+## Trusted ms, ms per cause, targets
+
+**Trusted per-pass ms.** On Apple's tile-based GPUs, render-pass timestamps can span whole submissions. They can sum past the frame, and the report then says UNTRUSTED. On a Mac the tool therefore records a Metal System Trace (`tools/gpu-counters.mjs`), attaching beside the boot so it costs no extra slot time. While the profiler is on, `gpu/timing.js` gives every Metal encoder the profiler's pass name plus a pose tag (`scene@0`; `@-` outside the timed frames, which are left out). `applyMetal` (`src/gfx/profileCauses.js`) maps those encoder times onto the passes:
+
+- the frames in the trace window come from the trace itself: a once-a-frame pass's encoder count over its count per frame, median over passes;
+- a pass whose encoder count doesn't fit that window loses its Metal ms;
+- a pass with no labelled Metal encoder keeps its timestamp only when timestamps are trusted. Otherwise its ms is `–` with the reason, and the report is UNTRUSTED while such passes hold more than 5% of the timestamp time;
+- Metal GPU time with no pass label is listed separately as unlabelled.
+
+Render passes (Lab, M5, 2026-10-25): under load the trace's app-side encoder list misses about half the encoders, most render work among them. Those intervals showed as "GPU Execution" or "Render Command N". `tools/gpu-counters.mjs` now labels them from Metal's object-label table, which uses the same encoder id. A pass's Metal ms is its mean GPU ms per run times the runs per timed frame the report counted. The trace drops whole intervals but not parts of them, so its run counts are low (GI and shadow at half) while its durations hold. Encoder ms are shares of the GPU's busy time: overlapping work is split evenly, so the passes sum to the busy time. A report whose Metal ms sum past the frame's GPU span is untrusted. On one Lab pose: scene 44.8 ms Metal against 45.6 ms timestamp, 91 of 110 passes with Metal ms, summing to 53.6 ms against a 59.3 ms span.
+
+**ms per cause (an estimate).** With `--poses`, each pose gives one observation per counted pass: its trusted ms, plus agent C's counter totals by category (`CATEGORIES`, e.g. `march`, `cellStepsOwn`, `skips`, `fieldReads`). `estimateCauses` fits ms ≈ Σ cost per unit × count by non-negative least squares. It prints the fit only when it is honest:
+
+- at least categories + 2 observations;
+- no two category columns correlated above 0.95;
+- a leave-one-out error under 25% of the mean ms.
+
+Otherwise it tries coarser groupings (`CATEGORY_LEVELS`: traversal, reads, lighting, reflections, then fewer), saying so. If none fits, it prints why and the measurement that would make it possible. The printout says `ESTIMATE`, gives the method, R² and leave-one-out error, and shows ± that error per category. It never fits untrusted times.
+
+**Coverage.** Every report says which passes the counters cover, the ms they hold out of the frame, and the share of the scene's pixels counted. It also lists the uncounted passes (the far field's `drawBehind` has no counters yet). Compare category deltas only when both runs counted the same passes; `--compare` prints "NOT the same pixels counted" when they didn't.
+
+**Target.** `--target <ms>`, or `--compare old/profile.json` (its frame ms), adds "frame X ms vs Y ms: to reach it, cut …". With a compare, the cuts go to the categories or passes that grew most against the target build. Without one, they go to the largest.
+
+**Slot.** xctrace attaches in parallel with the boot. Each pose takes about 2.5 s on Lab (warmup, settle, 20 frames, cost capture). A pose that stalls ends the poses, and the report covers those captured. Lab with four poses fits in 12.5 s.
+
 ## Hooks for other tools
 
 - **Per-pixel cost (agent C).** `__app.prof.cost = { capture: async () => ({ counters: { <name>: { mean, p50, p95, max } }, image: <data URL>, pass?: 'scene', pixels?: <n>, normal?: { <name>: [lo, hi] } }) }`. `pass` names the waterfall pass the counters describe (default `scene`), and `pixels` is its pixel count (default: the scene target). `normal` gives the expected range per counter, which the work/time flag needs. The tool calls it after the timed frames, prints the counters and saves `image` as `cost.png`.
@@ -110,6 +135,12 @@ Twenty-four per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 | `coarseSteps` | the world's distance blocks (`farStep`, past `NEAR_CELLS`): far bricks with matter taken whole |
 | `coarsePixels` | pixels whose walk took at least one far brick (1 each) |
 
+The counted twin writes them to a write-only `rgba32uint` storage texture in group 0 (the next free
+binding), three times the scene target's height: the pixel's twelve words, four a row, in rows 3y to
+3y + 2 (slots past the last counter stay 0). It writes right after the trace, before the miss's
+discard, so a ray that crossed the box and hit nothing shows its cost too. (Twenty-four 16-bit counts
+don't fit beside the colour in the 32 bytes a sample may have, as the first twelve did.)
+
 The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
 `skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split). The
 heightfield's jumps are not cell steps or `brickSkips`: the cell walk's counts are only the cell walk's.
@@ -122,6 +153,7 @@ warning says their counts are lower bounds.
 
 ```js
 __app.prof.cost.kinds                    // the counters: [{ key, label, where }]
+await __app.prof.cost.prepare()          // queues the counted twins of what the frame draws (a cold compile: tools/profile.mjs calls it before pipelines settle, so it ends before the timed frames)
 await __app.prof.cost.capture({ kind })  // kind optional: the heatmap's counter
 await __app.prof.cost.show(on, { kind }) // the overlay (F9 toggles it)
 ```

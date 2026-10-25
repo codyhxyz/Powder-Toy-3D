@@ -74,8 +74,12 @@ export const COST_MAX = 0xffff;
 export const COST_MARCH_MAX = 0x7fff;
 /** Slot 0's coverage bit: the trace ran for this pixel. */
 export const COST_COVERED_BIT = 0x8000;
-/** u32 words a pixel's counters take (two 16-bit counters a word). */
-export const COST_WORDS = COST_COUNTERS.length / 2;
+/** Rows of the sink a pixel takes (four words a row, two 16-bit counters a word) ... */
+export const COST_STORAGE_ROWS = Math.ceil(COST_COUNTERS.length / 8);
+/** ... its u32 words (the slots past the counters stay 0) ... */
+export const COST_WORDS = 4 * COST_STORAGE_ROWS;
+/** ... and its 16-bit slots. */
+const COST_SLOTS = 2 * COST_WORDS;
 
 const OPEN = '/*cost{*/', CLOSE = '/*}cost*/';
 const span = (s) => `${OPEN}${s}${CLOSE}`;
@@ -86,13 +90,12 @@ const at = (k) => `gCost[${SLOT[k]}]`;
 // The storage sink: a write-only rgba32uint texture in group 0 at `binding`, COST_STORAGE_ROWS times
 // the target's height, the pixel's words in rows ROWS·y … ROWS·y + ROWS - 1 (four a row).
 export const COST_STORAGE_FORMAT = 'rgba32uint';
-export const COST_STORAGE_ROWS = COST_WORDS / 4;
 const wordOf = (i) => pack(i === 0 ? `(min(${at('march')}, ${COST_MARCH_MAX}u) | ${COST_COVERED_BIT}u)` : `gCost[${2 * i}]`, `gCost[${2 * i + 1}]`);
 // The walk-kind flags: gCostSun is set by a sun ray that walks through traceNearSteps (the world's),
 // gCostWalkSun is the walk's own copy; gCostMainSkip marks skipEmpty called by the main march.
 const storagePrelude = (binding) => `
 // ---- cost view counters (shaders/costView.js) ----
-var<private> gCost: array<u32, ${COST_COUNTERS.length}>;
+var<private> gCost: array<u32, ${COST_SLOTS}>;
 var<private> gCostSun: bool;
 var<private> gCostWalkSun: bool;
 var<private> gCostMainSkip: bool;

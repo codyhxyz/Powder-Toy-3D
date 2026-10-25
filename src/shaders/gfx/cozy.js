@@ -30,7 +30,7 @@ fn cozyCell(uv: vec2f, size: f32, salt: f32) -> vec4f {
   return vec4f(local, seed, second - first);
 }
 fn cozySupported(id: i32, ctype: f32) -> bool {
-  return RCLASS(id) == R_OPAQUE && (id == E_WOOD || id == E_PLANT || (id == E_MOSS && appearanceOf(id, ctype) == AP_LEAVES) || id == E_SAND || id == E_STONE || id == E_WALL
+  return RCLASS(id) == R_OPAQUE && (id == E_WOOD || id == E_PLANKS || id == E_PLANT || (id == E_MOSS && appearanceOf(id, ctype) == AP_LEAVES) || id == E_SAND || id == E_STONE || id == E_WALL
       || id == E_BRICK || id == E_RUBBLE || id == E_CERAMIC || id == E_CLAY || id == E_MUD
       || id == E_ASH || id == E_SNOW || id == E_SAWDUST || SURF(id) == SURF_CRAG
       || SURF(id) == SURF_BRUSHED || SURF(id) == SURF_POLISHED);
@@ -228,14 +228,16 @@ fn cozyMat(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.emit = cellEmission(id, T, ctype) + sparkEmit(id, ctype);
     return m;
   }
-  if (id == E_WOOD) {
+  if (id == E_WOOD || id == E_PLANKS) {
     var q = wp;
     var qn = n;
-    if (appearance == AP_LOG_X || appearance == AP_PLANK_X) { q = wp.yxz; qn = n.yxz; }
+    // unlabelled planks run along x, as the Realistic look's (surface.js PLANK_AXIS_DEFAULT)
+    let plankX = appearance == AP_PLANK_X || (id == E_PLANKS && appearance == AP_NONE);
+    if (appearance == AP_LOG_X || plankX) { q = wp.yxz; qn = n.yxz; }
     if (appearance == AP_LOG_Z || appearance == AP_PLANK_Z) { q = wp.xzy; qn = n.xzy; }
     let aw = abs(qn) * abs(qn);
     let tw = aw / max(dot(abs(qn), abs(qn)), 1e-5);
-    let plank = appearance >= AP_PLANK_X && appearance <= AP_PLANK_Z;
+    let plank = (appearance >= AP_PLANK_X && appearance <= AP_PLANK_Z) || id == E_PLANKS;
     if (plank || appearance == AP_BARK) {
       var paint = vec3f(0.0);
       if (tw.x > 0.0) { paint += cozyTimberPattern(q.zy, pixel, plank) * tw.x; }

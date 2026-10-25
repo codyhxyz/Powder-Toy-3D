@@ -381,8 +381,8 @@ export function buildDamValley() {
   // the pump room in the middle, its sluice gate in the back wall, a window band onto the basin
   box(ROOM_X0, TUN_Y, ROOM_Z0, NX - ROOM_X0, TUN_Y + ROOM_H, ROOM_Z1, E.EMPTY);
   box(ROOM_X0, TUN_Y - 1, ROOM_Z0, NX - ROOM_X0, TUN_Y, ROOM_Z1, E.WALL);
-  box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.WOOD, Appearance.PLANK_X);
-  box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD, Appearance.PLANK_X);
+  box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.PLANKS, Appearance.PLANK_X);
+  box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.PLANKS, Appearance.PLANK_X);
   box(ROOM_X0, TUN_Y + ROOM_WINDOW_Y0, DAM_Z0, NX - ROOM_X0, TUN_Y + ROOM_WINDOW_Y0 + ROOM_WINDOW_H, ROOM_Z0, E.GLASS);
   for (let i = 0; i < ROOM_LIGHTS / 2; i++) {   // red's half, mirrored
     const x = Math.floor(ROOM_X0 + (NX - 2 * ROOM_X0) * (i + 0.5) / ROOM_LIGHTS);
@@ -405,7 +405,7 @@ export function buildDamValley() {
     B(FORT_X0, BASE_Y - 1, FORT_Z0, FORT_X1, BASE_Y, FORT_Z1, E.WALL);
     B(FORT_X0, BASE_Y, FORT_Z0, FORT_X1, top, FORT_Z1, E.ROCK);
     B(FORT_X0 + FORT_WALL, BASE_Y, FORT_Z0 + FORT_WALL, FORT_X1 - FORT_WALL, top, FORT_Z1 - FORT_WALL, E.EMPTY);
-    B(FORT_X0, top, FORT_Z0, FORT_X1, top + 1, FORT_Z1, E.WOOD, Appearance.PLANK_X);
+    B(FORT_X0, top, FORT_Z0, FORT_X1, top + 1, FORT_Z1, E.PLANKS, Appearance.PLANK_X);
     // lights hung under the roof: a battery against it, a lamp under that
     for (let x = FORT_X0 + FORT_WALL + FORT_LIGHT_EVERY / 2; x < FORT_X1 - FORT_WALL; x += FORT_LIGHT_EVERY)
       for (let z = FORT_Z0 + FORT_WALL + FORT_LIGHT_EVERY / 2; z < FORT_Z1 - FORT_WALL; z += FORT_LIGHT_EVERY) {
@@ -423,7 +423,7 @@ export function buildDamValley() {
     // towers on the front corners, over the roof (a lookout down the valley)
     for (const [z0, z1] of [[FORT_Z0, FORT_Z0 + TOWER], [FORT_Z1 - TOWER, FORT_Z1]]) {
       B(FORT_X1 - TOWER, top, z0, FORT_X1, top + TOWER_RISE, z1, E.ROCK);
-      B(FORT_X1 - TOWER, top + TOWER_RISE, z0, FORT_X1, top + TOWER_RISE + 1, z1, E.WOOD, Appearance.PLANK_X);
+      B(FORT_X1 - TOWER, top + TOWER_RISE, z0, FORT_X1, top + TOWER_RISE + 1, z1, E.PLANKS, Appearance.PLANK_X);
       for (let k = 0; k < TOWER; k += 2) {
         B(FORT_X1 - TOWER + k, top + TOWER_RISE + 1, z0, FORT_X1 - TOWER + k + 1, top + TOWER_RISE + 3, z0 + 1, E.ROCK);
         B(FORT_X1 - TOWER + k, top + TOWER_RISE + 1, z1 - 1, FORT_X1 - TOWER + k + 1, top + TOWER_RISE + 3, z1, E.ROCK);
@@ -446,8 +446,8 @@ export function buildDamValley() {
     B(SIDE_DOOR_X[1] + 1, wy0, FORT_Z0, FORT_X1 - FORT_WALL - 1, wy1, FORT_Z0 + FORT_WALL, E.GLASS);
     B(SPAWN_X1 + FORT_WALL + 1, wy0, FORT_Z1 - FORT_WALL, SIDE_DOOR_X[0] - 1, wy1, FORT_Z1, E.GLASS);
     B(SIDE_DOOR_X[1] + 1, wy0, FORT_Z1 - FORT_WALL, FORT_X1 - FORT_WALL - 1, wy1, FORT_Z1, E.GLASS);
-    B(FORT_X0 + 3, wy0, FORT_Z0, SPAWN_X1 - 1, wy1, FORT_Z0 + FORT_WALL, E.WOOD, Appearance.PLANK_X);
-    B(FORT_X0 + 3, wy0, FORT_Z1 - FORT_WALL, SPAWN_X1 - 1, wy1, FORT_Z1, E.WOOD, Appearance.PLANK_X);
+    B(FORT_X0 + 3, wy0, FORT_Z0, SPAWN_X1 - 1, wy1, FORT_Z0 + FORT_WALL, E.PLANKS, Appearance.PLANK_X);
+    B(FORT_X0 + 3, wy0, FORT_Z1 - FORT_WALL, SPAWN_X1 - 1, wy1, FORT_Z1, E.PLANKS, Appearance.PLANK_X);
     // the flag stand: a steel plinth in the hall
     B(STAND_X - STAND_R, BASE_Y, STAND_Z - STAND_R, STAND_X + STAND_R + 1, BASE_Y + PAD_H, STAND_Z + STAND_R + 1, E.METAL);
     // vehicle pads: steel-edged concrete, flush with the plateau

@@ -2,8 +2,8 @@
 // dock tiles run it while hovered. The cursor applies the game's own tools at
 // the game's rates: Pressure on powders and liquids, the element's brush on
 // gases, Heat on solids, and the Spark tool on conductors too. Gravity, speed (steps per frame) and flow come from the
-// app's settings. When the cursor leaves, the scene keeps going for a moment,
-// then fades back to its resting frame. Only awake tiles tick.
+// app's settings. When the cursor leaves, the scene snaps back to its resting
+// frame at once. Only awake tiles tick.
 import { K } from '../../elements.js';
 import { CONDUCTS } from '../../electricity.js';
 import { makeScene, TILE, CELL } from './scenes.js';
@@ -16,10 +16,7 @@ const RUN = {
   GAS_BRUSH_RADIUS: 3,       // cells; a smaller brush keeps a painted plume light
   PRESS_HOLD: 0.3,           // share of the Pressure tool while the cursor holds still...
   CURSOR_FULL_SPEED: 150,    // ...rising to all of it at this cursor speed (px/s)
-  SETTLE_S: 1.2,             // keep running this long after the cursor leaves
-  FADE_S: 0.5,               // then fade back to the resting frame
   WAKE_RATE: 6,              // 1/s, how fast the live shading comes in
-  SLEEP_RATE: 3,             // 1/s, and goes
   SPEED_SMOOTH: 0.35,        // cursor speed smoothing per frame
   MAX_FRAMES_PER_TICK: 3,    // after a stall, skip ahead rather than catch up
   MAX_TICK_S: 0.1,
@@ -49,11 +46,9 @@ class LiveTile {
     this.inside = false;
     this.pointer = { x: TILE / 2, y: TILE / 2, px: TILE / 2, py: TILE / 2, speed: 0 };
     this.activity = 0;
-    this.away = 0; // s since the cursor left
-    this.fade = 0; // 0..1 toward the resting frame
     el.addEventListener('pointerenter', (e) => { this.track(e); this.enter(); });
     el.addEventListener('pointermove', (e) => this.track(e));
-    el.addEventListener('pointerleave', () => { this.inside = false; wake(this); });
+    el.addEventListener('pointerleave', () => this.reset());
   }
   track(e) {
     const r = this.el.getBoundingClientRect();
@@ -65,8 +60,15 @@ class LiveTile {
     const p = this.pointer;
     p.px = p.x; p.py = p.y; p.speed = 0;
     this.inside = true;
-    this.away = 0; this.fade = 0;
     wake(this);
+  }
+  // the cursor left: stop the effect and show the resting frame right away
+  reset() {
+    this.inside = false;
+    running.delete(this);
+    this.scene.world.copyFrom(this.scene.rest);
+    this.activity = 0;
+    this.render();
   }
   // the game's frame: apply the tool once, then run `steps` engine steps
   tool() {
@@ -77,39 +79,24 @@ class LiveTile {
     else w.pressure(cx, cy, RUN.CURSOR_RADIUS, Math.min(1, RUN.PRESS_HOLD + p.speed / RUN.CURSOR_FULL_SPEED));
     if (CONDUCTS[this.item.id]) w.sparkBrush(cx, cy, RUN.CURSOR_RADIUS);
   }
-  // one frame; false once the tile is back at rest
+  // one frame
   frame() {
-    const p = this.pointer, on = this.inside;
+    const p = this.pointer;
     p.speed += (Math.hypot(p.x - p.px, p.y - p.py) / FRAME_DT - p.speed) * RUN.SPEED_SMOOTH;
     p.px = p.x; p.py = p.y;
-    this.activity += ((on ? 1 : 0) - this.activity) * (1 - Math.exp(-(on ? RUN.WAKE_RATE : RUN.SLEEP_RATE) * FRAME_DT));
-    if (!on) {
-      this.away += FRAME_DT;
-      if (this.away > RUN.SETTLE_S) this.fade = Math.min(1, (this.away - RUN.SETTLE_S) / RUN.FADE_S);
-      if (this.fade >= 1) {
-        this.scene.world.copyFrom(this.scene.rest);
-        this.activity = 0; this.fade = 0;
-        return false;
-      }
-    }
-    if (on) this.tool();
+    this.activity += (1 - this.activity) * (1 - Math.exp(-RUN.WAKE_RATE * FRAME_DT));
+    this.tool();
     const w = this.scene.world;
     // the game's gravity and its mode (simModes.js; settings carries the world's)
     w.gravityMode = settings.gravityMode ?? GRAV.VERTICAL;
     w.gravity = w.gravityMode === GRAV.OFF ? 0 : settings.gravity;
     for (let i = 0; i < settings.steps; i++) w.step();
-    return true;
   }
   render() {
     const ctx = this.canvas.getContext('2d'), s = (this.canvas.width / TILE);
     ctx.setTransform(s, 0, 0, s, 0, 0);
     ctx.clearRect(0, 0, TILE, TILE);
     drawScene(ctx, this.scene, this.activity);
-    if (this.fade > 0) {
-      ctx.globalAlpha = this.fade;
-      drawScene(ctx, { ...this.scene, world: this.scene.rest }, 0);
-      ctx.globalAlpha = 1;
-    }
   }
 }
 
@@ -128,10 +115,8 @@ function tick(now) {
   acc -= frames * FRAME_DT;
   frames = Math.min(frames, RUN.MAX_FRAMES_PER_TICK);
   for (const t of running) {
-    let awake = true;
-    for (let f = 0; f < frames && awake; f++) awake = t.frame();
+    for (let f = 0; f < frames; f++) t.frame();
     t.render();
-    if (!awake) running.delete(t);
   }
   raf = running.size ? requestAnimationFrame(tick) : 0;
 }

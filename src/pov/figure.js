@@ -157,6 +157,28 @@ export function figureMaterial({ albedo, u = null, toon = false, map = null, nor
   return mat;
 }
 
+/**
+ * A scanned tool's meshes (models.js SCANS, put on with attachModel's onScan)
+ * lit like the body: each glTF material's base colour, colour map and normal
+ * map onto figureMaterial (the body's light is diffuse: roughness and metal
+ * have nothing to change). Unlit parts (a lantern's glass) keep theirs.
+ * cache: glTF material → its lit one, shared by the scans one owner holds.
+ * @param {object} scan
+ * @param {{ u?: object | null, cache: Map }} o
+ */
+export function litScan(scan, { u = null, cache }) {
+  scan.traverse((o) => {
+    const src = o.isMesh && o.material;
+    if (!src?.isMeshStandardMaterial) return;
+    if (!cache.has(src)) {
+      cache.set(src, figureMaterial({
+        albedo: [src.color.r, src.color.g, src.color.b], u, map: src.map, normalMap: src.normalMap, normalScale: src.normalScale,
+      }));
+    }
+    o.material = cache.get(src);
+  });
+}
+
 // Outlines: the mesh again, pushed out along its normals and drawn back faces
 // only, in black (the inverted-hull outline of cel-shaded games).
 export function outlineMaterial(width, color = 0x000000) {

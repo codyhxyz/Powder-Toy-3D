@@ -114,7 +114,7 @@ fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID;
 fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
   w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
-  roles: array<array<f32, 11>, 3>, // WOOD, PLANT, cedar MOSS; never split physical votes
+  roles: array<array<f32, 11>, 4>, // WOOD, PLANT, cedar MOSS, PLANKS (its boards' axis); never split physical votes
   open: f32,           // its open opaque cells...
   heat: f32,           // ...and their degrees above the glow's start
   s: f32,              // opaque and liquid cells of its cube
@@ -125,6 +125,7 @@ fn farRoleSlot(id: i32) -> i32 {
   if (id == E_WOOD) { return 0; }
   if (id == E_PLANT) { return 1; }
   if (id == E_MOSS) { return 2; }
+  if (id == E_PLANKS) { return 3; }
   return -1;
 }
 fn farVote(c: ptr<function, FarCount>, id: i32, appearance: i32, weight: f32) {
@@ -1284,7 +1285,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
   let rough = select(ROUGH(lid), COZY_WATER_ROUGH, cartoon);
   refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
-  rt = refract(rd, n, 1.0 / IOR(lid));
+  rt = select(cheapBend(rd, n), refract(rd, n, 1.0 / IOR(lid)), FU.bending != 0u);   // (Light bending off: liquid.js cheapBend)
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
   }
   let body = farBody(p, rt, lid, sunVis, sky, bedY);

@@ -3,6 +3,7 @@ import { Appearance, appearanceCtype } from './appearance.js';
 import { SEED_MAX } from './shaders/common.js';
 import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
 import { buildQuarry } from './industry/quarry.js';
+import { buildLabStudies, LAB_STUDIES_SIZE } from './lab/studies/index.js';
 
 // Arena presets (src/arenas): handmade maps for team games, each built for one
 // grid size (app.js switches to it). Their layouts (spawns, flags, zones...)
@@ -13,6 +14,9 @@ export const ARENA_PRESETS = { damValley: { size: ARENA_SIZE, build: buildDamVal
 // Simulation.load() uploads. Returns an arena's layout, else null.
 export function buildPreset(name, sim) {
   const g = sim.g;
+  if (name === 'labStudies' && LAB_STUDIES_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
+    throw new RangeError(`Lab Studies requires a ${LAB_STUDIES_SIZE.join('×')} grid.`);
+  }
   const [A, B] = sim.blankState();
   const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
   const inside = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz;
@@ -35,7 +39,9 @@ export function buildPreset(name, sim) {
   const s = nx / 128;
   let layout = null;
 
-  if (name === 'quarry') {
+  if (name === 'labStudies') {
+    buildLabStudies({ box, set });
+  } else if (name === 'quarry') {
     buildQuarry({ g, set, box });
   } else if (name in ARENA_PRESETS) {
     // an arena builds into an id grid of its own size; it lands in the grid's low corner
@@ -70,7 +76,7 @@ export function buildPreset(name, sim) {
     // wooden tower with gunpowder core
     const w0 = Math.round(20 * s), w1 = Math.round(34 * s);
     const zz0 = Math.round(80 * s), zz1 = Math.round(94 * s);
-    box(w0, 0, zz0, w1, Math.round(50 * s), zz1, E.WOOD, { appearance: Appearance.PLANK_Y });
+    box(w0, 0, zz0, w1, Math.round(50 * s), zz1, E.PLANKS, { appearance: Appearance.PLANK_Y });
     box(w0 + 3, Math.round(4 * s), zz0 + 3, w1 - 3, Math.round(46 * s), zz1 - 3, E.GUNPOWDER);
     box(w0 + 5, 0, zz0 - 6, w1 - 5, Math.round(3 * s), zz0, E.OIL);
 

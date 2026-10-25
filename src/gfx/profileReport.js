@@ -239,7 +239,7 @@ function costFindings(c, passes, context) {
   const found = names.map((n) => passes.find((p) => p.name === n)).filter(Boolean);
   const [w, h] = context.canvas ?? [0, 0];
   const pixels = c.pixels ?? Math.round(w * (context.renderScale ?? 1)) * Math.round(h * (context.renderScale ?? 1));
-  const ms = found.length === names.length ? found.reduce((a, p) => a + (p.median ?? 0), 0) : null;
+  const ms = found.length === names.length ? found.reduce((a, p) => a + ((p.ms ?? p.median) ?? 0), 0) : null;
   const nsPerPixel = ms !== null && pixels ? (ms * NS_PER_MS) / pixels : null;
   // "time high": the traced pass alone over VIEW_SHARE of a capped frame, per pixel
   const highNs = pixels ? (VIEW_SHARE * (MS_PER_S / CAP_FPS) * NS_PER_MS) / pixels : null;
@@ -266,7 +266,7 @@ export function compareReports(a, b) {
   const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
   const differences = setupKeys.filter((k) => !same(a.setup?.[k], b.setup?.[k])).map((k) => ({ key: k, a: a.setup?.[k] ?? null, b: b.setup?.[k] ?? null }));
   const names = new Set([...a.passes.map((p) => p.name), ...b.passes.map((p) => p.name)]);
-  const get = (r, n) => r.passes.find((p) => p.name === n)?.perFrame ?? null;
+  const get = (r, n) => { const p = r.passes.find((x) => x.name === n); return p ? (p.ms ?? p.perFrame ?? null) : null; };
   const passes = [...names].map((name) => {
     const x = get(a, name), y = get(b, name);
     return { name, a: x, b: y, delta: x !== null && y !== null ? y - x : null };
@@ -306,11 +306,30 @@ export function formatReport(r) {
     out.push(`${pad(p.label, 9)} ${lpad(f(p.gpu.median), 7)}  [${f(p.gpu.p10)}–${f(p.gpu.p90)}]${' '.repeat(Math.max(1, 12 - `${f(p.gpu.p10)}–${f(p.gpu.p90)}`.length))}${lpad(f(p.cpu.median), 6)}`);
   }
   out.push('');
-  out.push(`pass (ranked by ms/frame)                 phase    ms/frame  median [p10–p90]       ×/frame  share`);
+  // the authoritative ms: Metal's encoder times when the run has them (gfx/profileCauses.js applyMetal)
+  const metal = r.timeSource === 'metal';
+  out.push(metal
+    ? `pass (ranked by Metal ms/frame)            phase    Metal ms  timestamp ms/frame [p10–p90]   ×/frame`
+    : `pass (ranked by ms/frame)                 phase    ms/frame  median [p10–p90]       ×/frame  share`);
   for (const p of r.passes.slice(0, TEXT_PASSES)) {
     const flags = [p.noisy ? 'noisy' : '', p.failed ? `untimed:${p.error}` : '', p.presence < 1 ? `in ${Math.round(p.presence * PCT)}%` : ''].filter(Boolean).join(' ');
+    if (metal) { out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}${p.ms === null && p.msSource ? ` ${p.msSource}` : p.msSource === 'timestamps' ? ' (timestamp)' : ''}`); continue; }
     out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.perFrame, 3), 8)}  ${lpad(f(p.median, 3), 6)} [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 14 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${lpad(p.share === null ? '–' : `${Math.round(p.share * PCT)}%`, 4)} ${flags}`);
   }
+  if (metal && r.metal) out.push(`Metal: ${f(r.metal.total)} ms/frame of GPU time over ${f(r.metal.frames, 1)} frames in the window${r.metal.unattributed.length ? `; unlabelled: ${r.metal.unattributed.slice(0, 4).map((u) => `${u.label} ${f(u.ms, 2)}`).join(', ')}` : ''}`);
+  if (r.causes) {
+    out.push('');
+    const c = r.causes;
+    if (c.fit?.ok) {
+      out.push(`ms per cause (ESTIMATE: ${c.fit.method}; R² ${f(c.fit.fit.r2, 3)}, leave-one-out error ${f(c.fit.fit.looErr * PCT, 0)}%):`);
+      if (c.fit.coarser) out.push(`  (${c.fit.coarser})`);
+      for (const x of c.rows.slice(0, 12)) out.push(`  ${pad(`${x.pass} · ${x.category}`, 44)} ${lpad(f(x.ms, 2), 7)} ms ± ${f(x.pm, 2)}`);
+    } else if (c.fit) {
+      out.push(`ms per cause: not estimated: ${c.fit.why}. To measure it: ${c.fit.propose}`);
+    }
+    if (c.coverage) out.push(`  counters cover ${c.coverage.passes.join(', ') || 'no pass'} (${f(c.coverage.countedMs, 2)} of ${f(c.coverage.frameMs, 2)} ms/frame, ${c.coverage.pixelShare === null ? '?' : Math.round(c.coverage.pixelShare * PCT) + '%'} of the scene's pixels); uncounted: ${c.coverage.uncounted.slice(0, 5).map((u) => `${u.name} ${f(u.ms, 2)}`).join(', ')}`);
+  }
+  if (r.target) { out.push(''); out.push(`» ${r.target.line}`); }
   if (r.passes.length > TEXT_PASSES) out.push(`… ${r.passes.length - TEXT_PASSES} more passes in the JSON`);
   if (r.cost) {
     out.push('');
@@ -342,7 +361,21 @@ const PHASE_HUE = { paint: 30, sim: 200, derived: 150, blocks: 120, shadow: 260,
 
 /** A self-contained HTML page: verdict, setup, the median frame's waterfall, the ranked passes, the heatmap. */
 export function reportHtml(r, { heatmap = null, title = 'Profile' } = {}) {
-  const w = r.waterfall;
+  // with Metal's encoder times and no whole timestamp timeline: the passes' trusted ms laid end to end, in frame order
+  let w = r.waterfall;
+  if (r.timeSource === 'metal') {
+    let at = 0;
+    const seen = new Set(), passes = [];
+    for (const p of (w?.passes ?? r.passes)) {
+      if (seen.has(p.name)) continue;
+      seen.add(p.name);
+      const ms = r.passes.find((x) => x.name === p.name)?.ms;
+      if (!(ms > 0)) continue;
+      passes.push({ name: p.name, kind: p.kind, phase: p.phase, start: at, gpu: ms });
+      at += ms;
+    }
+    w = { frame: w?.frame ?? 'Metal', gpu: at, span: at, wall: w?.wall ?? null, interval: w?.interval ?? r.frames.interval.median, passes };
+  }
   const scale = w ? Math.max(w.span ?? 0, w.interval ?? 0, MS_PER_S / CAP_FPS) : 1;
   const bars = w ? w.passes.map((p) => {
     const hue = PHASE_HUE[p.phase] ?? 0, sat = p.phase === 'other' ? 0 : 65;

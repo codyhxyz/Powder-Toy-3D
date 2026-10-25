@@ -4,6 +4,7 @@ import { LAMP_UNIT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
 import { libChecks } from './lib.js';
 import { lighthouseGLSL } from './lighthouse.js';
+import { glassSigmaWGSL } from './glass.js';
 
 // The count lives in shaders/bindings.js beside the uniform arrays it sizes
 // (gfx/uniforms.js imports it from here).
@@ -18,7 +19,9 @@ export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sph
 export const GI_OFFSET_CELLS = 3;
 // The sun shadow map's layout and its test inside volumes (sunBasis, sunMapShadow
 // below), for CPU readers of the map too (pov/viewmodel.js: the sun on the hands).
-export const meanSigmaWGSL = 'fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }';
+// (glass's body extinction is glassSigma: window glass's iron tint, gfx/glass.js)
+export const meanSigmaWGSL = `${glassSigmaWGSL}
+fn meanSigma(id: i32) -> f32 { return dot(glassSigma(id), vec3f(1.0 / 3.0)); }`;
 export const SHADOW_TINT_ID_SCALE = 256;   // w = tint element id * this + optical depth (see below)
 export const SHADOW_PAD = 1;               // voxels the map's disc reaches past the box's bounding sphere
 export const VOLUME_SHADOW_BIAS = 0.6;     // depth bias (voxels) for points inside volumes (no normal)
@@ -141,11 +144,12 @@ fn skyAmbient(n: vec3f) -> vec3f {
 const SHADOW_TINT_ID_SCALE: f32 = ${SHADOW_TINT_ID_SCALE.toFixed(1)};
 const SHADOW_PAD: f32 = ${SHADOW_PAD.toFixed(1)};               // voxels the map's disc reaches past the box's bounding sphere
 const SHADOW_NORMAL_OFFSET: f32 = 0.002;   // voxels a surface lookup moves off the surface along its normal
-// Hard-map depth bias (voxels), see sunMapShadow: at least SHADOW_BIAS_MIN, else the
-// PCF slope term (n.sun floored at SHADOW_BIAS_NS_MIN) plus SHADOW_BIAS_PAD.
+// Hard-map depth bias (voxels), see sunMapShadow: each tap is compared against
+// the receiver's plane at that tap, plus SHADOW_BIAS_MIN; the plane's slope
+// takes n.sun floored at SHADOW_RP_NS_MIN (a face that grazing gets under 5 %
+// of the sun, so what acne is left below it doesn't show).
 const SHADOW_BIAS_MIN: f32 = 0.8;
-const SHADOW_BIAS_NS_MIN: f32 = 0.25;
-const SHADOW_BIAS_PAD: f32 = 0.1;
+const SHADOW_RP_NS_MIN: f32 = 0.05;
 const VOLUME_SHADOW_BIAS: f32 = ${VOLUME_SHADOW_BIAS.toFixed(1)};       // depth bias (voxels) for points inside volumes (no normal)
 // Exact sun rays: smooth opaque surfaces block them where their field is
 // inside (by SUN_RAY_ISO_MARGIN: trilinear creases wobble about the level),
@@ -330,7 +334,7 @@ fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
   if (tid > 0 && d > sm.y) {
     let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
     let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-    let tint = SIGMA(tid) / max(meanSigma(tid), 1e-4);
+    let tint = glassSigma(tid) / max(meanSigma(tid), 1e-4);
     att = exp(-tint * tau * frac);
   }
   return att;
@@ -350,11 +354,18 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var w: vec2f;
   let st = shadowProject(p, c, R, u, v, &d, &i0, &w);
   // Depth bias. A PCF tap one texel (T voxels) away sees the receiver's own face
-  // up to T*(|n.u|+|n.v|)/(n.s) closer, and at the foot of a sun-facing wall it
-  // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
-  // 1/sun.y (1.23), the depth gap to the top of a 1-voxel step.
+  // up to T*(|n.u|+|n.v|)/(n.s) closer, so each tap is compared against the
+  // receiver's plane there (receiver-plane depth bias: Isidoro 2006, "Shadow
+  // Mapping: GPU-based Tips and Techniques", GDC). One bias for every tap,
+  // floored n.s at 0.25, fell short on faces the sun grazes: they shaded
+  // themselves in diagonal sawtooth bands a texel apart. At the foot of a
+  // sun-facing wall a tap sees that wall up to ~0.6 closer than the floor's
+  // plane: hence 0.8 on top. It must stay well below 1/sun.y (1.23), the depth
+  // gap to the top of a 1-voxel step.
   let T = 2.0 * R / f32(FU.shadowRes);
-  let bias = max(SHADOW_BIAS_MIN, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, FU.sun), SHADOW_BIAS_NS_MIN) + SHADOW_BIAS_PAD);
+  // (a face turned from the sun, lit only by wrap, has no plane the map sees: no slope)
+  let ns0 = dot(n, FU.sun);
+  let rpSlope = select(vec2f(0.0), T * vec2f(dot(n, u), dot(n, v)) / max(ns0, SHADOW_RP_NS_MIN), ns0 > 0.0);
   var acc = vec3f(0.0);
   var tr = vec3f(0.0);
   var nLit = 0.0;
@@ -363,7 +374,7 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   for (var k = 0; k < 4; k++) {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
-    let lit = select(0.0, 1.0, d < sm.x + bias);
+    let lit = select(0.0, 1.0, d + dot(vec2f(o) - w, rpSlope) < sm.x + SHADOW_BIAS_MIN);
     let att = shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
     let wk = wk0(o, w);

@@ -105,11 +105,12 @@ if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
   words[0] = 99 | (5 << 16);
   for (let p = 1; p < n; p++) { words[COST_WORDS * p] = COST_COVERED_BIT | p | ((p * 2) << 16); words[COST_WORDS * p + 5] = (p * 10) << 16; }
   words[COST_WORDS * 3 + 3] = 0xffff0000 >>> 0;   // pixel 3: rootIters at the ceiling
-  words[COST_WORDS * 2 + 11] = 7 << 16;           // pixel 2: the last slot (lodAdvanced)
+  const lastK = COST_KINDS.length - 1;             // pixel 2: the last counter's slot
+  words[COST_WORDS * 2 + (lastK >> 1)] |= lastK & 1 ? 7 << 16 : 7;
   const d = decode(words, n);
   const want = (cond, what) => { if (!cond) fail(`readback: ${what}`); };
   want(d.count === 3 && d.covered[0] === 0, 'coverage');
-  want(d.vals[0][1] === 1 && d.vals[0][3] === 3 && d.vals[1][2] === 4 && d.vals[11][3] === 30 && d.vals[23][2] === 7, 'exact counts in their slots');
+  want(d.vals[0][1] === 1 && d.vals[0][3] === 3 && d.vals[1][2] === 4 && d.vals[11][3] === 30 && d.vals[lastK][2] === 7, 'exact counts in their slots');
   const m = stats(d.vals[0], d.covered, d.count, 0x7fff);
   want(m.sum === 6 && m.mean === 2 && m.max === 3 && m.p50 === 2, 'stats over covered pixels only');
   want(stats(d.vals[7], d.covered, d.count, 0xffff).saturated === 1, 'saturation reported');
@@ -128,7 +129,7 @@ if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
     for (let r = 0; r < R; r++) tex.set([4 * r === 0 ? COST_COVERED_BIT | p : 100 * r + p, 1, 2, (1000 + 10 * r + p) << 16], 4 * (W * (R * y + r) + x));
   }
   const s = decode(storageWords(tex, W, H), W * H);
-  want(s.count === 4 && s.vals[0][3] === 3 && s.vals[8][2] === 102 && s.vals[23][1] === 1021 && s.vals[15][3] === 1013, 'storage rows decode per pixel');
+  want(s.count === 4 && s.vals[0][3] === 3 && s.vals[8][2] === 102 && s.vals[15][3] === 1013 && s.vals.length === COST_KINDS.length, 'storage rows decode per pixel');
   want(compareWords(new Uint32Array([1, 2, 3, 4]), new Uint32Array([1, 2, 3, 5]), 2) === 1, 'word comparison sees a change');
   console.log('readback arithmetic: exact decode (storage rows), covered-only stats, comparisons see a change');
 }

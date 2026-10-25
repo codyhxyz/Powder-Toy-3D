@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { GpuTiming } from '../src/gpu/timing.js';
 import { createProfiler, PHASES } from '../src/gfx/profiler.js';
+import { metalTimes, applyMetal, estimateCauses, causesFor, targetVerdict, compareCauses, categoryTotals, nnls } from '../src/gfx/profileCauses.js';
 import { buildReport, formatReport, reportHtml, compareReports, annotate, stats, MIN_FRAMES } from '../src/gfx/profileReport.js';
 
 globalThis.GPUBufferUsage = { QUERY_RESOLVE: 1, COPY_SRC: 2, MAP_READ: 4, COPY_DST: 8 };
@@ -183,6 +184,88 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   assert.ok(r.untrusted.some((u) => /whole submissions/.test(u)), r.untrusted.join('; '));
   assert.ok(!r.passes.some((p) => /cost view/.test(p.name)), 'cost view passes are excluded');
   assert.ok(r.notes.some((n) => /excluded from timings/.test(n)));
+}
+{
+  // Metal's encoder times become the pass ms; timestamp-only distrust becomes a note
+  const fr = (i) => ({ frame: i, gpu: 120, coverage: { complete: true, timelineComplete: false, spanMs: null, missing: [] },
+    passes: [{ name: 'scene', kind: 'render', phase: 'view', error: null, start: null, gpu: 55 }, { name: 'canvas', kind: 'render', phase: 'post', error: null, start: null, gpu: 55 },
+      { name: 'move', kind: 'compute', phase: 'sim', error: null, start: null, gpu: 2 }],
+    rec: { wall: 2, interval: 33, cpu: null, steps: 0, compiling: 0, created: 1 } });
+  const r = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  assert.ok(!r.trusted);
+  // 40 frames in the window for pose 0 (scene and canvas once a frame); pose 1's and untimed rows ignored
+  const rows = [{ label: 'scene@0', count: 40, totalMs: 400 }, { label: 'canvas@0', count: 40, totalMs: 40 }, { label: 'move@0', count: 40, totalMs: 80 },
+    { label: 'scene@1', count: 40, totalMs: 999 }, { label: 'scene@-', count: 9, totalMs: 99 }, { label: 'GPU Execution@0', count: 3, totalMs: 4 }];
+  const m = metalTimes(r, rows, 0);
+  assert.equal(m.frames, 40);
+  assert.deepEqual(m.perPass, { scene: 10, canvas: 1, move: 2 });
+  assert.equal(m.unattributed[0].label, 'GPU Execution@0');
+  applyMetal(r, m);
+  assert.equal(r.timeSource, 'metal');
+  assert.equal(r.passes[0].name, 'scene');
+  assert.equal(r.passes[0].ms, 10);
+  assert.ok(r.trusted, `timestamp distrust demoted: ${r.untrusted}`);
+  assert.ok(r.notes.some((n) => /per-pass ms come from Metal/.test(n)));
+  assert.match(formatReport(r), /Metal ms/);
+  // frame estimates that disagree: not trusted
+  const bad = metalTimes(r, [{ label: 'scene@0', count: 40, totalMs: 1 }, { label: 'canvas@0', count: 10, totalMs: 1 }, { label: 'move@0', count: 25, totalMs: 1 }], 0);
+  assert.ok(bad.disagree.length >= 1, 'passes whose encoder counts are off the frames are named');
+  // ... but keep their Metal ms: mean per run × runs per frame (a trace that drops intervals undercounts runs, not durations)
+  assert.equal(bad.perPass.canvas, 0.1);
+  // Metal ms that sum past the frame's GPU span: untrusted
+  const over = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  applyMetal(over, metalTimes(over, [{ label: 'scene@0', count: 40, totalMs: 40 * 200 }, { label: 'canvas@0', count: 40, totalMs: 40 }], 0));
+  assert.ok(!over.trusted && over.untrusted.some((u) => /exceed the frame's GPU span/.test(u)), over.untrusted.join('; '));
+  // a render pass Metal didn't name, with untrusted timestamps: no ms, said why, report untrusted
+  const r2 = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  applyMetal(r2, metalTimes(r2, rows.filter((x) => !x.label.startsWith('scene')), 0));
+  const sc = r2.passes.find((p) => p.name === 'scene');
+  assert.equal(sc.ms, null);
+  assert.match(sc.msSource, /no labelled Metal encoder \(render pass\)/);
+  assert.ok(!r2.trusted && r2.untrusted.some((u) => /no trusted ms \(scene/.test(u)), r2.untrusted.join('; '));
+}
+{
+  // ms per cause: a planted cost per unit is recovered; collinear or too few observations refuse
+  const truth = { march: 2e-6, fieldReads: 5e-7, cellReads: 1e-6 };
+  const mk = (s) => ({ pass: 'scene', sums: s, ms: Object.entries(s).reduce((t, [k, v]) => t + truth[k] * v, 0) });
+  const obs = [[1e6, 2e6, 3e6], [3e6, 1e6, 1e6], [2e6, 4e6, 1e6], [1e6, 1e6, 4e6], [4e6, 3e6, 2e6], [2e6, 2e6, 2e6]]
+    .map(([a, b, c]) => mk({ march: a, fieldReads: b, cellReads: c }));
+  const fit = estimateCauses(obs);
+  assert.ok(fit.ok, fit.why);
+  for (const k of Object.keys(truth)) assert.ok(Math.abs(fit.perUnit[k] / truth[k] - 1) < 1e-3, `${k}: ${fit.perUnit[k]} vs ${truth[k]}`);
+  assert.ok(fit.fit.r2 > 0.999 && fit.fit.looErr < 0.01);
+  const rows = causesFor(fit, [{ pass: 'scene', sums: { march: 1e6, fieldReads: 2e6, cellReads: 3e6 } }]);
+  assert.equal(rows[0].category, 'cellReads');
+  assert.ok(Math.abs(rows[0].ms - 3) < 1e-3);
+  // too few observations for the three categories: a coarser grouping, saying why, or a refusal
+  const few = estimateCauses(obs.slice(0, 4));
+  assert.ok(few.ok ? few.level > 0 && /need 5/.test(few.coarser) : /need 5/.test(few.why), JSON.stringify(few));
+  const none = estimateCauses(obs.slice(0, 2));
+  assert.equal(none.ok, false);
+  assert.match(none.why, /need 5/);
+  assert.match(none.propose, /--poses/);
+  const col = estimateCauses([1, 2, 3, 4, 5, 6].map((x) => mk({ march: x * 1e6, fieldReads: x * 2e6, cellReads: (7 - x) * 1e6 })));
+  assert.ok(col.ok ? /rise and fall together/.test(col.coarser) : /rise and fall together/.test(col.why), JSON.stringify(col));
+  // noise the categories can't explain: refused by leave-one-out
+  const noisy = estimateCauses(obs.map((x, i) => ({ ...x, ms: x.ms * (i % 2 ? 3 : 0.3) })));
+  assert.equal(noisy.ok, false);
+  assert.match(noisy.why, /leave-one-out/);
+  assert.deepEqual(nnls([[1, 0], [0, 1]], [2, -1]), [2, 0], 'non-negative');
+  // C's capture shape → category totals (skip* grouped)
+  const t = categoryTotals({ pass: 'scene', covered: 10, counters: { march: { sum: 5 }, skipBrick: { sum: 1 }, skip16: { sum: 2 }, fieldReads: { sum: 0 } } });
+  assert.deepEqual(t, [{ pass: 'scene', sums: { march: 5, skips: 3 }, covered: 10 }]);
+}
+{
+  // the target verdict: what must drop, by what this build added when the compare knows it
+  const v = targetVerdict(70, 21, [{ name: 'scene · march', ms: 40, delta: 30 }, { name: 'scene · fieldReads', ms: 20, delta: 15 }, { name: 'far', ms: 5, delta: 1 }], { source: 'in live.json' });
+  assert.equal(v.over, 49);
+  assert.deepEqual(v.cuts.map((c) => [c.name, c.by]), [['scene · march', 30], ['scene · fieldReads', 15], ['far', 1]]);
+  assert.match(v.line, /still 3\.0 ms short/);
+  assert.match(targetVerdict(15, 21, []).line, /within/);
+  const a = { causes: { rows: [{ pass: 'scene', category: 'march', ms: 10 }], totals: [{ pass: 'scene', sums: { march: 100 }, covered: 10 }], coverage: { passes: ['scene'] } } };
+  const b = { causes: { rows: [{ pass: 'scene', category: 'march', ms: 25 }], totals: [{ pass: 'scene', sums: { march: 300 }, covered: 10 }], coverage: { passes: ['scene'] } } };
+  const c = compareCauses(a, b);
+  assert.deepEqual([c.rows[0].delta, c.rows[0].workA, c.rows[0].workB], [15, 10, 30]);
 }
 assert.deepEqual([stats([3, 1, 2]).median, stats([]).median], [2, null]);
 console.log('profile CPU check OK: enable sticks, renderOnce frames sample, capture(n), ranking/median/spread, untrusted reasons, work vs time, text/html/compare');

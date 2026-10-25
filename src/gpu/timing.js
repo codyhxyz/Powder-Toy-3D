@@ -22,6 +22,9 @@ export class GpuTiming {
     this.supported = gpu.device.features.has('timestamp-query');
     this.split = false;
     this.scope = ''; // optional human-readable name; never required for coverage
+    // appended to the Metal encoder label only (tools/profile.mjs: "@<pose>" while a pose's frames are timed,
+    // "@-" outside them), so tools/gpu-counters.mjs's per-encoder times split by pose; pass names don't change
+    this.labelTag = '';
     this.onPass = null;
     this.onFrame = null;
     this.passCount = 0;
@@ -89,13 +92,15 @@ export class GpuTiming {
           else {
             pass.index = record.pool.cursor++;
             record.slots.push(pass.index);
-            return begin({ ...descriptor, timestampWrites: {
+            // (the label too: Metal's encoder then carries the profiler's name, three's `three:` scope
+            // included, so tools/gpu-counters.mjs's per-encoder times map onto these passes by name)
+            return begin({ ...descriptor, label: name + this.labelTag, timestampWrites: {
               querySet: record.pool.queries,
               beginningOfPassWriteIndex: pass.index * 2,
               endOfPassWriteIndex: pass.index * 2 + 1,
             } });
           }
-          return begin(descriptor);
+          return begin({ ...descriptor, label: name + this.labelTag });
         };
       }
       const finish = enc.finish.bind(enc);

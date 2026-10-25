@@ -186,7 +186,7 @@ int cfOuterCellMaterial(int x, int y, int z) {
   if (r > WC_RADIUS) return y < WC_SEA ? E_WATER : E_EMPTY;
   bool water = cfRiver(x, z) || cfPond(x, z);
   bool bank = cfBank(x, z);
-  if (cfBridge(x, z) && y >= h - 2 && y < h) return materialWord(E_WOOD, AP_PLANK_Z);
+  if (cfBridge(x, z) && y >= h - 2 && y < h) return materialWord(E_PLANKS, AP_PLANK_Z);
   if (water) {
     if (y < cfBed(x, z)) return E_ROCK;
     return y < cfWater(x, z) ? E_WATER : E_EMPTY;

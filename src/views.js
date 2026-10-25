@@ -51,7 +51,7 @@ export const COLORMAPS = {
 export const XRAY_DENSITY = {
   EMPTY: 0, WALL: 2.4, SAND: 1.6, STONE: 2.6, SNOW: 0.3, GUNPOWDER: 1.0, ASH: 0.5,
   WATER: 1.0, OIL: 0.9, ACID: 1.2, LAVA: 2.6, STEAM: 0.02, CLOUD: 0.02, SMOKE: 0.03, FIRE: 0.01,
-  WOOD: 0.6, PLANT: 0.5, METAL: 7.8, GLASS: 2.5, ICE: 0.92, CLONE: 2.0,
+  WOOD: 0.6, PLANKS: 0.5, PLANT: 0.5, METAL: 7.8, GLASS: 2.5, ICE: 0.92, CLONE: 2.0,
 };
 // Fallback for elements added later without an entry above.
 export const xrayDensity = (e) => XRAY_DENSITY[e.key] ?? (e.kind === 1 ? 2.0 : e.dens / 10);
@@ -101,7 +101,7 @@ function legend(cm, title, labels) {
 const xrayLegend = {
   title: 'Density',
   stops: [[0, '#15171c'], [0.25, '#2e3139'], [0.5, '#5a5f69'], [0.75, '#9ea3ad'], [1, '#f2f4f7']],
-  labels: [['Gas', 0], ['Wood', 0.25], ['Water', 0.5], ['Stone', 0.75], ['Metal', 1]],
+  labels: [['Gas', 0], ['Tree', 0.25], ['Water', 0.5], ['Stone', 0.75], ['Metal', 1]],
 };
 xrayLegend.css = legendCSS(xrayLegend);
 

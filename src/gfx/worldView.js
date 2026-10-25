@@ -30,6 +30,7 @@ import {
   COMPOSITE_NAME, COMPOSITE_LAYOUT_NAMES, stagePipeName,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
+import { materialTextures } from './materialTextures.js';
 // The owners' classes. Until W, F and L land these are the stand-ins (shaders/world/stubs.js); the
 // lead swaps them for world/worldCopy.js WorldCopy, gfx/worldFields.js WorldFields and
 // gfx/worldLight.js WorldLight at integration (same constructors and methods).
@@ -48,9 +49,10 @@ const xyz = (o) => [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0];
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim
- * @param {{ volume: object }} opts volume: the window's (gfx/volume.js): the shadow map and media noise it owns
+ * @param {{ volume: object, onVariant?: () => void }} opts volume: the window's (gfx/volume.js): the shadow map and media noise it owns,
+ *   and whether its grid wants the rich optics (opticsWanted); onVariant: a rich optics' variant has landed (redraw)
  */
-export function createWorldView(gpu, sim, { volume }) {
+export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
   const label = (x) => `sim${sim.id} world ${x}`;
   const size = [sim.world?.[0] ?? sim.g.nx, sim.world?.[1] ?? sim.g.ny, sim.world?.[2] ?? sim.g.nz];
   const worldCopy = new WorldCopy(gpu, { size });
@@ -106,7 +108,7 @@ export function createWorldView(gpu, sim, { volume }) {
   function group2() {
     const entries = worldGroup2Entries(list, {
       fields: fields.bindEntries(), light: light.bindEntries(), noise: volume.mediaNoiseView, clamp,
-      flow: sim.state.flow, cells: sim.compact?.isReady ? sim.compact.cells : null, dummy,
+      flow: sim.state.flow, cells: sim.compact?.isReady ? sim.compact.cells : null, matTex: materialTextures(gpu), dummy,
     });
     const key = `g2|${entries.map((e) => idOf(e.resource.buffer ?? e.resource)).join(',')}`;
     return cached(key, () => gpu.bindGroup(L.group2, entries, label('group 2')));
@@ -167,6 +169,7 @@ export function createWorldView(gpu, sim, { volume }) {
   };
   let drawNo = 0;
   const twins = new WeakMap();
+  const woken = new WeakSet();   // the rich optics' variants whose landing wakes the frame loop (onVariant)
   let compositePipe = null;
   let prepared = false;   // a prepass this frame, for the next draw to composite
   let compositeParams = null;
@@ -199,18 +202,30 @@ export function createWorldView(gpu, sim, { volume }) {
     splits(detail = {}) { return view.split && !view.testVariant && marchSplits(drawableDetail(detail, fallback)); },
     /**
      * The march's pipeline for a material view and its detail, made on first use. One module per
-     * (view, detail) serves every map: the world's size is a uniform (W's WC.size).
+     * (view, detail, optics) serves every map: the world's size is a uniform (W's WC.size).
+     * Lean optics until the grid holds a film or glass (gfx/opticsScan.js, the box volume's
+     * opticsWanted); then the rich variant once it is built, in the background, the lean one drawn
+     * meanwhile, as gfx/volume.js pipeline does.
      */
     pipeline(v, detail = {}, build = 'now') {
+      const plain = view.variant(v, detail, build, false);
+      if (!volume.opticsWanted) return plain;
+      const rich = view.variant(v, detail, 'now', true);
+      if (rich.state === 'ready') return rich;
+      if (!woken.has(rich)) { woken.add(rich); rich.ready.then(() => { if (!disposed) onVariant(); }, () => {}); }
+      return plain;
+    },
+    /** The march's pipeline (or split set) with or without the rich optics, made on first use. */
+    variant(v, detail, build, optics) {
       const d = drawableDetail(detail, fallback);
-      if (view.splits(d)) return view.stages(v, d, build);
+      if (view.splits(d)) return view.stages(v, d, build, optics);
       const t = view.testVariant;   // (test.js-style hook: a scratch variant of the module, { name, filter(code) })
-      const key = `${v}|${detailKey(d)}${t ? `|${t.name}` : ''}`;
+      const key = `${v}|${detailKey(d)}${optics ? '|optics' : ''}${t ? `|${t.name}` : ''}`;
       let p = pipes.get(key);
       if (!p) {
-        const code = worldMarchFrag(sim.g, { view: v, detail: d });
+        const code = worldMarchFrag(sim.g, { view: v, detail: d, optics });
         pipes.set(key, p = gpu.renderPipeline({
-          name: `world.${v}(${detailKey(d) || 'off'})${t ? `.${t.name}` : ''}`,
+          name: `world.${v}(${detailKey(d) || 'off'})${optics ? '.optics' : ''}${t ? `.${t.name}` : ''}`,
           code: t ? t.filter(code) : code, layouts: [L.frame, L.copy, L.group2],
           params: MarchParams, ...worldMarchPipeline(), build, first: build === 'now',
         }));
@@ -221,8 +236,8 @@ export function createWorldView(gpu, sim, { volume }) {
      * The split march's pipelines for a view and its (drawable) detail, made on first use: one per
      * stage and the composite, as one pipeline to its callers (state, ready, build, buildMs).
      */
-    stages(v, d, build = 'now') {
-      const key = `${v}|${detailKey(d)}|split`;
+    stages(v, d, build = 'now', optics = false) {
+      const key = `${v}|${detailKey(d)}|split${optics ? '|optics' : ''}`;
       let set = pipes.get(key);
       if (!set) {
         compositePipe ??= gpu.renderPipeline({
@@ -230,12 +245,12 @@ export function createWorldView(gpu, sim, { volume }) {
           params: MarchParams, ...worldMarchPipeline('composite'), build,
         });
         const parts = Object.fromEntries(MARCH_STAGES.map((st) => [st, gpu.renderPipeline({
-          name: stagePipeName(v, d, st), code: worldMarchFrag(sim.g, { view: v, detail: d, stage: st }),
+          name: stagePipeName(v, d, st, optics), code: worldMarchFrag(sim.g, { view: v, detail: d, stage: st, optics }),
           layouts: [stageL[st], L.copy, L.group2], params: MarchParams, ...worldMarchPipeline(st), build, first: build === 'now',
         })]));
         const all = [...Object.values(parts), compositePipe];
         set = {
-          parts, composite: compositePipe, name: `world.${v}(${detailKey(d) || 'off'}) split`,
+          parts, composite: compositePipe, name: `world.${v}(${detailKey(d) || 'off'})${optics ? '.optics' : ''} split`,
           get state() {
             const st = all.map((p) => p.state);
             return st.includes('failed') ? 'failed' : st.every((x) => x === 'ready') ? 'ready' : st.includes('pending') ? 'pending' : 'idle';
@@ -246,7 +261,7 @@ export function createWorldView(gpu, sim, { volume }) {
         };
         pipes.set(key, set);
         // (an A/B test page: the whole march built beside the stages, __worldWarmWhole before boot)
-        if (globalThis.__worldWarmWhole) { view.split = false; view.pipeline(v, d, build); view.split = true; }
+        if (globalThis.__worldWarmWhole) { view.split = false; view.variant(v, d, build, optics); view.split = true; }
       } else if (build === 'now' && (set.state === 'idle' || set.state === 'pending')) set.build();
       return set;
     },
