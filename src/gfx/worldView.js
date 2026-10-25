@@ -6,8 +6,11 @@
 //   const view = createWorldView(gpu, sim, { volume });   // volume: gfx/volume.js (its shadow map, its noise)
 //   prepare:  writeFrameUniforms(gpu, values); view.writeUniforms(values);
 //   compute:  physics, then view.update(gpu.frame, { boxes, camera, sun })   // W writeback → F → L
-//   before the scene pass: view.prepass(gpu.frame, { view, detail, meshDepth, marchNear, aerCopy, target })
-//   draw:     view.draw(rp, { view: 'realistic', detail, meshDepth, marchNear, aerCopy })
+//   before the scene pass: view.prepass(gpu.frame, { view, detail, meshDepth, marchNear, aerCopy, reach, target })
+//   draw:     view.draw(rp, { view: 'realistic', detail, meshDepth, marchNear, aerCopy, reach })
+//
+// reach: a big map's (shaders/world/reach.js REACH_CELLS) on frames the far view draws past it, else 0 (the
+// whole world: a small map, or a big one's far view not drawing yet).
 //
 // The split march (shaders/world/march.js, "The split march"): prepass records its stages as passes
 // of their own ('world march', 'world reflect', 'world shade') into a G-buffer the size of the scene
@@ -160,11 +163,11 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       } finally { rp.end(); }
     }
   }
-  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines }) => {
+  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, reach = 0 }) => {
     const depth = meshDepth ?? dummy.depth;
     return {
       meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
-      deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim),
+      deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim), reach,
     };
   };
   let drawNo = 0;
@@ -271,9 +274,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * then composites them. False (nothing recorded) for a variant that doesn't split, while a
      * pipeline builds, or before the world copy is ready.
      * @param {object} frame gpu.frame
-     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, floorLines?: boolean, target: GPUTexture }} opts
+     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, floorLines?: boolean, reach?: number, target: GPUTexture }} opts
      */
-    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, target } = {}) {
+    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, reach = 0, target } = {}) {
       prepared = false;
       view.lastDraw = { view: v, detail };   // (tests: what the frame draws)
       if (disposed || !view.splits(detail)) return false;
@@ -284,9 +287,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       gbuffer(target.width, target.height);
       meshInv.multiplyMatrices(last.viewProj, last.model).invert();   // clip → world cells, the jittered camera's
       const header = { ...sim.readHeader(), origin: [0, 0, 0] };
-      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines });
+      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, reach });
       recordStages(frame, set.parts, gb, meshDepth ?? dummy.depth, header, params);
-      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
+      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, reach, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
       compositeParams = params;
       prepared = true;
       return true;
@@ -328,9 +331,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * Draws the march into the scene pass. Returns false (draws nothing) while its pipeline builds
      * or a group isn't available yet.
      * @param {GPURenderPassEncoder} rp
-     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number }} [opts]
+     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, reach?: number }} [opts]
      */
-    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true } = {}) {
+    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, reach = 0 } = {}) {
       if (disposed) return false;
       if (view.splits(detail)) {
         // the split march's picture, recorded by prepass this frame, over the sky
@@ -350,15 +353,15 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
         bind: [frameGroup(depth), copy, group2()], header: { ...sim.readHeader(), origin: [0, 0, 0] },
-        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines }),
+        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines, reach }),
         count: WORLD_MARCH_VERTICES,
       });
-      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, pipe, n: ++drawNo, at: performance.now() };
+      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, reach, pipe, n: ++drawNo, at: performance.now() };
       return true;
     },
 
     // ---- the cost view (gfx/costView.js, docs/profiler.md "Cost view") ----
-    /** What the last frame drew: { split, view, detail, meshDepth, marchNear, aerCopy, floorLines, size?, pipe, n }, or null. */
+    /** What the last frame drew: { split, view, detail, meshDepth, marchNear, aerCopy, floorLines, reach, size?, pipe, n }, or null. */
     lastRecorded: null,
     /**
      * A live pipeline's counted twin (shaders/costView.js costify of its own WGSL text, a storage

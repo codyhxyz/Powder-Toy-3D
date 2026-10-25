@@ -12,6 +12,7 @@ import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 import { WORLD_SCENES } from '../world/scenes/index.js';
 import { presentationWGSL } from '../gfx/presentationMath.js';
+import { reachWGSL } from './world/reach.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
@@ -920,15 +921,25 @@ export const FarViewParams = uniformStruct('FarViewParams', {
   warpK: 'f32',
   warpAnchor: 'vec2f',
   warpDir: 'vec2f',
+  // cells: the world march's reach (shaders/world/reach.js REACH_CELLS): the view marches from the pixel's
+  // reach on. 0: the window's box volume draws [winLo, winLo + GRID) and the view leaves it out (the rolling log)
+  reach: 'f32',
 });
 
-// The view (docs/webgpu.md G1): a full-screen triangle drawn behind a big
-// map's volume (world/far.js drawBehind), depth tested, frag_depth computed
-// but not written, so the volume draws over it wherever it has cells. Sky,
-// the open sea beyond the world and the far grid (its ground, its liquids),
-// marched past the window's box, which the volume draws. Everything here is in world cells: its header's origin is 0, so the
+// The view (docs/webgpu.md G1): a full-screen triangle drawn before a big
+// map's volume, in its own pass (world/far.js drawPass), depth tested and
+// written (frag_depth: the hit's clip depth, the volume's convention), so the
+// nearer surface always wins where the two meet and TAA has the far ground's
+// depth. Sky, the open sea beyond the world and the far grid (its ground, its
+// liquids), marched from the pixel's reach (P.reach: reachAt, the world
+// march's own per-pixel value) on, or, for the box volume (P.reach 0: the
+// rolling log's curved view), past the window's box, which the volume draws.
+// Everything here is in world cells: its header's origin is 0, so the
 // looks' worldPos() is the identity, and what reads the window (the GI probes'
-// sky share and light) takes p - winLo.
+// sky share and light) takes p - winLo. Those probes are the box volume's
+// only: on the world march's frames the window's light isn't kept (app.js
+// worldLit), so the reach's view reads the far field's own sky share
+// (farSkyOpen) and shades a ray that starts inside the ground as its surface.
 //
 // The rolling log (gfx/presentation.js): curved, the view is a variant of its
 // own (a template switch, as the volume's: docs/webgpu.md F2), whose rays are
@@ -939,7 +950,8 @@ export const farFrag = (g, L, { curved = false, sourceAppearance = false } = {})
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
 ${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
-${presentationWGSL}${curved ? `
+${presentationWGSL}
+${reachWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
 var<private> gFarWorld: vec4f;
@@ -963,9 +975,10 @@ ${occupancyGLSL('read')}
 ${farSkyGLSL}
 ${FarViewParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;
-// the air's sky share at window point q: the probes in the window, the far field's sky past it
+// the air's sky share at window point q: the probes in the window (the box volume's frames), the far
+// field's sky past it and on the world march's frames (P.reach: the window's probes aren't kept then)
 fn farAirSky(q: vec3f) -> f32 {
-  if (all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
+  if (P.reach <= 0.0 && all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
   return farSkyOpen(q + vec3f(P.winLo));
 }
 ${farHazeFor('farAirSky')}
@@ -1306,10 +1319,15 @@ struct FarOut {
   gFarRay = warpRay(ro, rd);` : ''}
   let inv = 1.0 / rd;
   let winLo = vec3f(P.winLo);
+  // the world march's frames: from the pixel's reach on (shaders/world/reach.js), the window not left out;
+  // the box volume's (the rolling log's): the window's stretch left out, as live
+  let byReach = ${curved ? 'false' : 'P.reach > 0.0'};
+  let reach = reachAt(gFragCoord, f32(FU.frame), P.reach);
   var tw = farSlab(ro, inv, winLo, winLo + vec3f(GRID));
-  if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
+  if (tw.x > tw.y || tw.y < 0.0 || byReach) { tw = vec2f(NO_HIT); }
   let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
   var t0 = max(tb.x, 0.0);
+  if (byReach) { t0 = max(t0, reach); }
   var t1 = tb.y;${curved ? `
   // the parabola's spans in the window (the volume's) and in the world (up to two each)
   gFarWindow = warpSpans(gFarRay, winLo, winLo + vec3f(GRID), 0.0, WARP_INF);
@@ -1330,7 +1348,8 @@ struct FarOut {
   var seaOut: bool;
   var tSea = farSeaHit(ro, rd, level, &ps, &seaOut);
   if (plain && !seaOut) { tSea = farSeaHit(ro, rd, 0.0, &ps, &seaOut); }
-  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
+  // (the sea inside the world that the volume draws: the window's, or the reach's)
+  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'select(tSea >= tw.x && tSea <= tw.y, tSea < reach, byReach)'};
   let ocean = tSea < NO_HIT && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
 
   var col: vec3f;
@@ -1345,7 +1364,9 @@ struct FarOut {
     let p = farPath(ro, rd, tHit);
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
     let v = farSample(p);
-    if (cut) {
+    // (the reach's frames: a ray that starts inside opaque matter at its reach meets the coarse ground there,
+    // whose surface stands a little above the fine one: shaded as that surface, no window's ground in front)
+    if (cut && !(byReach && v.r >= v.g)) {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
       // the sun, in the probes' light just inside the window (none in a cave).
@@ -1392,12 +1413,12 @@ export const FAR_VIEW_LAYOUTS = () => {
   const [, state, lighting, params] = libLayouts('LIGHTING');
   return [FAR_VIEW_FRAME, state, lighting, params];
 };
-/** The view's render pipeline description: the scene target's formats, depth less-equal, never written (drawn behind the volume), opaque. */
+/** The view's render pipeline description: the scene target's formats, depth less-equal and written (its pass, before the volume's), opaque. */
 export const farViewPipeline = () => ({
   vertex: { entry: 'vs' },
   fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
   primitive: { topology: 'triangle-list' },
-  depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'less-equal' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
 });
 
 // ---------------------------------------------------------------- check-wgsl

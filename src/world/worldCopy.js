@@ -1,7 +1,7 @@
 import {
   WorldCopyUniforms, WORLD_COPY_LAYOUT, WC_WRITE, WC_WRITE_LAYOUT, WC_DECODE_LAYOUT, WC_JOB_RING, WC_CTRL, WcWriteParams, WC_CHUNK, WC_DILATE,
   WC_SCENE_CELLS_BINDING, WC_STAMP_LAYOUT, WC_STAMP_WORDS, WC_OVERLAY_LAYOUT, WC_NODE1, WC_NODE2,
-  wcLayout, wcHfColsFrag, wcHfUpFrag, wcSceneFrag, wcStampFrag, wcOverlayFrag, wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag,
+  wcLayout, wcSceneFrag, wcStampFrag, wcOverlayFrag, wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag,
   jobDispatch, brickDispatch,
   WC_GPU, WC_ARGS, WC_MODE, WC_V2_LAYOUT, WC_ARGS_LAYOUT, wcGpuLayout, wcGatherFrag, wcSeedFrag, wcArgsFrag,
 } from '../shaders/world/copy.js';
@@ -260,7 +260,6 @@ export class WorldCopy {
     const L = this.L;
     this.uniforms.write({
       size: L.size, air: this.airWord, bricks: L.bricks, capacity: this.capacity, n1: L.n1, occ1At: L.occ1At, n2: L.n2, occ2At: L.occ2At, revision: this.revision,
-      hfAt: L.hfAt,
     });
   }
 
@@ -295,8 +294,6 @@ export class WorldCopy {
       alloc: kernel('alloc', wcAllocFrag(g, L), [T, gpu.L.EMPTY, W]),
       dilate: kernel('dilate', wcDilateFrag(g, L), [T, gpu.L.EMPTY, W]),
       occ: kernel('occupancy', wcOccFrag(g, L), [T, gpu.L.EMPTY, W]),
-      hfCols: kernel('heightfield columns', wcHfColsFrag(g, L), [T, gpu.L.EMPTY, W]),
-      hfUp: kernel('heightfield levels', wcHfUpFrag(g, L), [T, gpu.L.EMPTY, W]),
     };
 
     if (scene) {
@@ -398,7 +395,6 @@ export class WorldCopy {
       const target = Math.max(64, Math.ceil(this.used * POOL_HEADROOM));
       if (target > this.capacity) this._allocPool(target);
     }
-    this._hfAll(k);   // (the heightfield of all the copy now holds: the scene's, the saves', the window's)
     this._note([{ lo: [0, 0, 0], hi: [...this.size] }]);
     await gpu.fence();
     this.last = { buildMs: performance.now() - t0, chunks, capacity: this.capacity, used: this.used, bytes: this.bytes };
@@ -532,23 +528,6 @@ export class WorldCopy {
     k.occ.dispatch(this.gpu.frame, jobDispatch(n2), { bind: [this._tables, null, this.groups.write], params: this._params({ count: n2, level: 2, dilate: -1 }) });
   }
 
-  // The heightfield (copy.js WC_HF), whole: every brick column's tops and level-1 value, then levels 2 and 3.
-  _hfAll(k) {
-    const L = this.L, n = L.bricks[0] * L.bricks[2], W = this.groups.write;
-    for (const level of [0, 1]) {
-      k.hfCols.dispatch(this.gpu.frame, brickDispatch(n), { bind: [this._tables, null, W], params: this._params({ count: n, level, dilate: -1 }) });
-    }
-    this._hfUp(k, this.gpu.frame);
-  }
-  // Levels 2 and 3 from level 1, every entry (Island: 4,096 and 256 of them, 16 reads each).
-  _hfUp(k, frame, t = this._tables) {
-    const L = this.L;
-    for (const level of [2, 3]) {
-      const n = L.hfDims[level][0] * L.hfDims[level][1];
-      k.hfUp.dispatch(frame, jobDispatch(n), { bind: [t, null, this.groups.write], params: this._params({ count: n, level }) });
-    }
-  }
-
   get _tables() { return this._sim?.tables ?? this.gpu._simTables?.group; }
 
   // ---------------------------------------------------------------- physics' writeback
@@ -619,9 +598,6 @@ export class WorldCopy {
     k.dilate.dispatch(frame, jobDispatch(dil.size), { bind: [t, null, W], params: this._params({ first: at + nj, count: dil.size }) });
     k.occ.dispatch(frame, jobDispatch(n1.size), { bind: [t, null, W], params: this._params({ first: at + nj + dil.size, count: n1.size, level: 1 }) });
     k.occ.dispatch(frame, jobDispatch(n2.size), { bind: [t, null, W], params: this._params({ first: at + nj + dil.size + n1.size, count: n2.size, level: 2 }) });
-    // the heightfield over the changed bricks' columns (a dig lowers a top, a pillar raises it), then its upper levels
-    for (const level of [0, 1]) k.hfCols.dispatch(frame, brickDispatch(nj), { bind: [t, null, W], params: this._params({ origin, first: at, count: nj, level }) });
-    this._hfUp(k, frame, t);
     this._readCtrl();
     this._note(worldBoxes);
     return true;
@@ -675,9 +651,6 @@ export class WorldCopy {
     k.dilate.dispatch(frame, ind(WC_ARGS.DIL), { bind: [t, null, W], params: p({ first: AT + G.dil, src: AT + WC_GPU.NDIL, level: 0 }) });
     k.occ.dispatch(frame, ind(WC_ARGS.OCC1), { bind: [t, null, W], params: p({ first: AT + G.occ1, src: AT + WC_GPU.NOCC1, level: 1 }) });
     k.occ.dispatch(frame, ind(WC_ARGS.OCC2), { bind: [t, null, W], params: p({ first: AT + G.occ2, src: AT + WC_GPU.NOCC2, level: 2 }) });
-    // the heightfield over the changed bricks' columns (the decode's jobs), then its upper levels
-    for (const level of [0, 1]) k.hfCols.dispatch(frame, ind(WC_ARGS.DECODE), { bind: [t, null, W], params: p({ first: AT + G.jobs, src: AT + WC_GPU.NJOBS, level }) });
-    this._hfUp(k, frame, t);
     this.gpuWritebacks++;
     this.chgDirty = true;
     this._readCtrl();

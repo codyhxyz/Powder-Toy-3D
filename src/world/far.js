@@ -42,10 +42,16 @@ import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEA
 //     sun turns.
 // Everything records into the open frame (docs/webgpu.md B3).
 //
-// The view is one full-screen pass (shaders/far.js farFrag), in the realistic
-// view only: sky, the open sea beyond the world and the far grid. Its lighting
-// group is the volume's with the far grid, tops and shadow heights in it
-// (attachVolume): its ground's elements and the sun's shadow on it.
+// The view is one full-screen pass of its own, 'far view' (shaders/far.js
+// farFrag; drawPass), in the material views only, before the scene pass: sky,
+// the open sea beyond the world and the far grid, written with its depth. On
+// the world march's frames it marches from the pixel's reach on (shaders/world/
+// reach.js: the march draws full detail to it), else past the window's box
+// (the box volume's frames). Its lighting group is the volume's with the far
+// grid, tops and shadow heights in it (attachVolume): its ground's elements and
+// the sun's shadow on it. Of the window's own light in that group it reads the
+// GI probes on the box volume's frames only (the world march's frames don't
+// keep them: app.js worldLit).
 //
 // The rolling log (gfx/presentation.js: `presentation`, set by
 // src/wire/world.js): while a gamemode's effect bends the view, the view draws
@@ -412,25 +418,53 @@ export class FarField {
   }
 
   /**
-   * Big maps' distance level of detail (app.js drawSkyFor): the view drawn behind
-   * the window's volume, after the sky, without writing depth, marched past the
-   * window's box, so the volume draws the window and the coarse grid the world past
-   * it. The rule of every engine's LOD: a coarser level past the fine one (Tanner
-   * et al. 1998, "The Clipmap"). Its ground is the far grid's coarse surface.
+   * Big maps' distance level of detail: the view drawn into rp, sky, open sea and the far grid's coarse
+   * surface, depth tested and written. reach: the world march's (shaders/world/reach.js REACH_CELLS; it
+   * draws full detail to it, the view past it), or 0 (the box volume draws the window: the view leaves its
+   * box out). The rule of every engine's LOD: a coarser level past the fine one (Tanner et al. 1998, "The
+   * Clipmap"). Its ground is the far grid's coarse surface.
    * @param {GPURenderPassEncoder} rp
+   * @param {{ reach?: number }} [opts]
    * @returns {boolean} whether it drew
    */
-  drawBehind(rp) {
-    if (!this.behind || !this.vol) return false;
-    const pipe = this.behindPipeline;
-    if (pipe.state !== 'ready') { if (pipe.state === 'idle') pipe.build().then(() => this.onChange?.(), () => {}); return false; }
-    pipe.draw(rp, { bind: [this._frameGroup(), this.sim.bindRO, this.vol.lightingGroup], params: this._params(),
+  drawBehind(rp, { reach = 0 } = {}) {
+    if (!this.drawable) return false;
+    const params = this._params();
+    params.reach = this.curved ? 0 : reach;   // (the rolling log's view is the box volume's: its window left out)
+    this.behindPipeline.draw(rp, { bind: [this._frameGroup(), this.sim.bindRO, this.vol.lightingGroup], params,
       header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, count: 3 });
     return true;
   }
 
-  // Before a WORLD frame: whether drawBehind draws (visible: the realistic
-  // view), and what derives from the grid brought up to date.
+  /**
+   * The view as its own pass, 'far view' (the profiler's row), into the scene target before the scene
+   * pass: colour and depth cleared, or loaded (load: three's opaque meshes are in them), and stored for
+   * the scene pass to load. Returns whether it drew (nothing recorded if not).
+   * @param {object} frame gpu.frame
+   * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean, reach?: number }} opts
+   */
+  drawPass(frame, { color, depth, load = false, reach = 0 }) {
+    if (!this.drawable) return false;
+    const views = (this._targetViews ??= new WeakMap());   // the scene target's views, by texture
+    const view = (t) => { let v = views.get(t); if (!v) views.set(t, v = t.createView()); return v; };
+    const rp = frame.render({
+      colorAttachments: [{ view: view(color), loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      depthStencilAttachment: { view: view(depth), depthClearValue: 1, depthLoadOp: load ? 'load' : 'clear', depthStoreOp: 'store' },
+    }, 'far view');
+    try { return this.drawBehind(rp, { reach }); } finally { rp.end(); }
+  }
+
+  /** Whether the view draws this frame (viewBehind said so, it is built, its pipeline is ready); asks for the pipeline when it isn't. */
+  get drawable() {
+    if (!this.behind || !this.vol) return false;
+    const pipe = this.behindPipeline;
+    if (pipe.state === 'ready') return true;
+    if (pipe.state === 'idle') pipe.build().then(() => this.onChange?.(), () => {});
+    return false;
+  }
+
+  // Before a frame (app.js prepare): whether the view draws (visible: the
+  // material views), and what derives from the grid brought up to date.
   viewBehind(visible) {
     this.behind = visible && this.built;
     if (this.built) this.refresh();

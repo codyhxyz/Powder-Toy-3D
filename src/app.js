@@ -32,6 +32,7 @@ import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
 import { createVolume, detailKey } from './gfx/volume.js';
 import { createWorldView } from './gfx/worldView.js';
+import { REACH_CELLS } from './shaders/world/reach.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
@@ -1869,12 +1870,12 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     const drawStill = () => presentation.neutral(() => post.renderStill({
-      prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); wv?.writeUniforms(frameValues(thumbCam, viewId, [0, 0])); },
+      prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); wv?.writeUniforms(frameValues(thumbCam, viewId, [0, 0])); frameReach = marchReach(view, false); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => {
         const drew = threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false;
         if (wv && !b) worldPrepass(p, view, detail, null);   // (the split march's stages, as a frame records them)
-        return drew;
+        return farPass(p, drew, view, false);
       },
       draw(rp) {
         const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;   // the sea past its walls
@@ -1883,7 +1884,7 @@ async function renderThumb(viewId, out, { build = true } = {}) {
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: mapKind.boxFrame });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
-        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0 });
+        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0, reach: frameReach });
         prepassed = false;
         if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
@@ -2493,7 +2494,7 @@ function drawVolume(rp) {
   // march of physics' window for now.
   const world = !testBoxMarch && worldView?.draws(view, curved);
   const drew = !testNoVolume && (world
-    ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame })
+    ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, reach: frameReach })
     : vol.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp }));
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
@@ -2511,7 +2512,30 @@ function worldPrepass(p, view = viewKeyOf(renderView), detail = frameDetail, war
   if (blocks || testNoVolume || testBoxMarch || !worldView?.draws(view, !!warp && warp.k !== 0) || !worldView.splits(detail)) return;
   const meshDepth = cut.take();
   prepassed = true;
-  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, target: p.sceneTarget.color });
+  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, reach: frameReach, target: p.sceneTarget.color });
+}
+// Whether the world march draws `view` this frame (else the box volume or the blocks do).
+function worldMarchFrame(view, curved) { return !blocks && !testBoxMarch && !!worldView?.draws(view, curved); }
+// A big map's reach (shaders/world/reach.js): the world march draws full detail to it and the far view
+// (world/far.js) past it, once the far view draws (its pipeline ready, the far field built); until then 0,
+// the march draws the whole world. Latched per frame (prepare) so the march and the far view agree.
+// Intentional (small maps): no far view and no reach (0: the whole world), as live's box.
+let frameReach = 0;
+function marchReach(view, curved) {
+  return !mapKind.boxFrame && worldMarchFrame(view, curved) && win?.far?.drawable ? REACH_CELLS : 0;
+}
+// A big map's far view (world/far.js drawPass): its own pass, 'far view', after three's opaque meshes and
+// the world march's stages, before the scene pass, into the scene target with its depth (drew: the meshes
+// are in it, loaded). It draws the sky and the open sea too, so the scene pass's sky is left out (farDrawn:
+// drawSkyFor). On the world march's frames it draws only with a reach (frameReach), past it; on the box
+// volume's (the rolling log), past the window's box, as live. Returns whether the scene pass loads.
+let farDrawn = false;
+function farPass(p, drew, view = viewKeyOf(renderView), curved = !!warpNow()?.k) {
+  farDrawn = false;
+  const far = win?.far;
+  if (!far || mapKind.boxFrame || !isMaterialView(view) || (worldMarchFrame(view, curved) && frameReach <= 0)) return drew;
+  farDrawn = far.drawPass(gpu.frame, { color: p.sceneTarget.color, depth: p.sceneTarget.depth, load: drew, reach: frameReach });
+  return drew || farDrawn;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 let testBoxMarch = false;  // test.renderOnce({ boxMarch: true }): the box's march in place of the world's (A/B shots)
@@ -2532,10 +2556,14 @@ function boxSeaParams() {
 // The realistic views' sky, first in the scene pass, behind the world's march and the meshes. A
 // small map's box stands under it, with the sea past its walls (sea: boxSeaParams); a big map's
 // world stands under it with the sea past the world's edge (worldSea). Rays that leave the world
-// show it. (No distance pass: the march draws the whole world, docs/seamless-world.md.)
+// show it. A big map's far view drew the sky, the open sea and the far world in its pass before
+// this one (farPass): the sky isn't drawn twice.
 function drawSkyFor(rp, view, sea) {
   if (!isMaterialView(view)) return;
   if (mapKind.boxFrame) { overlays.drawSky(rp, sea); return; }
+  const far = farDrawn;
+  farDrawn = false;
+  if (far) return;
   overlays.drawSky(rp, worldSea(), sim.origin.toArray());
 }
 function drawScene(rp) {
@@ -2591,6 +2619,8 @@ const frameHooks = {
     if (frameMode === 'meshes' && !meshFrames.fits(p)) { meshFrames.drop(); frameMode = 'full'; }
     writeFrameUniforms(gpu, frameValues(camera, renderView, p.jitter));
     worldView?.writeUniforms(frameValues(camera, renderView, p.jitter));   // (the same values in world cells: gfx/worldView.js)
+    win?.far?.viewBehind(isMaterialView(renderView));   // a big map's far view (farPass), its derived levels brought up to date
+    frameReach = marchReach(viewKeyOf(renderView), !!warpNow()?.k);
   },
   // E1's work that reads FrameUniforms, after it is written: the derived
   // passes, the shadow map (views that read it), GI (the realistic view), the
@@ -2633,11 +2663,11 @@ const frameHooks = {
     // the kept scene, then the opaque meshes over it, depth-tested against its depth
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
-    if (frameMode === 'capture') { worldPrepass(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
+    if (frameMode === 'capture') { worldPrepass(p); return farPass(p, false); }   // (the volume uncut: the meshes go over it in the meshes hook)
     const drew = threeMeshes(p, false);
     if (drew && !blocks) cut.capture(p.sceneTarget.depth);
     worldPrepass(p);
-    return drew;
+    return farPass(p, drew);
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },
   meshes: (p) => {

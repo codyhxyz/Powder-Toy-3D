@@ -5,7 +5,7 @@
 // dense worlds. Pure JS: no WebGPU.
 import { wcWord, wcUnword, wcTempOf, WC_MIXED, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from '../shaders/world/cellWord.js';
 import { BRICK_INFO, AIR } from '../shaders/bindings.js';
-import { WC_OWN, WC_OWN_ONLY, WC_AIR_SNAP, WC_GAS_IDS, WC_NODE1, WC_NODE2, WC_DILATE, WC_HF, wcLayout, wcLifeFull, wcGpuLayout } from '../shaders/world/copy.js';
+import { WC_OWN, WC_OWN_ONLY, WC_AIR_SNAP, WC_GAS_IDS, WC_NODE1, WC_NODE2, WC_DILATE, wcLayout, wcLifeFull, wcGpuLayout } from '../shaders/world/copy.js';
 import { ELEMENTS, K, R, E } from '../elements.js';
 import { LOOK, CHANNELS } from '../gfx/materials.js';
 import { lifeScale, cTq, isLiquid, isConductor } from '../v2/layout.js';
@@ -257,58 +257,6 @@ export class WorldCopyTwin {
     }
     return out;
   }
-  // ---- the heightfield (copy.js WC_HF, wcHfColsFrag / wcHfUpFrag) ----
-  /** A column's top: its highest non-air cell's height plus one, 0 for an empty column (copy.js wcColumnTop). */
-  columnTop(x, z) {
-    for (let y = this.L.size[1] - 1; y >= 0; y--) if ((this.cell(x, y, z) & 255) !== E.EMPTY) return y + 1;
-    return 0;
-  }
-  _hf() {
-    return (this.hf ??= this.L.hfDims.map(([x, z]) => new Uint16Array(x * z)));
-  }
-  // level 1 at brick column c: the highest top within HPAD cells of its columns, plus VPAD (0: none)
-  _hfL1(c) {
-    const hf = this._hf(), [n0x, n0z] = this.L.hfDims[0], [n1x, n1z] = this.L.hfDims[1];
-    if (c[0] < 0 || c[1] < 0 || c[0] >= n1x || c[1] >= n1z) return;
-    let m = 0;
-    for (let z = Math.max(0, c[1] * 4 - WC_HF.HPAD); z < Math.min(n0z, c[1] * 4 + 4 + WC_HF.HPAD); z++)
-      for (let x = Math.max(0, c[0] * 4 - WC_HF.HPAD); x < Math.min(n0x, c[0] * 4 + 4 + WC_HF.HPAD); x++) m = Math.max(m, hf[0][x + n0x * z]);
-    hf[1][c[0] + n1x * c[1]] = m ? Math.min(0xffff, m + WC_HF.VPAD) : 0;
-  }
-  // levels 2 and 3: each entry the maximum of its 16 children, every entry
-  _hfUp() {
-    const hf = this._hf();
-    for (let k = 2; k < WC_HF.LEVELS; k++) {
-      const [nx, nz] = this.L.hfDims[k], [cx, cz] = this.L.hfDims[k - 1];
-      for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
-        let m = 0;
-        for (let dz = 0; dz < 4; dz++) for (let dx = 0; dx < 4; dx++) { const qx = x * 4 + dx, qz = z * 4 + dz; if (qx < cx && qz < cz) m = Math.max(m, hf[k - 1][qx + cx * qz]); }
-        hf[k][x + nx * z] = m;
-      }
-    }
-  }
-  /** The whole heightfield, as the build makes it (every brick column, level 1, levels 2 and 3). */
-  hfAll() {
-    const hf = this._hf(), [n0x, n0z] = this.L.hfDims[0], [BX, , BZ] = this.L.bricks;
-    for (let z = 0; z < n0z; z++) for (let x = 0; x < n0x; x++) hf[0][x + n0x * z] = this.columnTop(x, z);
-    for (let bz = 0; bz < BZ; bz++) for (let bx = 0; bx < BX; bx++) this._hfL1([bx, bz]);
-    this._hfUp();
-    return hf;
-  }
-  /** As a writeback keeps it: the changed bricks' columns, the level-1 values around them, levels 2 and 3. */
-  hfUpdate(bricks) {
-    const hf = this._hf(), [n0x, n0z] = this.L.hfDims[0];
-    for (const b of bricks) for (let i = 0; i < 16; i++) {
-      const x = b[0] * 4 + (i & 3), z = b[2] * 4 + (i >> 2);
-      if (x < n0x && z < n0z) hf[0][x + n0x * z] = this.columnTop(x, z);
-    }
-    for (const b of bricks) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) this._hfL1([b[0] + dx, b[2] + dz]);
-    this._hfUp();
-    return hf;
-  }
-  /** The value level k holds for the column region holding cell column (x, z). */
-  hfTop(k, x, z) { const [nx] = this.L.hfDims[k]; return this._hf()[k][(x >> (2 * k)) + nx * (z >> (2 * k))]; }
-
   /** Bytes the GPU copy of this would hold: table, pool at capacity, info, occupancy, free list. */
   bytes(capacity = this.capacity) { return 4 * (this.L.nBricks + this.L.metaWords) + capacity * (WC_BRICK_CELLS + 1) * 4; }
 }

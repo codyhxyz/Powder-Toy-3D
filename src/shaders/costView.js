@@ -53,20 +53,9 @@ export const COST_COUNTERS = [
   { key: 'skip16', label: 'jumps over a 16³ node', where: "the world: an empty 16³ node of W's occupancy; the box: a cube of 3-15 bricks a side" },
   { key: 'skip64', label: 'jumps over a 64³ node', where: `the world: an empty 64³ node; the box: a cube of ${BOX_BIG_SKIP_BRICKS} bricks a side or more` },
   { key: 'skipCells', label: 'cells advanced by jumps', where: "traceView's skipEmpty jumps: the cells the walk moved (|Δx| + |Δy| + |Δz|)" },
-  // the world march's heightfield skip (shaders/world/march.js hfSkip), at a brick's first step
-  { key: 'hfTests', label: 'heightfield tests', where: 'hfSkip calls (the walk entering a brick)' },
-  { key: 'hfSkips', label: 'heightfield jumps', where: 'hfSkip results the walk jumped by (the ray above a region\'s top)' },
-  { key: 'hfCells', label: 'cells advanced by heightfield jumps', where: "the heightfield jumps: the cells the walk moved (|Δx| + |Δy| + |Δz|)" },
-  // the world march's distance blocks (shaders/world/march.js farStep), past NEAR_CELLS
-  { key: 'coarseSteps', label: 'distance-block steps', where: 'farStep calls: a far brick with matter taken whole' },
-  { key: 'coarsePixels', label: 'pixels with distance blocks', where: 'pixels whose walk took at least one far brick (1 each)' },
 ];
 export const COST_KINDS = COST_COUNTERS.map((c) => c.key);
 const SLOT = Object.fromEntries(COST_KINDS.map((k, i) => [k, i]));
-/** The counters only a module with the world's heightfield skip has. */
-export const COST_HF_KINDS = ['hfTests', 'hfSkips', 'hfCells'];
-/** The counters only a module with the world's distance blocks has. */
-export const COST_FAR_KINDS = ['coarseSteps', 'coarsePixels'];
 /** The jump split, which the curved view's warpSkip has not. */
 const SKIP_SPLIT_KINDS = ['skipBrick', 'skip16', 'skip64', 'skipCells'];
 /** Largest count a slot holds (16 bits; the march's slot keeps its top bit for coverage). */
@@ -123,17 +112,12 @@ const SKIP_SIZE_BOX = `if (gCostMainSkip) { gCost[select(select(${SLOT.skipBrick
 const CELL_CLASS = (dilated) => `gCost[select(select(${SLOT.cellStepsOwn}u, ${SLOT.cellStepsDilated}u, ${dilated}), ${SLOT.cellStepsInterior}u, (flags & BRICK_LIQUID_INTERIOR) != 0u)] += 1u;`;
 const CELL_CLASS_WORLD = CELL_CLASS(`(flags & ${WC_OWN.MATTER >>> 0}u) == 0u`);
 const CELL_CLASS_BOX = CELL_CLASS('all(occM == vec2u(0u))');
-// the heightfield's jumps: the cell before, the cells moved after
-const HF_MARK = 'let costHc0 = cell;';
-const HF_DONE = `gCost[${SLOT.hfCells}] += u32(abs(cell.x - costHc0.x) + abs(cell.y - costHc0.y) + abs(cell.z - costHc0.z));`;
-const COARSE_PIXEL = `gCost[${SLOT.coarsePixels}] = 1u;`;
 // every span that isn't a plain bump, with the counters it counts
 const SPECIAL = new Map([
   [STORE, []], [STORE_AFTER, []], [PASS_OPEN, []], [PASS_CLOSE, []], [SUN_SET, []], [WALK_TAKE, []],
   [WALK_BUMP, ['nearSteps', 'shadowSteps']], [SKIP_MARK, []], [SKIP_DONE, ['skipCells']],
   [SKIP_SIZE_WORLD, ['skipBrick', 'skip16', 'skip64']], [SKIP_SIZE_BOX, ['skipBrick', 'skip16', 'skip64']],
   [CELL_CLASS_WORLD, ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior']], [CELL_CLASS_BOX, ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior']],
-  [HF_MARK, []], [HF_DONE, ['hfCells']], [COARSE_PIXEL, ['coarsePixels']],
 ]);
 const isPrelude = (s) => /^\n\/\/ ---- cost view counters/.test(s) && s === storagePrelude(+(/@binding\((\d+)\) var gCostTex/.exec(s)?.[1] ?? -1));
 const BUMP_RE = /^gCost\[(\d+)\] \+= (\d+)u;$/;
@@ -211,13 +195,6 @@ const RULES = [
     { k: 'cellStepsOwn', after: 'traceView', stmt, world: true, text: CELL_CLASS_WORLD, counts: ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior'] },
     { k: 'cellStepsOwn', after: 'traceView', stmt, world: false, text: CELL_CLASS_BOX, counts: ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior'] },
   ]),
-  // the world march's heightfield skip (shaders/world/march.js hfSkip): its tests, its jumps and their length
-  { k: 'hfTests', fn: 'hfSkip' },
-  { k: 'hfSkips', after: 'traceView', stmt: '        tEnter = hs.x;' },
-  { k: 'coarseSteps', fn: 'farStep' },
-  { k: 'coarsePixels', after: 'traceView', stmt: '      let fh = farStep(bc, flags, ro, rd, tEnter, ax);', text: COARSE_PIXEL },
-  { k: 'hfCells', before: 'traceView', stmt: '        tEnter = hs.x;', text: HF_MARK, counts: [] },
-  { k: 'hfCells', after: 'traceView', stmt: '        if (hs.y >= 0.0) { ax = i32(hs.y); } else { ax = 1; }\n        tMax = ddaNext(ro, rd, cell);', text: HF_DONE },
   // the box's sun ray walks itself; the world's asks traceNearSteps (lcNext steps it), flagged
   { k: 'shadowSteps', loop: 'sunRayClear', header: /MAX_STEPS|marchMaxSteps/ },
   { k: 'shadowSteps', fn: 'sunRayClear', when: (c, body) => c.slice(...body).includes('traceNearSteps('), text: SUN_SET, counts: [] },
@@ -264,8 +241,7 @@ const isWorld = (code) => /\bfn wcCell\(/.test(code);
 export function costRequired(code) {
   const tv = fnBody(code, 'traceView');
   const trace = tv ? code.slice(...tv) : '';
-  return COST_KINDS.filter((k) => !(COST_HF_KINDS.includes(k) && !/\bfn hfSkip\(/.test(code)) && !(COST_FAR_KINDS.includes(k) && !/\bfn farStep\(/.test(code))
-    && !(SKIP_SPLIT_KINDS.includes(k) && !trace.includes('ax = skipEmpty(')));
+  return COST_KINDS.filter((k) => !(SKIP_SPLIT_KINDS.includes(k) && !trace.includes('ax = skipEmpty(')));
 }
 
 /**

@@ -129,11 +129,6 @@ Twenty-four per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 | `skip16` | jumps over an empty 16³ node (the box: a cube of 3–15 bricks a side) |
 | `skip64` | jumps over an empty 64³ node (the box: a cube of 16 bricks a side or more) |
 | `skipCells` | cells the main march moved by its jumps (\|Δx\| + \|Δy\| + \|Δz\|) |
-| `hfTests` | the world's heightfield skip (`hfSkip`, W's maximum mipmap of the column tops): tests, one a brick the walk enters |
-| `hfSkips` | heightfield jumps (the ray above a region's padded top) |
-| `hfCells` | cells the heightfield jumps moved the walk (\|Δx\| + \|Δy\| + \|Δz\|) |
-| `coarseSteps` | the world's distance blocks (`farStep`, past `NEAR_CELLS`): far bricks with matter taken whole |
-| `coarsePixels` | pixels whose walk took at least one far brick (1 each) |
 
 The counted twin writes them to a write-only `rgba32uint` storage texture in group 0 (the next free
 binding), three times the scene target's height: the pixel's twelve words, four a row, in rows 3y to
@@ -142,8 +137,7 @@ discard, so a ray that crossed the box and hit nothing shows its cost too. (Twen
 don't fit beside the colour in the 32 bytes a sample may have, as the first twelve did.)
 
 The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
-`skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split). The
-heightfield's jumps are not cell steps or `brickSkips`: the cell walk's counts are only the cell walk's.
+`skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split).
 The main march's jumps are marked (`gCostMainSkip`) so a reflection's `skipEmpty` isn't counted as one.
 
 A count that reaches 65535 (the march: 32767) stops there; `saturated` says how many pixels did, and a
