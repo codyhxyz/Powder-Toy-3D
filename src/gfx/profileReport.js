@@ -322,6 +322,7 @@ export function formatReport(r) {
     const c = r.causes;
     if (c.fit?.ok) {
       out.push(`ms per cause (ESTIMATE: ${c.fit.method}; R² ${f(c.fit.fit.r2, 3)}, leave-one-out error ${f(c.fit.fit.looErr * PCT, 0)}%):`);
+      if (c.fit.coarser) out.push(`  (${c.fit.coarser})`);
       for (const x of c.rows.slice(0, 12)) out.push(`  ${pad(`${x.pass} · ${x.category}`, 44)} ${lpad(f(x.ms, 2), 7)} ms ± ${f(x.pm, 2)}`);
     } else if (c.fit) {
       out.push(`ms per cause: not estimated: ${c.fit.why}. To measure it: ${c.fit.propose}`);

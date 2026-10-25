@@ -224,13 +224,15 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   const rows = causesFor(fit, [{ pass: 'scene', sums: { march: 1e6, fieldReads: 2e6, cellReads: 3e6 } }]);
   assert.equal(rows[0].category, 'cellReads');
   assert.ok(Math.abs(rows[0].ms - 3) < 1e-3);
+  // too few observations for the three categories: a coarser grouping, saying why, or a refusal
   const few = estimateCauses(obs.slice(0, 4));
-  assert.equal(few.ok, false);
-  assert.match(few.why, /need 5/);
-  assert.match(few.propose, /--poses/);
+  assert.ok(few.ok ? few.level > 0 && /need 5/.test(few.coarser) : /need 5/.test(few.why), JSON.stringify(few));
+  const none = estimateCauses(obs.slice(0, 2));
+  assert.equal(none.ok, false);
+  assert.match(none.why, /need 5/);
+  assert.match(none.propose, /--poses/);
   const col = estimateCauses([1, 2, 3, 4, 5, 6].map((x) => mk({ march: x * 1e6, fieldReads: x * 2e6, cellReads: (7 - x) * 1e6 })));
-  assert.equal(col.ok, false);
-  assert.match(col.why, /rise and fall together/);
+  assert.ok(col.ok ? /rise and fall together/.test(col.coarser) : /rise and fall together/.test(col.why), JSON.stringify(col));
   // noise the categories can't explain: refused by leave-one-out
   const noisy = estimateCauses(obs.map((x, i) => ({ ...x, ms: x.ms * (i % 2 ? 3 : 0.3) })));
   assert.equal(noisy.ok, false);

@@ -30,6 +30,23 @@ export const CATEGORIES = {
   near: ['nearSteps'],
   reflections: ['reflSteps', 'refractions', 'rootIters'],
 };
+// Coarser groupings of those categories, tried in order when the run has too few observations
+// (or collinear ones) for the finer: the estimate is as fine as the data honestly allows.
+export const CATEGORY_LEVELS = [
+  null,   // the categories above
+  { traversal: ['march', 'cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior', 'skips'], reads: ['fieldReads', 'cellReads'],
+    lighting: ['shading', 'shadows', 'near'], reflections: ['reflections'] },
+  { traversal: ['march', 'cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior', 'skips'], memory: ['fieldReads', 'cellReads'],
+    shading: ['shading', 'shadows', 'near', 'reflections'] },
+  { traversal: ['march', 'cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior', 'skips'], rest: ['fieldReads', 'cellReads', 'shading', 'shadows', 'near', 'reflections'] },
+];
+/** Observations' category sums regrouped by a CATEGORY_LEVELS entry. */
+export function regroup(sums, level) {
+  if (!level) return sums;
+  const out = {};
+  for (const [g, cats] of Object.entries(level)) { const v = cats.reduce((t, c) => t + (sums[c] ?? 0), 0); if (v > 0) out[g] = v; }
+  return out;
+}
 export const FIT_MIN_EXTRA = 2;        // observations beyond the fitted categories (degrees of freedom for the error)
 export const FIT_MAX_LOO = 0.25;       // leave-one-out error over the mean ms: above this the fit doesn't predict
 export const FIT_MAX_CORR = 0.95;      // two categories this correlated over the observations can't be told apart
@@ -150,6 +167,23 @@ const corr = (a, b) => {
  * { ok: false, why, propose } when it can't be estimated honestly.
  */
 export function estimateCauses(observations) {
+  // the finest grouping the observations support
+  let first = null;
+  for (let i = 0; i < CATEGORY_LEVELS.length; i++) {
+    const level = CATEGORY_LEVELS[i];
+    const fit = fitLevel(observations.map((o) => ({ ...o, sums: o.sums && regroup(o.sums, level) })));
+    fit.level = i;
+    fit.groups = level;
+    if (fit.ok) {
+      if (first && i > 0) fit.coarser = `the finer categories didn't fit (${first.why}): grouped as ${Object.keys(level).join(', ')}`;
+      return fit;
+    }
+    first ??= fit;
+  }
+  return first;
+}
+
+function fitLevel(observations) {
   const obs = observations.filter((o) => Number.isFinite(o.ms) && o.ms > 0 && o.sums && Object.keys(o.sums).length);
   const cats = [...new Set(obs.flatMap((o) => Object.keys(o.sums)))].filter((c) => obs.some((o) => (o.sums[c] ?? 0) > 0));
   const need = cats.length + FIT_MIN_EXTRA;
@@ -188,7 +222,7 @@ export function estimateCauses(observations) {
 export function causesFor(fit, totals) {
   if (!fit?.ok) return null;
   const rows = [];
-  for (const t of totals) for (const [cat, sum] of Object.entries(t.sums)) {
+  for (const t of totals) for (const [cat, sum] of Object.entries(regroup(t.sums, fit.groups ?? null))) {
     if (!(cat in fit.perUnit)) continue;
     const ms = fit.perUnit[cat] * sum;
     rows.push({ pass: t.pass, category: cat, ms, pm: ms * fit.fit.looErr });
