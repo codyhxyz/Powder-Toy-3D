@@ -53,15 +53,15 @@ const MAX_KNOCKOUTS = 8;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--setup JS] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, shot: false, allowBattery: false, selfTest: false, help: false };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, setup: null, shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout'];
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'setup'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -100,7 +100,7 @@ export function parsePose(p) {
 // window.__profTool: prepare() once, then pose(i, spec) per pose (timed frames, then the cost
 // counters); stop() ends the frame pump. Every stage races the slot's deadline, so a stalled run
 // says where and why.
-function installInPage({ frames, warmup, autores, paused, deadline, knockout, koFrames, koWarmup, cost: withCost }) {
+function installInPage({ frames, warmup, autores, paused, deadline, knockout, koFrames, koWarmup, cost: withCost, setup }) {
   const a = window.__app;
   const t0 = performance.now();
   const state = { stage: 'start', stages: [] };
@@ -166,13 +166,18 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, ko
     },
     async pose(i, spec) {
       const applied = applyPose(spec);
+      // --setup: a fixture the pose is timed in (an async body given window.__app as `a`, run before the warmup:
+      // say a blast repeated so particles stay in flight); its code is in the report's setup, so --compare
+      // calls two runs comparable only with the same fixture, and what it returned beside it
+      let fixtureResult = null;
+      if (setup) fixtureResult = await step(`pose ${i} setup`, new Function('a', `return (async () => { ${setup} })();`)(a));
       if (warmup) await step(`pose ${i} warmup`, a.prof.capture({ frames: warmup }));
       // the pose (a big map's window moving) can start builds: wait them out before timing
       await step(`pose ${i} test.ready`, a.test.ready());
       await step(`pose ${i} pipelines.settled`, a.gpu.settled());
       timing.labelTag = `@${i}`;
       let report;
-      try { report = await step(`pose ${i} capture`, a.prof.capture({ frames, extra: { pose: applied, readyWaitMs } })); }
+      try { report = await step(`pose ${i} capture`, a.prof.capture({ frames, extra: { pose: applied, readyWaitMs, fixture: setup, fixtureResult } })); }
       finally { timing.labelTag = '@-'; }
       // --knockout: the frame without each of the longest passes' work (KNOCKOUT_FRAMES)
       let knocked = null;
@@ -284,7 +289,7 @@ async function main() {
       finally { clearTimeout(silent); }
     };
     await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline,
-      knockout: o.knockout, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, cost: o.cost });
+      knockout: o.knockout, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, cost: o.cost, setup: o.setup });
     await answered(page.evaluate(() => window.__profTool.prepare()));
     // Metal's encoder times over the poses' frames only: started after the boot's compiles, each pose's
     // timed frames tagged "@<pose>" in the encoder labels (gpu/timing.js labelTag)

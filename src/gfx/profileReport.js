@@ -259,7 +259,7 @@ function costFindings(c, passes, context) {
 }
 
 const setupKeys = ['map', 'mode', 'view', 'detail', 'canvas', 'renderScale', 'pixelRatio', 'taa', 'upscale', 'adaptive', 'autoRes',
-  'pose', 'grid', 'world', 'gpuName', 'split', 'testMode', 'paused', 'pov'];
+  'pose', 'grid', 'world', 'gpuName', 'split', 'testMode', 'paused', 'pov', 'fixture'];
 
 /** Can reports `a` and `b` be compared? { comparable, differences: [{ key, a, b }], passes: [{ name, a, b, delta }] } */
 export function compareReports(a, b) {
