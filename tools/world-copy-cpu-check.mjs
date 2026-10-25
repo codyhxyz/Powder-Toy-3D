@@ -13,7 +13,7 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WGSL_CHECK, wcSceneFrag, wcLayout, WC_DILATE } from '../src/shaders/world/copy.js';
+import { WGSL_CHECK, wcSceneFrag, wcLayout, WC_DILATE, WC_HF } from '../src/shaders/world/copy.js';
 import { WC_MIXED, wcUnword, wcWord } from '../src/shaders/world/cellWord.js';
 import { WorldCopyTwin, wcWordOf, wcWordOfCore, wcDilated } from '../src/world/worldCopyTwin.js';
 import { storedBrickWords } from '../src/world/worldCopy.js';
@@ -146,6 +146,27 @@ function naga() {
 }
 
 // ---------------------------------------------------------------- 2. the twin on a synthetic world
+// The heightfield the twin keeps against one rebuilt from its cells: equal at every level, and every level a
+// bound: no non-air cell above a column's top, and a level-k value no lower than any top within its pad.
+function hfVerify(twin, label, fail) {
+  const kept = twin.hf.map((a) => a.slice());
+  const ref = new WorldCopyTwin(twin.L.size, { capacity: 4 });
+  ref.cell = (x, y, z) => twin.cell(x, y, z);
+  const full = ref.hfAll();
+  for (let k = 0; k < WC_HF.LEVELS; k++) for (let i = 0; i < full[k].length; i++) {
+    if (kept[k][i] !== full[k][i]) { fail(`${label}: heightfield level ${k} entry ${i} ${kept[k][i]} != ${full[k][i]} rebuilt`); return; }
+  }
+  const [X, Y, Z] = twin.L.size;
+  for (let z = 0; z < Z; z++) for (let x = 0; x < X; x++) {
+    const top = full[0][x + X * z];
+    for (let y = top; y < Y; y++) if ((twin.cell(x, y, z) & 255) !== E.EMPTY) { fail(`${label}: a cell at ${x},${y},${z} above its column's top ${top}`); return; }
+    for (let k = 1; k < WC_HF.LEVELS; k++) for (const [dx, dz] of [[-WC_HF.HPAD, 0], [WC_HF.HPAD, 0], [0, -WC_HF.HPAD], [0, WC_HF.HPAD], [0, 0]]) {
+      const qx = x + dx, qz = z + dz;
+      if (qx < 0 || qz < 0 || qx >= X || qz >= Z || !top) continue;
+      if (twin.hfTop(k, qx, qz) < top + WC_HF.VPAD) { fail(`${label}: level ${k} at ${qx},${qz} below the top ${top} of ${x},${z} + its pads`); return; }
+    }
+  }
+}
 function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6d2b79f5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 function synthetic(seed) {
@@ -211,6 +232,8 @@ function synthetic(seed) {
   };
   verify('build');
   const builtMixed = twin.used;
+  twin.hfAll();
+  hfVerify(twin, 'build', fail);
   // writebacks: random boxes made uniform, mixed or put back
   for (let round = 0; round < 60; round++) {
     const lo = [Math.floor(r() * X), Math.floor(r() * Y), Math.floor(r() * Z)], hi = lo.map((v, i) => Math.min(size[i], v + 1 + Math.floor(r() * 12)));
@@ -226,8 +249,34 @@ function synthetic(seed) {
       if (b.every((v, i) => v >= 0 && v < twin.L.bricks[i])) near.set(twin.bi(b), b);
     }
     twin.dilate([...near.values()]);
+    twin.hfUpdate(changed);
+    hfVerify(twin, `writeback ${round}`, fail);
   }
   verify('writebacks');
+  // a dig lowers a column's top, a pillar raises it: the levels follow both, and the region values stay bounds
+  {
+    const x = 21, z = 30, top = twin.columnTop(x, z), b0 = twin.hfTop(1, x, z);
+    const edit = (y0, y1, w) => {
+      for (let y = y0; y < y1; y++) dense[at(x, y, z)] = w;
+      const bricks = [];
+      for (let by = y0 >> 2; by <= (y1 - 1) >> 2; by++) { twin.commit([x >> 2, by, z >> 2], brick(x >> 2, by, z >> 2)); bricks.push([x >> 2, by, z >> 2]); }
+      const near = new Map();   // (its dilation, as recordWriteback's)
+      for (const [bx, by, bz] of bricks) for (let dz = -WC_DILATE; dz <= WC_DILATE; dz++) for (let dy = -WC_DILATE; dy <= WC_DILATE; dy++) for (let dx = -WC_DILATE; dx <= WC_DILATE; dx++) {
+        const q = [bx + dx, by + dy, bz + dz];
+        if (q.every((v, i) => v >= 0 && v < twin.L.bricks[i])) near.set(twin.bi(q), q);
+      }
+      twin.dilate([...near.values()]);
+      twin.hfUpdate(bricks);
+    };
+    edit(Math.max(0, top - 5), top, air);   // dig: the top falls
+    const dug = twin.columnTop(x, z);
+    if (!(dug < top)) fail(`hf dig: the top stayed ${top}`);
+    hfVerify(twin, 'dig', fail);
+    edit(dug, Y - 2, spawnWord(E.STONE));   // pillar: the top rises past where it was
+    if (twin.columnTop(x, z) !== Y - 2 || twin.hfTop(1, x, z) < Y - 2 + WC_HF.VPAD || twin.hfTop(3, x, z) < twin.hfTop(1, x, z)) fail('hf pillar: the levels did not rise with it');
+    hfVerify(twin, 'pillar', fail);
+    console.log(`heightfield: twin's levels kept by writebacks equal a rebuild (64 rounds); a dig ${top} -> ${dug}, a pillar -> ${Y - 2} (level 1 ${b0} -> ${twin.hfTop(1, x, z)})`);
+  }
   // the incremental dilation equals a full one
   const inc = twin.info.slice();
   twin.dilateAll();
