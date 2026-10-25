@@ -263,7 +263,16 @@ async function main() {
         countersStarting.then((c) => c.stop()).catch(() => {});   // (it may still start: end it)
       }
     }
-    for (let i = 0; i < o.poseSpecs.length; i++) runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]])));
+    // a pose that stalls ends the poses, not the run: the ones captured still report, and the stall is said
+    for (let i = 0; i < o.poseSpecs.length; i++) {
+      try { runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]]))); }
+      catch (e) {
+        if (!runs.length) throw e;
+        slot.poseError = `pose ${i} (${o.poseSpecs[i].name}): ${e.message.split('\n')[0]}`;
+        console.error(`[profile] ${slot.poseError}`);
+        break;
+      }
+    }
     log('captured');
     // the GPU counters: end the recording now, but parse the trace (10-60 s of CPU) only after the browser
     // has closed, so the GPU slot isn't held during it (tools/gpu-counters.mjs)
@@ -271,8 +280,13 @@ async function main() {
     await page.evaluate(() => window.__profTool.stop()).catch(() => {});
     slot.ms = Date.now() - t0;
     emit(o, runs, { url, info, slot, shared: null, gpuCounters: null, errors, consoleLines, pending: !!countersDone });   // (now, inside the slot: closing the browser can take seconds)
+  } catch (e) {
+    console.error(`[profile] ${e?.message ?? e}`);   // (now: the cleanup below can outlast the slot)
+    throw e;
   } finally {
-    await counters?.stop?.().catch(() => {});
+    // the browser first: xctrace's save after SIGINT takes seconds, and the slot is the browser's
+    const stopping = counters?.stop?.();
+    stopping?.catch(() => {});
     await browser?.close().catch(() => {});
     await vite?.close().catch(() => {});
   }
@@ -306,6 +320,7 @@ function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLi
     if (gpuCounters?.byEncoder) r = applyMetal(r, metalTimes(r, gpuCounters.byEncoder, i));
     else if (pending) r.notes.push('Metal encoder times follow in the final report (the trace is parsed after the browser closes)');
     else if (o.counters) r.notes.push(`no Metal encoder times (${slot.countersError ?? gpuCounters?.text ?? 'counters off'}): pass ms are timestamps`);
+    if (slot.poseError) r.notes.push(`poses cut short: ${slot.poseError}`);
     r = annotate(r, { cost: run.cost, gpuCounters: i === 0 ? gpuCounters && { text: gpuCounters.text, summary: gpuCounters.summary } : null, gpuShared: shared });
     Object.assign(r.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot,
       adapter: info && { vendor: info.vendor, architecture: info.architecture, description: info.description },
