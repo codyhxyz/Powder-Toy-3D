@@ -35,7 +35,7 @@ const dispatches = gpu.trace.filter((e) => e.kernel), weights = fieldWeights(0.7
 assert.deepEqual(dispatches[0].opts.params, { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset: true, aer: 2 });
 assert.equal(dispatches[0].opts.bind[1], sourceGroup);
 assert.deepEqual(dispatches[1].opts.params, { w: weights.w, axis: 0 });
-assert.equal(dispatches[1].opts.header, undefined);
+assert.deepEqual(dispatches[1].opts.header, { src: 1, origin: [8, 0, 4] });   // the blur carries the sim header (a ringed grid's brick numbers)
 assert.deepEqual(dispatches[7].opts.params, { bulk: weights.bulk, reach: [1, 1, 1], aer: 2 });
 for (const e of dispatches) {
   const list = e.name === 'fieldEma' ? shaders.DIRTY.EMA : e.name.startsWith('fieldBoost') ? shaders.DIRTY.WORK : shaders.DIRTY.FIELDS;
