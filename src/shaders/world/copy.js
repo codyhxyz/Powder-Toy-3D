@@ -52,6 +52,10 @@ export const WC_OWN = {
   CRISP: 1 << 30,         // a crisp cell (no smooth-surface or media channel: walls, metal, glass), which no
                           // field draws
 };
+// wcInfo bit 31: F's certificate that no smooth surface can be found in the brick (shaders/world/fields.js
+// worldFieldCertWGSL writes it, for level 0's texels as they are; the march reads it: march.js brickSurfCert).
+// W never sets it: its writers keep it (the dilation, a writeback whose own bits are unchanged) or clear it.
+export const WC_FIELD_CERT = 2 ** 31;
 // The low bits only a brick's own cells decide: kept as they are by the dilation.
 export const WC_OWN_ONLY = BRICK_INFO.THIN | BRICK_INFO.MIXED | (7 << BRICK_INFO.AIR_SHIFT) | (127 << BRICK_INFO.GAS_SHIFT);
 export const WC_DILATE = FIELDS_DILATE;   // bricks: how far a brick's smooth-surface and media fields reach (shaders/fields.js)

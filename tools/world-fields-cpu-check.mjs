@@ -56,6 +56,7 @@ const check = (ok, m) => { if (!ok) fail(m); };
   for (const world of [[1024, 128, 1024], [3072, 128, 1024], [1024, 384, 1024], [128, 128, 128]]) {
     const plan = F.fieldClipPlan(world);
     for (const st of F.DERIVE_STAGES) nagaOk(`${st}@${world}`, F.worldFieldKernelWGSL(st, { plan, cap: FIELD_BRICKS_PER_FRAME, copyWGSL: worldCopyStubWGSL }));
+    nagaOk(`cert@${world}`, F.worldFieldCertWGSL({ plan }));
   }
   for (const detail of [{}, { DETAIL_CUBIC_CLOSE: true }]) {
     nagaOk(`sampling${detail.DETAIL_CUBIC_CLOSE ? ' close' : ''}`, `${prelude({ nx: 128, ny: 128, nz: 128 }, { state: false })}
@@ -177,7 +178,11 @@ globalThis.GPUBufferUsage.UNIFORM ??= 16;
 gpu.device = { createSampler: (d) => ({ ...d }) };
 gpu.stats = { flushes: 0 };
 gpu.write = (buffer, offset, data) => { new Uint8Array(buffer.bytes, offset, data.byteLength).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)); };
-const fields = new WorldFields(gpu, { layout: gpu.layout('WC', []), bindGroup: { stub: true }, size: WORLD },
+// W's buffers (the certificate writes its bit into the info: a dense table, a word a brick)
+const WB = WORLD.map((v) => Math.ceil(v / 4)), certMeta = gpu.createBuffer({ size: WB[0] * WB[1] * WB[2] * 4 });
+const wcStub = { layout: gpu.layout('WC', []), bindGroup: { stub: true }, size: WORLD,
+  buf: { table: gpu.createBuffer({ size: 16 }), meta: certMeta }, uniforms: { buffer: gpu.createBuffer({ size: 16 }) } };
+const fields = new WorldFields(gpu, wcStub,
   { copyWGSL: worldCopyStubWGSL, tables: { tables: true }, texels: TEXELS, rows: ROWS, budget: BUDGET });
 const plan = fields.plan, lay = fields.layout, S = plan.texels;
 const tex = new Map(Object.entries(fields.textures).map(([name, t]) => [t, { name, rows: t.size[1], data: new Float64Array(S * t.size[1] * S * 4) }]));
@@ -185,6 +190,7 @@ let written = new Set();
 const NO = -1;
 gpu.onDispatch = (k, { bind, params: P }) => {
   const stage = k.name.replace('worldField ', '');
+  if (stage === 'cert') { certTwin(bind[2], P); return; }
   const g = bind[2], buf = (b) => new Uint32Array(g.entries.find((e) => e.binding === b).resource.buffer.bytes);
   const book = buf(0), work = buf(1);
   const [band0, rows, s, level] = P.band, rb = rows / 4, wt = WORLD.map((v) => Math.ceil(v / s));
@@ -291,6 +297,46 @@ gpu.onDispatch = (k, { bind, params: P }) => {
   }
 };
 
+// shaders/world/fields.js worldFieldCertWGSL's twin: every entry's brick certified (WC_FIELD_CERT) when no
+// stored φ within FIELD_CERT_REACH texels of it (clamped to the world) reaches FIELD_CERT_ISO on any channel
+const certOf = (b, T) => {
+  const l0 = plan.levels[0], R = F.FIELD_CERT_REACH;
+  for (let z = b[2] * 4 - R; z < b[2] * 4 + 4 + R; z++) for (let y = b[1] * 4 - R; y < b[1] * 4 + 4 + R; y++) for (let x = b[0] * 4 - R; x < b[0] * 4 + 4 + R; x++) {
+    const q = [x, y, z].map((v, i) => clamp(v, 0, WORLD[i] - 1));
+    const v = at(T, [q[0] % S, l0.band + (q[1] % l0.rows), q[2] % S]);
+    for (let c = 0; c < 4; c++) if (!(unhalf(v[c]) < F.FIELD_CERT_ISO)) return false;
+  }
+  return true;
+};
+const brickIdx = (b) => b[0] + WB[0] * (b[1] + WB[1] * b[2]);
+function certTwin(g, P) {
+  const book = new Uint32Array(g.entries.find((e) => e.binding === 0).resource.buffer.bytes);
+  const T = tex.get(g.entries.find((e) => e.binding === 1).resource.texture);
+  const meta = new Uint32Array(g.entries.find((e) => e.binding === 4).resource.buffer.bytes);
+  check(P.band[3] === 0, 'cert: dispatched for a coarse level');
+  for (let e = 0; e < P.count; e++) {
+    const b = F.unpackEntry(book[P.base + e]).b;
+    if (b.some((v, i) => v >= WB[i])) continue;
+    const i = brickIdx(b);
+    meta[i] = certOf(b, T) ? (meta[i] | 0x80000000) >>> 0 : (meta[i] & 0x7fffffff) >>> 0;
+  }
+}
+// Every brick the march would trust (its box inside level 0's region: FieldClip's lo, hi) carries the
+// certificate its texels give now: the jobs redid it wherever a texel in its reach was stored.
+let certTrusted = 0, certHeld = 0;
+function checkCert(what) {
+  const fc = fieldClipValues(plan, fields.levels, WORLD), lo = fc.lo[0], hi = fc.hi[0], meta = new Uint32Array(certMeta.bytes);
+  let n = 0;
+  for (let z = 0; z < WB[2]; z++) for (let y = 0; y < WB[1]; y++) for (let x = 0; x < WB[0]; x++) {
+    const b = [x, y, z], c0 = b.map((v) => v * 4), c1 = c0.map((v) => v + 4);
+    if (!c0.every((v, i) => v > lo[i] && c1[i] < hi[i])) continue;
+    const want = certOf(b, T0), got = (meta[brickIdx(b)] >>> 31) === 1;
+    certTrusted++; if (got) certHeld++;
+    if (want !== got) { if (n < 5) fail(`${what}: brick ${b}'s certificate is ${got}, its texels give ${want}`); n++; }
+  }
+  return n;
+}
+
 // the window path (tools/field-reference.mjs) with the EMA as the jobs ran it: a cell of a brick a
 // job flagged EMA blends from its history (or starts at its target, FRESH); every other cell keeps
 // its history (the window's settled bricks, which the EMA pass skips)
@@ -353,6 +399,7 @@ const frames0 = fields.prime(gpu.frame, cam);
 // (prime's jobs started every cell at its target: the window path's history is the targets)
 for (let z = 0; z < WORLD[2]; z++) for (let y = 0; y < WORLD[1]; y++) for (let x = 0; x < WORLD[0]; x++) hist.set(`${x},${y},${z}`, emaWords(raw([x, y, z]), false, null).slice(0, 2));
 compareLevel0('load');
+checkCert('load');
 console.log(`twin: loaded in ${frames0} frames (${fields.stats.jobs} jobs, ${fields.stats.bricks} bricks); level 0 valid ${JSON.stringify(fields.levels[0].valid)}`);
 
 // a flat floor's surface sits at the same height at level 0 and level 1 (the coarse level is the
@@ -390,6 +437,7 @@ for (const move of [[8, 0, 0], [0, 10, 0], [-6, -3, -9], [-8, -9, 19]]) {
   check(!extra.length && !missing.length, `scroll ${move}: ${extra.length} texels written outside the slab (${extra.slice(0, 3)}), ${missing.length} of it not written (${missing.slice(0, 3)})`);
   console.log(`twin: moved ${move} in ${frames} frame(s): ${got.size} level-0 texels rewritten, the slab exactly; valid ${JSON.stringify(before)} → ${JSON.stringify(L.valid)}`);
   compareLevel0(`after moving ${move}`);
+  checkCert(`after moving ${move}`);
 }
 
 // a change: the pond's water moves a cell along x for a few frames, then rests; every frame,
@@ -421,9 +469,90 @@ for (const move of [[8, 0, 0], [0, 10, 0], [-6, -3, -9], [-8, -9, 19]]) {
       const near = water.some((c) => Math.abs((c[0] % S) - x) <= 12 && Math.abs((c[2] % S) - z) <= 12);
       if (!near) { fail(`change: frame ${fr} wrote level-0 texel ${x},${y},${z} far from the water`); break; }
     }
-    if (compareLevel0(`change frame ${fr}`)) break;
+    if (compareLevel0(`change frame ${fr}`) + checkCert(`change frame ${fr}`)) break;
   }
   console.log(`twin: the pond moved 3 frames and settled (${FIELD_EMA_SETTLE} EMA frames): level 0 matched the window path every frame`);
+}
+
+check(certHeld > 0 && certHeld < certTrusted, `cert: ${certHeld} of ${certTrusted} trusted bricks certified (some, not all)`);
+console.log(`twin: every brick the march trusts carried its texels' certificate after the load, each scroll and every frame of the change (${certHeld} of ${certTrusted} checks certified)`);
+
+// ---------------------------------------------------------------- 4. the certificate's bound
+// Random level-0 fields (half floats, blobs and boosted spikes over air), every brick certified as the kernel
+// does it (FIELD_CERT_REACH, FIELD_CERT_ISO); then the march's reads (fieldQ's clamp, the hardware's trilinear
+// with exact and 8-bit weights, fieldCubicL's eight fetches, the cubic/trilinear mix) at points over each
+// brick's closed box, a little past it (rounding): none exceeds the brick's largest texel in reach, so none in a
+// certified brick reaches SURF_ISO. A reach of one texel less is too little (the cubic's taps pass it).
+{
+  let seed = 12345;
+  const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const W = [24, 20, 28], WB4 = W.map((v) => Math.ceil(v / 4)), R = F.FIELD_CERT_REACH;
+  let certified = 0, samples = 0, past = 0, worst = 0, under = 0;
+  for (let trial = 0; trial < 6; trial++) {
+    const phi = new Float32Array(W[0] * W[1] * W[2] * 4);
+    const blobs = Array.from({ length: 3 + trial }, () => ({ c: W.map((v) => rnd() * v), r: 1 + rnd() * 3, k: rnd() < 0.3 ? 1 + rnd() * 12 : 1, ch: Math.floor(rnd() * 4) }));
+    for (let z = 0; z < W[2]; z++) for (let y = 0; y < W[1]; y++) for (let x = 0; x < W[0]; x++) {
+      for (const bl of blobs) {
+        const d = Math.hypot(x + 0.5 - bl.c[0], y + 0.5 - bl.c[1], z + 0.5 - bl.c[2]);
+        const v = bl.k / (1 + Math.exp((d - bl.r) / 0.6));
+        const i = 4 * (x + W[0] * (y + W[1] * z)) + bl.ch;
+        phi[i] = unhalf(half(Math.max(phi[i], v + (rnd() < 0.02 ? rnd() * 0.3 : 0))));
+      }
+    }
+    const tx = (q, c) => phi[4 * (q[0] + W[0] * (q[1] + W[1] * q[2])) + c];
+    const cl = (v, i) => clamp(v, 0, W[i] - 1);
+    // the hardware's trilinear at texel coordinate u (texel j's centre at j + 0.5); q8: weights to 1/256
+    const lin = (u, c, q8) => {
+      const i0 = u.map((v) => Math.floor(v - 0.5)), fr = u.map((v, i) => { const t = v - 0.5 - i0[i]; return q8 ? Math.round(t * 256) / 256 : t; });
+      let acc = 0;
+      for (let k = 0; k < 8; k++) {
+        let w = 1; const q = [0, 1, 2].map((i) => { const hiTap = (k >> i) & 1; w *= hiTap ? fr[i] : 1 - fr[i]; return cl(i0[i] + hiTap, i); });
+        if (w) acc += w * tx(q, c);
+      }
+      return acc;
+    };
+    const fieldQ = (p) => p.map((v, i) => clamp(v, 0.5, W[i] - 0.5));
+    const cubic = (p, c, q8) => {
+      const cc = fieldQ(p).map((v) => v - 0.5), ii = cc.map(Math.floor), fr = cc.map((v, i) => v - ii[i]);
+      const w = fr.map((t) => [(1 - 3 * t + 3 * t * t - t ** 3) / 6, (4 - 6 * t * t + 3 * t ** 3) / 6, (1 + 3 * t + 3 * t * t - 3 * t ** 3) / 6, t ** 3 / 6]);
+      const g0 = w.map((v) => v[0] + v[1]), g1 = w.map((v) => v[2] + v[3]);
+      const a = ii.map((v, i) => clamp(v - 0.5 + w[i][1] / g0[i], 0.5, W[i] - 0.5)), b = ii.map((v, i) => clamp(v + 1.5 + w[i][3] / g1[i], 0.5, W[i] - 0.5));
+      let acc = 0;
+      for (let k = 0; k < 8; k++) {
+        const hiTap = [0, 1, 2].map((i) => (k >> i) & 1);
+        acc += hiTap.reduce((m, h, i) => m * (h ? g1[i] : g0[i]), 1) * lin(hiTap.map((h, i) => (h ? b[i] : a[i])), c, q8);
+      }
+      return acc;
+    };
+    const maxIn = (bb, r) => {
+      const m = [0, 0, 0, 0];
+      for (let z = bb[2] * 4 - r; z < bb[2] * 4 + 4 + r; z++) for (let y = bb[1] * 4 - r; y < bb[1] * 4 + 4 + r; y++) for (let x = bb[0] * 4 - r; x < bb[0] * 4 + 4 + r; x++) {
+        for (let c = 0; c < 4; c++) m[c] = Math.max(m[c], tx([cl(x, 0), cl(y, 1), cl(z, 2)], c));
+      }
+      return m;
+    };
+    for (let bz = 0; bz < WB4[2]; bz++) for (let by = 0; by < WB4[1]; by++) for (let bx = 0; bx < WB4[0]; bx++) {
+      const bb = [bx, by, bz], m = maxIn(bb, R), m1 = maxIn(bb, R - 1), cert = m.every((v) => v < F.FIELD_CERT_ISO);
+      if (cert) certified++;
+      for (let n = 0; n < 48; n++) {
+        // corners and faces of the closed box, and inside it, a little past it at times (rounding)
+        const p = [0, 1, 2].map((i) => { const r = rnd(); const t = r < 0.2 ? 0 : r < 0.4 ? 4 : rnd() * 4; return bb[i] * 4 + t + (rnd() < 0.2 ? (rnd() - 0.5) * 2e-3 : 0); });
+        for (const q8 of [false, true]) {
+          for (let c = 0; c < 4; c++) {
+            const s0 = lin(fieldQ(p), c, q8), s1 = cubic(p, c, q8), wv = rnd(), v = Math.max(s0, s1, s0 * (1 - wv) + s1 * wv);
+            samples++;
+            if (v > m[c] + 1e-6) { if (past < 5) fail(`cert bound: ${v} at ${p} ch ${c} past the brick's largest texel in reach ${m[c]}`); past++; }
+            if (v > m1[c] + 1e-6) under++;
+            if (cert) worst = Math.max(worst, v);
+          }
+        }
+      }
+    }
+  }
+  check(worst < F.FIELD_SURF_ISO, `cert bound: a certified brick's sample reaches ${worst}`);
+  check(certified > 0, 'cert bound: no brick certified (the test fields are all surface)');
+  check(under > 0, `cert bound: a reach of ${R - 1} texels was never too little (the test misses the cubic's taps)`);
+  console.log(`cert bound: ${samples} samples over ${certified} certified bricks of 6 random fields; none past its brick's largest texel in reach, the highest in a certified brick ${worst.toFixed(4)}; ${under} past a reach of ${R - 1}`);
 }
 
 const mem = fields.memory();

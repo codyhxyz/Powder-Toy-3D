@@ -33,6 +33,7 @@ import { fieldTargetWGSL, BLUR_TAPS, BLUR_REACH } from '../fields.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { CUBIC_ERR, CUBIC_ERR_PX_NONE, CUBIC_ERR_PX_FULL } from '../../gfx/detail.js';
 import { WC_BRICK } from './cellWord.js';
+import { WorldCopyUniforms, WC_FIELD_CERT } from './copy.js';
 
 // ---- the plan (shared by the WGSL, src/gfx/worldFields.js and tools/world-fields-cpu-check.mjs) ----
 export const FIELD_CLIP_TEXELS = 128;   // texels a level spans along x and z (S): level 0 reaches ±64 cells (19 m)
@@ -44,6 +45,7 @@ export const FIELD_TRANSITION = 0.1;    // transition band, as a share of a leve
 // Texels kept between a sampled point and the edge of what a level holds: the cubic reading reaches
 // two texels (fieldCubic), the normal's differences NORMAL_STEP more.
 export const FIELD_FILTER_MARGIN = 3;
+export const FIELD_SURF_ISO = 0.5;     // a smooth surface is where its field crosses this (SURF_ISO, core.js)
 export const FIELD_FAR = 1e9;           // a region face at the world's edge: never left through
 // Levels past this gather every cell of a texel; finer ones (texels of 8³ cells and more) gather
 // GATHER_SAMPLES per axis, evenly spaced (64 samples a texel), after an occupancy test of the texel
@@ -309,7 +311,7 @@ fn fieldCubicGrad(t: texture_3d<f32>, p: vec3f, ch: i32) -> vec3f {
 
 // The cubic channels' share (core.js: the thin mask, or being close), and the readings built on it,
 // as core.js has them.
-const SURF_ISO: f32 = 0.5;   // a smooth surface is where its field crosses this (core.js)
+const SURF_ISO: f32 = ${f(FIELD_SURF_ISO)};   // a smooth surface is where its field crosses this (core.js)
 const CUBIC_LO: f32 = 0.3;
 const CUBIC_HI: f32 = 0.85;
 // The march's hint for extra midpoint probes (core.js gThin), not a surface-sampling gate.
@@ -755,4 +757,83 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 }`,
   };
   return head + body[stage];
+}
+
+// ---- the certificate: a brick no smooth surface can be found in (wcInfo's WC_FIELD_CERT) ----
+// Every read the march takes of φ is a convex combination of stored texels: the hardware's trilinear
+// filter, the cubic B-spline's eight trilinear fetches (weights g0, g1 >= 0 summing to 1 per axis), the
+// cubic and trilinear mixed by a share in [0, 1] (surfSample, surfChannel), and a level blend. So inside
+// level-0 brick B (cells [4B, 4B + 4] on every axis) no sample exceeds the largest texel the cubic's taps
+// reach from there: B's texels and FIELD_CERT_REACH more on each side (fieldCubicL: taps i - 1 .. i + 2
+// of i = floor(p - 0.5); trilinear's lie inside them), clamped to the world's edge as fieldQ clamps. If
+// that largest texel is under SURF_ISO on every channel, the march's crossing tests (surfCross: a sign
+// change of φ - SURF_ISO; surfInsideOpaque and the liquid's entry: φ >= SURF_ISO) can't fire in B: it
+// holds no smooth surface. This bounds the values stored, so it holds whatever the blur, normalisation,
+// thin boost and EMA did (the certificate of Laine & Karras 2010 §7.2: "fully enclosed"; the box era's
+// liquid-interior one from the field's per-brick maximum, passes.js, is its mirror image). The march
+// trusts it only where it reads level 0 alone with every tap in level 0's valid texels (march.js
+// brickSurfCert), so it is kept for the texels as they are: a level-0 job redoes it for every entry,
+// its FINAL bricks and the ring around them, which are all the bricks a texel it stored is in reach of.
+// The margin covers the filter's own rounding (half floats: an ulp at 0.5 is 2^-11).
+export const FIELD_CERT_REACH = 2;          // texels past a brick the cubic's taps reach (level 0)
+export const FIELD_CERT_MARGIN = 1 / 128;   // under SURF_ISO by this much, every stored texel in reach
+export const FIELD_CERT_ISO = FIELD_SURF_ISO - FIELD_CERT_MARGIN;
+export const CERT_LAYOUT = [
+  { binding: 0, visibility: 4, buffer: { type: 'read-only-storage' } },   // the book
+  { binding: 1, visibility: 4, texture: { sampleType: 'float', viewDimension: '3d' } },   // tFS
+  { binding: 2, visibility: 4, buffer: { type: 'uniform' } },   // W's uniform (WC)
+  { binding: 3, visibility: 4, buffer: { type: 'read-only-storage' } },   // W's table (a sparse table's column index)
+  { binding: 4, visibility: 4, buffer: { type: 'storage' } },   // W's info (wcMeta), bit WC_FIELD_CERT
+];
+/** The certificate's kernel: a workgroup per entry of a level-0 job (after its peak), after the job's texels are stored. */
+export function worldFieldCertWGSL({ plan }) {
+  const n = WC_BRICK + 2 * FIELD_CERT_REACH, taps = n ** 3;
+  return /* wgsl */ `
+${WorldCopyUniforms.wgsl}
+${WorldFieldParams.wgsl}
+@group(3) @binding(1) var<uniform> P: WorldFieldParams;
+@group(2) @binding(0) var<storage, read> book: array<u32>;
+@group(2) @binding(1) var tFS: texture_3d<f32>;
+@group(2) @binding(2) var<uniform> WC: WorldCopyUniforms;
+@group(2) @binding(3) var<storage, read> wcTable: array<u32>;
+@group(2) @binding(4) var<storage, read_write> wcMeta: array<atomic<u32>>;
+const S_TEX: i32 = ${plan.texels};
+const CERT_REACH: i32 = ${FIELD_CERT_REACH};
+const CERT_SPAN: u32 = ${n}u;
+const CERT_TAPS: u32 = ${taps}u;
+const CERT_ISO: f32 = ${f(FIELD_CERT_ISO)};
+const WC_FIELD_CERT: u32 = ${WC_FIELD_CERT >>> 0}u;
+var<workgroup> wgHot: atomic<u32>;
+fn entryBrick(w: u32) -> vec3i { return vec3i(i32(w & 1023u), i32((w >> 10u) & 255u), i32((w >> 18u) & 1023u)); }
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let e = wg.x + wg.y * nwg.x;
+  if (e >= P.count) { return; }
+  if (li == 0u) { atomicStore(&wgHot, 0u); }
+  workgroupBarrier();
+  let b = entryBrick(book[P.base + e]);
+  let o = b * 4 - vec3i(CERT_REACH);
+  let top = P.world.xyz - 1;
+  var hot = false;
+  for (var k = 0u; k < ${Math.ceil(taps / 64)}u; k++) {
+    let i = li + 64u * k;
+    if (i < CERT_TAPS) {
+      let d = vec3i(vec3u(i % CERT_SPAN, (i / CERT_SPAN) % CERT_SPAN, i / (CERT_SPAN * CERT_SPAN)));
+      let q = clamp(o + d, vec3i(0), top);
+      let v = textureLoad(tFS, vec3i(q.x % S_TEX, P.band.x + q.y % P.band.y, q.z % S_TEX), 0);
+      // (a NaN counts as a surface)
+      hot = hot || !all(v < vec4f(CERT_ISO));
+    }
+  }
+  if (hot) { atomicOr(&wgHot, 1u); }
+  workgroupBarrier();
+  if (li != 0u || any(b >= WC.bricks)) { return; }
+  var bi = u32(b.x + WC.bricks.x * (b.y + WC.bricks.y * b.z));
+  if (WC.cols != 0u) {
+    let c = wcTable[WC.cols + u32(b.x + WC.bricks.x * b.z)];
+    if (c == 0u) { return; }   // (a column no matter is in: the air column's entries, never written)
+    bi = c + u32(b.y);
+  }
+  if (atomicLoad(&wgHot) == 0u) { atomicOr(&wcMeta[bi], WC_FIELD_CERT); } else { atomicAnd(&wcMeta[bi], ~WC_FIELD_CERT); }
+}`;
 }

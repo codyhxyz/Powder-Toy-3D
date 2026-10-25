@@ -342,13 +342,15 @@ export function attachCostView(app) {
     const wv = app.worldView;
     const stages = stagesOf(rec);
     const liveOf = (r) => (r.split ? r.pipe.parts : { whole: r.pipe });
-    let twinParts = Object.fromEntries(stages.map((st) => [st, wv.costTwin(liveOf(rec)[st], st)]));
-    if (Object.values(twinParts).some((t) => t.state !== 'ready')) {
-      await Promise.all(Object.values(twinParts).map((t) => t.ready));   // (their builds took frames: measure a frame drawn after them)
+    // the counted chain: each counted stage's twin, and the stages that count nothing (the re-gate) as they are
+    const twinsOf = (r) => ({ ...liveOf(r), ...Object.fromEntries(stages.map((st) => [st, wv.costTwin(liveOf(r)[st], st)])) });
+    let twinParts = twinsOf(rec);
+    if (stages.some((st) => twinParts[st].state !== 'ready')) {
+      await Promise.all(stages.map((st) => twinParts[st].ready));   // (their builds took frames: measure a frame drawn after them)
       const again = await freshFrame();
       if (!again.world || again.rec.pipe !== rec.pipe) return capture({ kind });   // (the view changed meanwhile)
       rec = again.rec;
-      twinParts = Object.fromEntries(stages.map((st) => [st, wv.costTwin(liveOf(rec)[st], st)]));
+      twinParts = twinsOf(rec);
     }
     const [w, h] = rec.size ?? [app.post.sceneTarget.width, app.post.sceneTarget.height];
     const t = worldTargets(wv, w, h, rec.split);

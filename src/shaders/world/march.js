@@ -60,7 +60,7 @@ import { reachWGSL } from './reach.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
 import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
-import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT } from './copy.js';
+import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT, WC_FIELD_CERT, WC_OWN } from './copy.js';
 import { worldFieldsWGSL, FIELDS_BINDINGS } from './fields.js';
 
 /** The march's own values (group 3 binding 1): the box volume's (shaders/render.js VolumeParams) and physics' window. */
@@ -237,6 +237,26 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
   let bmax = vec3f(min(lo + n, GRID));
   return ddaJumpBox(bmin, bmax, ro, rd, istp, cell, tMax, tEnter);
 }
+// Brick bc's flags (brickInfo's) for a ray in air, its smooth surface left out where F certifies it holds none
+// (shaders/world/fields.js worldFieldCertWGSL: no stored φ a sample here reads reaches SURF_ISO). Its empty
+// cells then take the loop's crisp-only fast path, and a brick of air alone is walked through by it in one
+// trip of the loop (traceWorld's airWalk). The certificate is of level 0's texels, so it is trusted only where
+// every sample in the brick reads level 0 alone (the level fieldPickAt picked for the brick, no blend) from its
+// valid texels (the brick's box inside level 0's region, which keeps FIELD_FILTER_MARGIN texels from its
+// faces). The crossing tests it leaves out can't fire there, and the fast path passes an empty cell of air as
+// the body would, with the same DDA arithmetic and loop count, so every hit is the one the full march finds,
+// at the same t. A ray in liquid (its exit, "lost the surface") and a thin brick keep the full body.
+// The 4³ bricks the 1-brick dilation (copy.js wcDilateFrag) marks around every smooth-surface cell were ~17 of
+// the Lab's 39 iterations a pixel (2026-10-25: research/voxel-traversal/KNOWLEDGE.md, "What we missed" 1).
+const WC_INFO_FIELD_CERT: u32 = ${WC_FIELD_CERT >>> 0}u;
+const WC_INFO_OWN_MATTER: u32 = ${WC_OWN.MATTER >>> 0}u;
+fn brickSurfCert(bc: vec3i, f: u32) -> u32 {
+  if ((f & (WC_INFO_FIELD_CERT | BRICK_SURF)) != (WC_INFO_FIELD_CERT | BRICK_SURF) || (f & BRICK_THIN) != 0u
+      || gPickL != 0u || gPickA > 0.0) { return f; }
+  let lo = vec3f(bc * BS);
+  if (fieldIn(0u, lo) <= 0.0 || fieldIn(0u, lo + vec3f(f32(BS))) <= 0.0) { return f; }
+  return f & ~BRICK_SURF;
+}
 // (the curved view's empty-space distance: not drawn by this module)
 fn brickDistAt(b: vec3i) -> i32 { return 0; }
 ${cut}`;
@@ -266,6 +286,29 @@ const floorWorld = (code) => rewrite(code, [
 // drawn, a ray that met nothing before it draws nothing (the far view's pixel stands).
 const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTraceWGSL(detail, format, optics, split), [
   ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      fieldPickAt(ro + rd * tEnter);\n'],
+  // F's certificate (brickSurfCert), for a ray in air (and, with grains, not inside the gravel's surface:
+  // gfx/grains.js re-reads gPebInside in the first empty cell the body passes)
+  ['      flags = brickInfoOf(bid);\n      gThin = brickThin(flags);\n',
+    `      flags = brickInfoOf(bid);\n      if (liq == E_EMPTY${GRAINS_ANY(detail) ? ' && !gPebInside' : ''}) { flags = brickSurfCert(bc, flags); }\n      gThin = brickThin(flags);\n`],
+  // airWalk: in a brick of air alone (no cell of its own) the fast path holds for every cell until the ray
+  // leaves the brick or reaches the cut, so its cells are passed here, as the loop's later trips would pass
+  // them through the fast path (after the head's checks: the trip cap, the world's edge, the cut), each one
+  // still a trip of the count (i), without the loop's head and body around each
+  ['      tMax[ax] += tDelta[ax];\n      continue;\n    }',
+    `      tMax[ax] += tDelta[ax];
+      if ((flags & WC_INFO_OWN_MATTER) == 0u) {
+        loop {
+          let tw = min(tMax.x, min(tMax.y, tMax.z));
+          if (i + 1 >= MAX_STEPS + BEND_EXTRA_STEPS || outside(cell) || any(cell / BS != bc) || tEnter >= tCut || tw >= tCut) { break; }
+          i++;
+          ax = argmin3(tMax);
+          tEnter = tw;
+          cell[ax] += istp[ax];
+          tMax[ax] += tDelta[ax];
+        }
+      }
+      continue;
+    }`],
   ['var tCut = meshCutT(rd);', 'var tCut = min(meshCutT(rd), gMarchExit);'],
 ], 'the realistic tracer');
 

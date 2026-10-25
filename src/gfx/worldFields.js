@@ -22,6 +22,7 @@
 import {
   fieldClipPlan, clipOrigin, FieldClip, FIELDS_BINDINGS, FIELD_FORMATS, FIELD_MAX_LEVELS, FIELD_TRANSITION,
   FIELD_FILTER_MARGIN, FIELD_FAR, FE, packEntry, fieldWorkLayout, DERIVE_LAYOUT, worldFieldKernelWGSL, WorldFieldParams,
+  CERT_LAYOUT, worldFieldCertWGSL,
 } from '../shaders/world/fields.js';
 import { FIELD_EMA_SETTLE } from '../shaders/fields.js';
 import { LAYOUT } from '../shaders/common.js';
@@ -315,6 +316,13 @@ export class WorldFields {
     this.kernels = Object.fromEntries(['slots', 'gather0', 'gather', 'blur', 'blurFinal', 'boost0', 'boost', 'peak', 'store'].map((st) => [st,
       gpu.kernel({ name: `worldField ${st}`, code: worldFieldKernelWGSL(st, { plan, cap: budget, copyWGSL }), layouts,
         params: WorldFieldParams, workgroupSize: [64, 1, 1] })]));
+    // the certificate (shaders/world/fields.js worldFieldCertWGSL): into W's info, so only over a real world copy's buffers
+    this.certLayout = worldCopy?.buf ? gpu.layout('WORLD_FIELDS_CERT', CERT_LAYOUT) : null;
+    if (this.certLayout) {
+      this.kernels.cert = gpu.kernel({ name: 'worldField cert', code: worldFieldCertWGSL({ plan }), layouts: [gpu.L.EMPTY, gpu.L.EMPTY, this.certLayout],
+        params: WorldFieldParams, workgroupSize: [64, 1, 1] });
+    }
+    this._certGroup = null;
     this.ready = Promise.all(Object.values(this.kernels).map((k) => k.ready)).then(() => this);
     this.stats = { jobs: 0, bricks: 0 };
   }
@@ -397,10 +405,26 @@ export class WorldFields {
         run(k.boost, per, { axis: 1 });
         run(k.boost, per, { axis: 2 });
         run(k.peak, per);
+        const cg = this._cert();
+        if (cg) k.cert.dispatch(frame, per, { bind: [null, null, cg], params });
       } else run(k.store, per);
       this.stats.jobs++;
       this.stats.bricks += n;
     }
+  }
+
+  // the certificate's group: the book, tFS and W's uniform, table and info (made again when W makes them again)
+  _cert() {
+    const W = this.worldCopy, b = W?.buf;
+    if (!this.certLayout || !b?.table || !b?.meta || !W.uniforms?.buffer) return null;
+    const c = this._certGroup;
+    if (c && c.table === b.table && c.meta === b.meta && c.wc === W.uniforms.buffer) return c.group;
+    const group = this.gpu.bindGroup(this.certLayout, [
+      { binding: 0, resource: { buffer: this.book } }, { binding: 1, resource: this.views.tFS },
+      { binding: 2, resource: { buffer: W.uniforms.buffer } }, { binding: 3, resource: { buffer: b.table } }, { binding: 4, resource: { buffer: b.meta } },
+    ], 'world fields cert');
+    this._certGroup = { table: b.table, meta: b.meta, wc: W.uniforms.buffer, group };
+    return group;
   }
 
   /** Group 2's entries for FIELDS_BINDINGS (the march's group: shaders/world/bindings.js). */
