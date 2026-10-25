@@ -3,19 +3,23 @@ import { Appearance, appearanceCtype } from './appearance.js';
 import { SEED_MAX } from './shaders/common.js';
 import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
 import { buildQuarry } from './industry/quarry.js';
-import { buildLabStudies, LAB_STUDIES_SIZE } from './lab/studies/index.js';
+import { buildPreservation, PRESERVATION_SIZE } from './lab/preservation/index.js';
 
 // Arena presets (src/arenas): handmade maps for team games, each built for one
 // grid size (app.js switches to it). Their layouts (spawns, flags, zones...)
 // are what buildPreset returns for them.
 export const ARENA_PRESETS = { damValley: { size: ARENA_SIZE, build: buildDamValley } };
+// Fresh generation uses the new map; saved snapshots retain their own key/state.
+export const freshPresetKey = (name) => name === 'labStudies' ? 'preservationLab' : name;
 
 // CPU-side scene builders. They produce the atlas-layout state arrays that
 // Simulation.load() uploads. Returns an arena's layout, else null.
 export function buildPreset(name, sim) {
+  name = freshPresetKey(name);
   const g = sim.g;
-  if (name === 'labStudies' && LAB_STUDIES_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
-    throw new RangeError(`Lab Studies requires a ${LAB_STUDIES_SIZE.join('×')} grid.`);
+  // The old preset key remains readable for saved snapshots, not a menu map.
+  if (name === 'preservationLab' && PRESERVATION_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
+    throw new RangeError(`Preservation requires a ${PRESERVATION_SIZE.join('×')} grid.`);
   }
   const [A, B] = sim.blankState();
   const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
@@ -39,8 +43,8 @@ export function buildPreset(name, sim) {
   const s = nx / 128;
   let layout = null;
 
-  if (name === 'labStudies') {
-    buildLabStudies({ box, set });
+  if (name === 'preservationLab') {
+    buildPreservation({ box, set });
   } else if (name === 'quarry') {
     buildQuarry({ g, set, box });
   } else if (name in ARENA_PRESETS) {

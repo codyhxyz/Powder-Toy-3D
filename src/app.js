@@ -41,8 +41,9 @@ import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, F
 import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
-import { buildPreset, ARENA_PRESETS } from './presets.js';
-import { labStudiesPlaques } from './lab/studies/index.js';
+import { buildPreset, ARENA_PRESETS, freshPresetKey } from './presets.js';
+import { enterAuthoredMap } from './lab/entry.js';
+import { preservationManifest } from './lab/preservation/index.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -105,7 +106,7 @@ const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], 
   valley: ARENA_PRESETS.damValley.size };
 // Authored fixed-size presets switch to their grid; ordinary box scenes
 // switch back. Their grids aren't in the Grid size row.
-const FIXED_PRESET_GRID = { damValley: 'valley', labStudies: 'valley' };
+const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley' };
 const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset
 const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
@@ -876,6 +877,13 @@ async function startMode(mode, { fresh = false } = {}) {
   }
   if (!chosen.team || !game) {
     game?.end();   // (end() also cancels a match still starting)
+    const map = mapOf(settings);
+    // Intentional (user request, 2026-10-25): authored exploration begins at
+    // its entrance, not above an opaque roof. Other Sandbox maps keep god view.
+    if (map?.startInPov && pov) {
+      if (fresh) pov.exit(true);
+      await enterAuthoredMap(pov, () => epoch === modeEpoch, map.spawnYaw ?? 0);
+    }
     if (chosen.key === 'noita' && pov && !pov.active) pov.enter();   // its rules are the map's (Descent)
     return false;
   }
@@ -904,6 +912,7 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  name = freshPresetKey(name);
   if (mp.frozen && undoable) { mp.resumeSolo(); replicaMap = null; }
   if (mp.replica) return false;
   ctx.resetWeather?.();
@@ -943,13 +952,6 @@ function loadPreset(name, undoable = true) {
     post.reset();
     signs?.clear();
     elementInspector.close();
-    // Intentional (user request, 2026-10-25): these are hand-built vibe studies,
-    // not the future generated collection. Regeneration restores their plaques.
-    if (name === 'labStudies' && mapKind.presets && signs) {
-      for (const p of labStudiesPlaques()) signs.add({
-        ...p, cell: new THREE.Vector3(...p.cell), normal: new THREE.Vector3(...p.normal), edit: false,
-      });
-    }
     resetSpawners(name);
     pov?.worldReplaced();
   });
@@ -3017,6 +3019,7 @@ function tick(now, renderOnly = false) {
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
   inspectElement: (key) => elementInspector.show(key),
+  getScenePlaques: () => !mp.replica && mapKind.presets && settings.preset === 'preservationLab' ? preservationManifest().plaques : null,
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
   setMode: startMode,
@@ -3058,7 +3061,7 @@ function bootReady(pending = null) {
       loadWatch.step('starting the match');
       const match = startMode(launch.mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
       await Promise.race([match, new Promise((r) => setTimeout(r, MATCH_WAIT_MS))]);
-    } else if (bootMap) startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // ?mode=, or Sandbox: its effect (Sandbox's none)
+    } else if (bootMap) await startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // authored first-person entrances finish before loading ends
     if (graphicsFailure || launch.startupError) return;
     mark('ready');
     loadWatch.done();

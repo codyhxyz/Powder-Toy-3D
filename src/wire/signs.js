@@ -2,6 +2,12 @@
 // the surface they were put on by a probe of the state (a kernel whose
 // results come back through a readback ring).
 import { Signs } from '../signs.js';
+import { ScenePlaques } from '../lab/scenePlaques.js';
+import { Vector3, Matrix4 } from 'three';
+
+const eye = new Vector3(), inverse = new Matrix4();
+const NO_PLAQUES = [];
+let plaques;
 
 const signs = {
   name: 'signs',
@@ -17,9 +23,15 @@ const signs = {
       onChange: () => {},
       onInspect: (key) => app.inspectElement(key),
     });
+    plaques = new ScenePlaques(app.signs);
   },
   attach(app) { app.signs.clear(); app.signs.rebuild(); },
   beforeView(app) {
+    plaques.set(app.getScenePlaques?.() ?? NO_PLAQUES);
+    app.camera.updateMatrixWorld();
+    app.volume.updateMatrixWorld();
+    eye.setFromMatrixPosition(app.camera.matrixWorld).applyMatrix4(inverse.copy(app.volume.matrixWorld).invert()).add(app.sim.origin);
+    plaques.update(eye.toArray());
     app.signs.update();
   },
 };
