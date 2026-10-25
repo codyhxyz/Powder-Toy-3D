@@ -291,3 +291,18 @@ against main differs by 397 px (its items vary run to run).
 keep: the bodies its loop compiles). The stage, pipeline, layout, gate depth, cost twin and warm-up follow.
 Next by measured cost: a glass kernel (takes glass, keeps glass and liquid: the Lab tank) and a media
 kernel (takes media).
+
+## Smoke: the efficient media march (2026-10-25, branch `perf/smoke-efficient`)
+
+Off and Balanced march gas the efficient way (`shaders/gfx/mediaDetail.js` "the efficient march"); Full
+(`DETAIL_MEDIA_FULL`) keeps the old march, its WGSL code identical to before (only the header comment differs).
+Lab smoke box (`--setup` smoke-setup, `--frozen`, Balanced, 2560×1600 at ×0.667), whole-frame GPU span:
+origin/main 49.1 ms, branch 31.7 ms; the Lab without gas ~18–20 ms. Where the rest goes, by stubs (local only):
+- mediaSegment returning at once (no integration): 26.9 ms. So ~5 ms is the integration and ~7–8 ms is the
+  fixed cost of those pixels leaving the lean march for the fat stage. Sampling can't remove that part.
+- step 4 cells and light every 4 samples: 28.4 ms (-3.3 ms for half the samples): not worth the noise.
+- What bought most: a brick of gas alone is one media segment and one DDA jump (render.js), not 4-7 cell
+  iterations of the fat loop (41.7 → 31.7 ms on its own).
+- A lattice jittered over 1 cell while the step is 2+ draws terraces (sheets): the efficient lattice
+  restarts each run of gas at the ray's jitter times its own step.
+

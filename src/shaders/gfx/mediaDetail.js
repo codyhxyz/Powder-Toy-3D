@@ -119,6 +119,8 @@ export const MEDIA_STEP_PX = TAA_HISTORY_FRAMES / (2 * DETAIL_FADE_LO);   // pix
 // footprint-scaled samples.)
 const MEDIA_STEP_MIN_M = FILAMENT_2_M / 2;
 const STEP_MIN_CELLS = MEDIA_STEP_MIN_M / CELL_M;
+// the fine march's per-segment loop bound: sqrt(3) / MEDIA_STEP_MIN rounded up
+const MEDIA_SEG_ROLLED = Math.ceil(Math.sqrt(3) / STEP_MIN_CELLS);
 // The rule in m per pixel: at the finest
 // step below MEDIA_STEP_FINE_M, at the base step (1 cell) from
 // MEDIA_STEP_BASE_M on. At 1080p and a 75° vertical field of view (1.42 mrad
@@ -129,12 +131,48 @@ export const MEDIA_STEP_BASE_M = CELL_M / MEDIA_STEP_PX;             // 7.5 mm p
 export const MEDIA_FLOW_PERIOD = 16;   // sim steps a noise copy rides the flow (whole, so it divides the clock wrap)
 export const FLOW_MAX = 1;             // cells/step: the sim moves a particle at most one cell a step
 
+// ---- the efficient march (DETAIL_MEDIA_FULL off: the Off and Balanced levels) ----
+// Measured 2026-10-25 (Apple M5, 2560×1600 at scene ×0.667): gas pixels cost the
+// march's own sampling, ~40 ms for a Lab smoke box over a quarter of the screen,
+// so without the Full level's switch the march spends far fewer samples, by the
+// rules real-time volumetrics use:
+// - Step. MEDIA_EFF_STEP cells, Nyquist on the base detail's finest structure
+//   (~4 cells, media.js MEDIA_STEP), growing with distance as MEDIA_EFF_STEP_PX
+//   pixel footprints: the froxel grids of Frostbite (Hillaire 2015, "Physically
+//   Based and Unified Volumetric Rendering in Frostbite") and Unreal's
+//   Volumetric Fog (Wronski 2014, "Volumetric Fog", AC4) are slices that thicken
+//   with depth. Twice the fine march's MEDIA_STEP_PX: by the projection-slice
+//   argument above, depth structure finer than the step only aliases into noise,
+//   which the per-pixel, per-frame jitter (stbn1: IGN in space, R1 over frames)
+//   hands to TAA; half the samples cost that noise one octave more history.
+// - Budget. Past MEDIA_EFF_BUDGET samples a ray's step doubles, and again every
+//   MEDIA_EFF_BUDGET more, so a ray grazing a long sheet of steam costs a bounded
+//   number of samples (Schneider 2015, Horizon Zero Dawn's clouds: a fixed sample
+//   budget whose steps lengthen along the ray).
+// - Flames keep the 1-cell base step (media.js MEDIA_STEP): their tongues are ~2
+//   cells across with a sharp luminous edge, which a longer step aliases into
+//   noise that flickers as the fire moves.
+// - Light is evaluated once every MEDIA_LIGHT_EVERY samples (and again when the
+//   gas turns thick enough to shade itself) and reused by the samples in
+//   between, which refine only the density: the froxel methods above light a
+//   coarse grid and integrate the density through it (media.js mediaSegment).
+// - Early exit: the tracer stops a ray once its transmittance is below
+//   RAY_MIN_TRANS (shaders/render.js), as before.
+const MEDIA_EFF_STEP_CELLS = 2;                       // cells
+const MEDIA_EFF_STEP_PX_N = 2 * MEDIA_STEP_PX;        // pixel footprints per step: 80
+const MEDIA_EFF_BUDGET_N = 24;                        // samples a ray takes before its step doubles
+const MEDIA_LIGHT_EVERY_N = 2;                        // samples per light evaluation
+
+/** Whether the media march is the efficient one: the Full level's DETAIL_MEDIA_FULL is off. */
+export const MEDIA_EFFICIENT = (detail = {}) => !detail.DETAIL_MEDIA_FULL;
+
 /** Whether any media detail switch is on (the GLSL's MEDIA_DETAIL_ON). */
 export const MEDIA_DETAIL_ON = (detail = {}) => !!(detail.DETAIL_MEDIA_FINE || detail.DETAIL_MEDIA_STEP || detail.DETAIL_MEDIA_FLOW);
 
 export const mediaDetailGLSL = (detail = {}) => {
   const fine = !!detail.DETAIL_MEDIA_FINE;
-  const stepOn = !!detail.DETAIL_MEDIA_STEP;
+  const eff = MEDIA_EFFICIENT(detail);
+  const stepOn = !!detail.DETAIL_MEDIA_STEP && !eff;   // (the efficient march has its own step rule)
   const flow = !!detail.DETAIL_MEDIA_FLOW;
   return /* wgsl */ `
 const NOISE_FINEST_CELLS: f32 = ${f(MEDIA_NOISE_CELLS / NOISE_FINEST_PERIOD)};   // cells across the base noise's finest lattice cell
@@ -150,12 +188,35 @@ var<private> gMediaVis: f32 = 1.0;    // the ray's transmittance at the current 
 // even a few percent
 fn detailVis() -> f32 { return smoothstep(DETAIL_VIS_LO, DETAIL_VIS_HI, gMediaVis); }` : ''}
 
-// ---- march step ----${stepOn ? `
+// ---- march step ----${eff ? `
+// the efficient march (mediaDetail.js "the efficient march"): MEDIA_EFF_STEP
+// cells or MEDIA_EFF_STEP_PX pixel footprints, whichever is longer, doubled
+// for every MEDIA_EFF_BUDGET samples the ray has taken (gMediaN)
+const MEDIA_EFF_STEP: f32 = ${f(MEDIA_EFF_STEP_CELLS)};
+const MEDIA_EFF_STEP_PX: f32 = ${f(MEDIA_EFF_STEP_PX_N)};
+const MEDIA_EFF_BUDGET: f32 = ${f(MEDIA_EFF_BUDGET_N)};
+const MEDIA_LIGHT_EVERY: f32 = ${f(MEDIA_LIGHT_EVERY_N)};   // samples per light evaluation
+// lattice samples in one cell segment: the flames' 1-cell step (MEDIA_STEP) takes
+// up to MEDIA_MAX_PER_SEG, but the bound is the fine march's, one the compiler
+// can't unroll, so the loop stays one copy of the sample (compile time)
+const MEDIA_SEG_SAMPLES: i32 = ${MEDIA_SEG_ROLLED};
+// Per ray (set by mediaRayStart): its jitter, samples taken, and the light last
+// evaluated (radiance per unit scattering), at which sample, and whether that
+// sample shaded itself (sigT >= SELF_SHADOW_MIN_SIGMA)
+var<private> gMediaJit: f32 = 0.5;   // the ray's lattice jitter (0-1: stbn1, as the base march's start)
+var<private> gMediaN: f32 = 0.0;
+var<private> gMediaLit: vec3f = vec3f(0.0);
+var<private> gMediaLitN: f32 = -1.0e9;
+var<private> gMediaLitDense: bool = false;
+fn mediaRayStart(jit: f32) { gMediaJit = jit; gMediaN = 0.0; gMediaLitN = -1.0e9; }
+fn mediaStepAt(p: vec3f) -> f32 {
+  return max(MEDIA_EFF_STEP, MEDIA_EFF_STEP_PX * footprint(p)) * exp2(floor(gMediaN / MEDIA_EFF_BUDGET));
+}` : stepOn ? `
 const MEDIA_STEP_PX: f32 = ${f(MEDIA_STEP_PX)};   // step in pixel footprints (TAA history / the LOD's Nyquist: mediaDetail.js)
 const MEDIA_STEP_MIN: f32 = ${f(STEP_MIN_CELLS)};   // finest step (cells): Nyquist on the 5 cm filaments
 // lattice samples in one cell segment: sqrt(3) / MEDIA_STEP_MIN rounded up
 // (a bound the compiler can't unroll: the loop stays one copy of the sample)
-const MEDIA_SEG_SAMPLES: i32 = ${Math.ceil(Math.sqrt(3) / STEP_MIN_CELLS)};
+const MEDIA_SEG_SAMPLES: i32 = ${MEDIA_SEG_ROLLED};
 // the step at p: MEDIA_STEP_PX footprints (cone marching, footprint() is
 // distance from the eye times the pixel's angle, so refraction and the
 // rolling log's chords don't restart it), back to MEDIA_STEP behind gas that

@@ -16,6 +16,10 @@
 // jittered per pixel and frame; TAA averages), independent of the voxel grid.
 // The DDA hands over one cell segment at a time and the lattice carries on
 // across segments and skipped bricks.
+// Every level but Full marches the efficient way (mediaDetail.js "the
+// efficient march"): longer steps that grow with distance, a sample budget,
+// and light evaluated at a coarser rate than the density. Full (its
+// DETAIL_MEDIA_FULL switch) keeps the 1-cell lattice lit at every sample.
 //
 // Light. Single scattering of the sun with a dual-lobe Henyey–Greenstein
 // phase; multiple scattering by Wrenninge et al.'s octaves (2013): each further
@@ -41,12 +45,14 @@
 // (binding 15) at level 0; GLSL's mod is glslMod (the clock's wrap can go
 // negative, H1.2). The close-up switches (mediaDetail.js) are JS template
 // switches: detail is the defines object of gfx/detail.js.
-import { mediaDetailGLSL, MEDIA_DETAIL_ON } from './mediaDetail.js';
+import { mediaDetailGLSL, MEDIA_DETAIL_ON, MEDIA_EFFICIENT } from './mediaDetail.js';
 
 export const mediaGLSL = (detail = {}) => {
   const flow = !!detail.DETAIL_MEDIA_FLOW;
   const fine = !!detail.DETAIL_MEDIA_FINE;
-  const stepOn = !!detail.DETAIL_MEDIA_STEP;
+  // the efficient march (mediaDetail.js): every level but Full
+  const eff = MEDIA_EFFICIENT(detail);
+  const stepOn = !!detail.DETAIL_MEDIA_STEP && !eff;
   return /* wgsl */ `
 // tMediaNoise (r billows, g wisps, b flame tongues, a flicker; gba: warp) is the lighting group's binding 10 (shaders/bindings.js)
 
@@ -248,8 +254,9 @@ fn gasLamps(p: vec3f, rd: vec3f, sigT: f32, g0: f32, bMul: f32) -> vec3f {
 // over between segments. Returns the opacity added, for depth decisions.
 fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>, col: ptr<function, vec3f>,
                 trans: ptr<function, vec3f>) -> f32 {
-  let st = mediaStepAt(${stepOn ? 'ro + rd * ta' : 'ta'});
-  if (*next < ta || *next >= ta + st) { *next = ta + glslMod(*next - ta, st); }
+  let st = mediaStepAt(${stepOn || eff ? 'ro + rd * ta' : 'ta'});
+  if (*next < ta || *next >= ta + st) { *next = ta + ${eff ? `gMediaJit * st; }   // (the step varies: each run of gas
+  // starts its lattice at the ray's jitter, a full step wide, so TAA sees every offset)` : 'glslMod(*next - ta, st); }'}
   if (*next >= tb) { return 0.0; }
   // Nothing here outlives the call: state kept across the tracer's loop costs
   // registers, and so occupancy, for the whole shader.
@@ -269,13 +276,20 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
     if (*next >= tb) { break; }${MEDIA_DETAIL_ON(detail) ? `
     let tv = *trans;
     gMediaVis = max(tv.r, max(tv.g, tv.b));` : ''}
-    let p = ro + rd * (*next);
+    let p = ro + rd * (*next);${eff ? `
+    var m: vec4f;
+    var nf: vec4f;
+    let sig = MD_EXT * gasDensity(p, GAS_WARP, &m, &nf);
+    // this sample stands for [next, next + dt); flames keep the base step (mediaDetail.js)
+    let dt = select(mediaStepAt(p), MEDIA_STEP, m.z > FLAME_MIN_FIRE);
+    gMediaN += 1.0;
+    *next += dt;` : `
     let dt = mediaStepAt(${stepOn ? 'p' : '*next'});   // this sample stands for [next, next + dt)${stepOn ? `
     let tS = *next;` : ''}
     *next += dt;
     var m: vec4f;
     var nf: vec4f;
-    let sig = MD_EXT * gasDensity(p, GAS_WARP, &m, &nf);
+    let sig = MD_EXT * gasDensity(p, GAS_WARP, &m, &nf);`}
     let sigT = sig.x + sig.y + sig.z;
     if (sigT < MEDIA_MIN_SIGMA) { continue; }
     let sigS2 = sig.xy * MD_ALBEDO.xy;   // fire (soot) doesn't scatter
@@ -285,7 +299,12 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
       let dense = sigT >= SELF_SHADOW_MIN_SIGMA;
       if (litT < 0.0 || tS - litT >= MEDIA_STEP || dense != litDense) {
         litT = tS;
-        litDense = dense;` : ''}
+        litDense = dense;` : eff ? `
+      // the light, once every MEDIA_LIGHT_EVERY samples (mediaDetail.js), reused in between
+      let dense = sigT >= SELF_SHADOW_MIN_SIGMA;
+      if (gMediaN - gMediaLitN >= MEDIA_LIGHT_EVERY || dense != gMediaLitDense) {
+        gMediaLitN = gMediaN;
+        gMediaLitDense = dense;` : ''}
       // sun, octave by octave: each sees half the optical depth (sqrt of T)
       var Ts = gasSun(p, sigT);
       var Lsun = vec3f(0.0);
@@ -305,7 +324,10 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
       if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }${stepOn ? `
         litL = PI_L * (FU.sunCol * Lsun + Llamp) + amb;
       }
-      S = sigS * litL;` : `
+      S = sigS * litL;` : eff ? `
+        gMediaLit = PI_L * (FU.sunCol * Lsun + Llamp) + amb;
+      }
+      S = sigS * gMediaLit;` : `
       S = sigS * (PI_L * (FU.sunCol * Lsun + Llamp) + amb);`}
     }
     if (sig.z > 0.0 && m.z > FLAME_MIN_FIRE) {

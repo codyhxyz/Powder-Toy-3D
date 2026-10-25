@@ -12,6 +12,7 @@ import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { liquidDetailGLSL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
+import { MEDIA_EFFICIENT } from './gfx/mediaDetail.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { volumeHazeGLSL } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
@@ -788,6 +789,10 @@ const realistic = (detail, curved = false, fixedReadFormat, richOptics = true, s
   // the code in place of a body this variant hasn't: the lean loop's stop, a kernel's abort
   const STOP = (b, pre = '') => (lean ? `{ ${pre}evK = EVK_RESUME; evB = ${RICH_BODIES.indexOf(b) + 1}u; break; }` : '{ evK = EVK_ABORT; break; }');
   const hasLiq = keeps('liquid'), hasMedia = keeps('media');
+  // where a ray's media lattice starts: the jitter of the base step, or (the efficient march, whose
+  // step varies) before any segment, so the first gas it meets places it by the ray's jitter
+  // (gfx/media.js mediaSegment)
+  const mStart = MEDIA_EFFICIENT(detail) ? '-1.0' : 'jit * MEDIA_STEP';
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
   // liquid, docs/v2/liquid-interior-optimization.md): skips surface tests that cannot find a crossing.
   const interior = !curved && hasLiq;
@@ -850,7 +855,8 @@ fn surfInsideOpaque(phi: vec4f) -> i32 {
 fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ro = ro0;
   let jit = stbn1(gFragCoord, f32(FU.frame), 0.0);   // the media march's start: stratified per 3x3 window, R1 over frames (noise.js)
-  var mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)
+  var mNext = ${mStart};   // next media sample along the ray (gfx/media.js)${hasMedia && MEDIA_EFFICIENT(detail) ? `
+  mediaRayStart(jit);             // the efficient march's per-ray jitter, budget and light (gfx/mediaDetail.js)` : ''}
   var mOp = 0.0;                  // opacity of the media so far
   var rd = safeDir(rd0);${curved ? `
   // the rolling log (shaders/gfx/presentation.js): the displayed ray's parabola, walked a chord at a time
@@ -1072,7 +1078,29 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       prevCrisp = E_EMPTY;
       phiStale = true;
       continue;
-    }
+    }${!curved && hasMedia && MEDIA_EFFICIENT(detail) ? `
+    // The efficient media march (gfx/mediaDetail.js): a brick of gas alone (no
+    // smooth surface, opaque matter, glass, film or cubic field: every gas has a
+    // media channel, so none of its cells is crisp), out of liquid, holds nothing
+    // the cell body would stop at, so its media is one segment from here to the
+    // brick's exit and the walk jumps there, as the empty-cell pass below passes
+    // an empty cell (the cut is tested at the loop's head, as after any jump).
+    // The march's per-cell work through a plume was most of its cost (2026-10-25).
+    // Not a deviation: the curved view (its walk goes chord by chord) keeps the
+    // per-cell walk through such a brick, which draws the same picture.
+    if ((flags & (BRICK_MEDIA | BRICK_SURF | BRICK_OPAQUE | BRICK_THIN | BRICK_FILM | BRICK_FILM_CELLS | BRICK_GLASS_CELLS)) == BRICK_MEDIA
+        && liq == E_EMPTY${grains ? ' && !gPebInside' : ''}) {
+      let tIn = tEnter;
+      ax = skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter);
+      let al = mediaSegment(ro, rd, tIn, min(tEnter, tCut), &mNext, &col, &trans);
+      if (!anyHit && al > 0.0 && mOp == 0.0) { hitPos = ro + rd * tIn; }
+      mOp = 1.0 - (1.0 - mOp) * (1.0 - al);
+      if (!anyHit && mOp > MEDIA_DEPTH_ALPHA) { anyHit = true; }
+      prevCrisp = E_EMPTY;
+      phiStale = true;
+      if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+      continue;
+    }` : ''}
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
     // The cell's element from the brick's occupancy (shaders/occupancy.js),
     // what eid(fetchA(cell)) reads: an empty cell reads nothing, any other
@@ -1128,7 +1156,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
           tEnter = 0.0; lastB = vec3i(-1); ax = 1;
           prevCrisp = E_EMPTY;
-          mNext = jit * MEDIA_STEP;
+          mNext = ${mStart};
           phiStale = true;${curved ? `
           warpRestart(&walk, ro, rd);` : ''}
           continue;
@@ -1329,7 +1357,7 @@ ${richOptics ? `
           cell = vec3i(floor(ro));
           ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
           tEnter = 0.0; lastB = vec3i(-1); ax = 1;
-          mNext = jit * MEDIA_STEP;${curved ? `
+          mNext = ${mStart};${curved ? `
           meshBudget = tCut;
           warpRestart(&walk, ro, rd);` : ''}
           continue;

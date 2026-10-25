@@ -80,19 +80,28 @@ export const DETAIL = [
   // high: plume fireNear +16, smokeIn / steamNear +9 ms (shaders/gfx/mediaDetail.js)
   { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments', cost: 'high',
     desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them' },
-  // medium: plume smokeIn / steamNear +1.9 ms (the old rule: step = distance / 8, every sample lit).
-  // Since 2026-10-17 the step is 40 pixel footprints (shaders/gfx/mediaDetail.js MEDIA_STEP_PX) and
-  // only the density is sampled finely, light stays at the base rate: about the old cost at 1080p,
-  // a quarter less at 1280×800 (static estimate; re-measure). The rule itself reaches the
-  // base step from MEDIA_STEP_BASE_M (7.5 mm per pixel) on, so a far view pays nothing, and
-  // its compile cost is small (cold Metal, 2026-10-17: World 16.3 s vs 19.6 s without, as its
-  // per-segment loop stays rolled where the 2-sample one unrolls; Box 5.3 s vs 4.6 s). Kept a switch: the Off
-  // level (phones, MOBILE_DEFAULTS) opts out of its near-gas cost.
-  { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling', cost: 'medium',
+  // high since 2026-10-25 (was medium: plume smokeIn / steamNear +1.9 ms, the old rule: step =
+  // distance / 8, every sample lit). Since 2026-10-17 the step is 40 pixel footprints
+  // (shaders/gfx/mediaDetail.js MEDIA_STEP_PX) and only the density is sampled finely, light stays
+  // at the base rate. The rule itself reaches the base step from MEDIA_STEP_BASE_M (7.5 mm per
+  // pixel) on, so a far view pays nothing, and its compile cost is small (cold Metal, 2026-10-17:
+  // World 16.3 s vs 19.6 s without, as its per-segment loop stays rolled where the 2-sample one
+  // unrolls; Box 5.3 s vs 4.6 s). Without mediaFull (below) the efficient march's own step rule
+  // replaces it, so it only takes effect at the Full level.
+  { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling', cost: 'high',
     desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain' },
   // high: plume fireNear +5.9, smokeIn / steamNear +3-4 ms
   { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow', cost: 'high',
     desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise' },
+  // high (the user's call, 2026-10-25: "i want the ULTRA EFFICIENT version available and we can turn
+  // it up if the user has the performance to spare"): measured 2026-10-25 on the Apple M5 at
+  // 2560×1600, scene ×0.667, a Lab smoke box over a quarter of the screen cost ~40 ms and steam off
+  // the Lab's lava took the running Lab from ~18 to ~33 ms a frame. Off, the march is the efficient
+  // one (shaders/gfx/mediaDetail.js "the efficient march": longer steps growing with distance, a
+  // sample budget, light at a coarser rate than density); on (the Full level), the 1-cell lattice
+  // lit at every sample, as before.
+  { key: 'mediaFull', define: 'DETAIL_MEDIA_FULL', label: 'Full-rate smoke sampling', cost: 'high',
+    desc: 'Samples and lights smoke, steam and fire at every cell along the view instead of the efficient march' },
   // medium (estimated): lab eyeSandClose (standing on the pile) +5 to +24 % of the view in three
   // runs, eyeTank and volcano eyeFlank within noise, 2026-10-11. The GPU was saturated by other
   // sessions (the god view, where the gate leaves it out, read +3 ms), so re-measure on a quiet one.
