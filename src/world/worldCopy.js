@@ -627,6 +627,20 @@ export class WorldCopy {
     return true;
   }
 
+  /**
+   * The window's cells were replaced behind V2's record of change (a multiplayer guest's frame, net/codec.js
+   * writeNative: V2 never ticks there, so nothing folds or clears its record): the next writeback compares
+   * every window brick with the copy (WC_MODE.ALL), whatever the record says, and writes only those that
+   * differ. Its cost, a frame that lands (10 a second: net/multiplayer.js STREAM_INTERVAL_MS): the gather's
+   * thread and the decode's compare of 64 cells for each window brick (a 128³ window: 32,768 bricks, 2 M
+   * cells), then the slots, dilation, occupancy, heightfield and change list for the changed bricks alone,
+   * all on the GPU; no CPU loop over bricks. Between frames the writeback finds nothing new and records
+   * nothing (_gpuWriteback's `seen`). Explicit boxes would cost more: the frame doesn't say which bricks
+   * it changed (it is the whole window), and a CPU writeback of the window lists 32,768 jobs and notes
+   * the whole window changed for F and L every frame.
+   */
+  noteWindowReplaced() { this.gpuAll = true; }
+
   // Before a window move: what physics changed, written back where the window still is (sim.onBeforeShift).
   _hookShift(sim) {
     if (this._hooked === sim || !sim.onBeforeShift) return;
