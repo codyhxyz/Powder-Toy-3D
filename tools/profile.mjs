@@ -6,6 +6,7 @@
 //     [--url https://tpt3d.codyh.xyz] [--port N] [--size 1280x800] [--dpr 2]
 //     [--autores] [--paused] [--frozen] [--compare old/profile.json] [--knockout N] [--knock "pass,pass"] [--no-cost] [--gpufeatures core|subgroups|f16,…]
 //     [--chrome-arg --enable-dawn-features=disable_robustness]…   (repeatable: price a Chrome/Dawn switch)
+//     [--knockout N|"world march,scene"] (each pass out, its dependants out, both) [--gpu-state min|med|max]
 //   node tools/profile.mjs --self-test     # CPU only: arguments and the report path
 //
 // What it does, in one 25 s headless GPU slot (tools/browser.mjs):
@@ -27,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { formatReport, reportHtml, annotate, compareReports } from '../src/gfx/profileReport.js';
 import { CLEANUP_MS } from './gpu-deadline.mjs';
-import { metalTimes, applyMetal, categoryTotals, estimateCauses, causesFor, targetVerdict, compareCauses } from '../src/gfx/profileCauses.js';
+import { metalTimes, applyMetal, categoryTotals, estimateCauses, causesFor, targetVerdict, compareCauses, passDependants, knockoutPlan, knockoutRows } from '../src/gfx/profileCauses.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // the whole headless slot (CLAUDE.md), boot to close; the lead's long slot (tools/gpu-deadline.mjs: TPT_LEAD_LONG_SLOT=1, never in agent briefs) for big maps' full boot
@@ -52,21 +53,25 @@ const BOOT_FRAMES = 600;               // frames xctrace may see before the pose
 // every run draws the map's first state, so two builds compare the same scene. (A running Lab grows
 // steam over its lava for as long as the boot and pipelines take: a build that boots 2 s sooner was
 // timed on more smoke, 2026-10-25.)
+// A pass's dependants (later passes reading what it rendered: gpu/timing.js depLog, recorded over
+// DEPS_FRAMES frames) are knocked out alone and with it, so its own cost is told from theirs (the world
+// march's empty G-buffer idles world reflect and world shade: gfx/profileCauses.js knockoutRows).
 const KNOCKOUT_FRAMES = 6;
 const KNOCKOUT_WARMUP = 2;
 const MAX_KNOCKOUTS = 8;
+const DEPS_FRAMES = 2;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, compare: null, target: null, knockout: 0, knock: null, cost: true, setup: null, gpufeatures: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup'];
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup', 'gpu-state'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -81,8 +86,13 @@ export function parseArgs(argv) {
     if (!a.startsWith('--') || !values.includes(key)) throw new Error(`Unknown option ${a}\n${HELP}`);
     const v = argv[++i];
     if (v === undefined || v.startsWith('--')) throw new Error(`Missing value for ${a}`);
-    o[key] = ['frames', 'warmup', 'port', 'dpr', 'target', 'knockout'].includes(key) ? Number(v) : v;
+    // --knockout N (the N longest passes by timestamp) or --knockout "world march,scene" / --knock "world march,scene"
+    // (those passes: on Apple the timestamps that rank them can span whole submissions, so naming the pass is the way to price it)
+    if (key === 'knock' || (key === 'knockout' && !/^\d+$/.test(v))) { o.knockoutNames = v.split(',').map((x) => x.trim()).filter(Boolean); o.knockout = o.knockoutNames.length; continue; }
+    o[key === 'gpu-state' ? 'gpuState' : key] = ['frames', 'warmup', 'port', 'dpr', 'target', 'knockout'].includes(key) ? Number(v) : v;
   }
+  // --gpu-state: the GPU performance state the Metal trace asks for (tools/gpu-counters.mjs PERF_STATES); the report says what it got
+  if (o.gpuState !== null && !['min', 'med', 'max'].includes(o.gpuState)) throw new Error('--gpu-state: min, med or max');
   if (!Number.isSafeInteger(o.frames) || o.frames < 10 || o.frames > 240) throw new Error('--frames must be 10–240 (the median and spread need 10; the profiler keeps 240)');
   if (!Number.isSafeInteger(o.warmup) || o.warmup < 0 || o.warmup > 240) throw new Error('--warmup must be 0–240');
   if (!(o.dpr > 0 && o.dpr <= 3)) throw new Error('--dpr must be in (0, 3]');
@@ -111,7 +121,7 @@ export function parsePose(p) {
 // window.__profTool: prepare() once, then pose(i, spec) per pose (timed frames, then the cost
 // counters); stop() ends the frame pump. Every stage races the slot's deadline, so a stalled run
 // says where and why.
-function installInPage({ frames, warmup, autores, paused, deadline, knockout, knock, koFrames, koWarmup, cost: withCost, setup }) {
+function installInPage({ frames, warmup, autores, paused, deadline, knockout, koFrames, koWarmup, depsFrames, cost: withCost, setup }) {
   const a = window.__app;
   const t0 = performance.now();
   const state = { stage: 'start', stages: [] };
@@ -190,21 +200,11 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, kn
       let report;
       try { report = await step(`pose ${i} capture`, a.prof.capture({ frames, extra: { pose: applied, readyWaitMs, ...(setup ? { fixture: setup, fixtureResult } : {}) } })); }
       finally { timing.labelTag = '@-'; }
-      // --knockout: the frame without each of the longest passes' work (KNOCKOUT_FRAMES)
-      let knocked = null;
-      if (knockout || knock) {
-        knocked = [];
-        // (--knock: these passes by name, in order; else the --knockout longest by their timestamps)
-        const names = knock ?? report.passes.filter((p) => p.perFrame > 0).sort((x, y) => y.perFrame - x.perFrame).slice(0, knockout).map((p) => p.name);
-        try {
-          for (const name of names) {
-            timing.knockout = new Set([name]);
-            await step(`pose ${i} knockout ${name}`, a.prof.capture({ frames: koWarmup }));
-            const r = await step(`pose ${i} knockout ${name}`, a.prof.capture({ frames: koFrames }));
-            knocked.push({ name, interval: r.frames.interval.median, span: r.frames.span.median });
-          }
-        } finally { timing.knockout = null; }
-        report.knockout = { base: { interval: report.frames.interval.median, span: report.frames.span.median }, passes: knocked };
+      // --knockout: which passes read what each pass rendered (gpu/timing.js depLog), for knock() after
+      let depLog = null;
+      if (knockout) {
+        timing.depLog = [];
+        try { await step(`pose ${i} dependants`, a.prof.capture({ frames: depsFrames })); depLog = timing.depLog; } finally { timing.depLog = null; }
       }
       // outside the timed frames: agent C's cost view (a variant: shown as work, never as time)
       let cost = null, costError = null;
@@ -212,7 +212,21 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, kn
         try { cost = await step(`pose ${i} cost.capture`, a.prof.cost.capture()); } catch (e) { costError = String(e?.message ?? e); }
       }
       report.setup.stages = state.stages.slice();
-      return { report, cost, costError };
+      return { report, cost, costError, depLog };
+    },
+    // --knockout: the frame without each set of passes' work (KNOCKOUT_FRAMES after KNOCKOUT_WARMUP); sets from knockoutPlan
+    async knock(i, sets) {
+      const out = {};
+      try {
+        for (const set of sets) {
+          const key = set.join(' + ');
+          timing.knockout = new Set(set);
+          await step(`pose ${i} knockout ${key}`, a.prof.capture({ frames: koWarmup }));
+          const r = await step(`pose ${i} knockout ${key}`, a.prof.capture({ frames: koFrames }));
+          out[key] = { interval: r.frames.interval.median, span: r.frames.span.median };
+        }
+      } finally { timing.knockout = null; }
+      return out;
     },
     stop() { keep = false; timing.labelTag = ''; },
   };
@@ -247,6 +261,9 @@ async function selfTest() {
   assert.throws(() => parseArgs(['--pose', 'upside']));
   assert.throws(() => parseArgs(['--port', '5173']));
   assert.throws(() => parseArgs(['--bogus']));
+  assert.deepEqual(parseArgs(['--knockout', 'world march, scene']).knockoutNames, ['world march', 'scene']);
+  assert.equal(parseArgs(['--knockout', '3']).knockout, 3);
+  assert.throws(() => parseArgs(['--gpu-state', 'turbo']));
   assert.equal(parseArgs(['--gpufeatures', 'subgroups']).gpufeatures, 'subgroups');
   assert.deepEqual(parseArgs(['--chrome-arg', '--enable-dawn-features=disable_robustness', '--chrome-arg', '--foo']).chromeArgs, ['--enable-dawn-features=disable_robustness', '--foo']);
   assert.throws(() => parseArgs(['--chrome-arg']));
@@ -304,7 +321,8 @@ async function main() {
     // encoders carry no pose tag and are left out); the poses wait for it only as long as the slot allows
     let countersStarting = null;
     if (countersMod) {
-      countersStarting = countersMod.start({ browser, page, outDir: o.out, frames: o.poseSpecs.length * (o.frames + o.warmup) * 2 + BOOT_FRAMES })
+      countersStarting = countersMod.start({ browser, page, outDir: o.out, frames: o.poseSpecs.length * (o.frames + o.warmup) * 2 + BOOT_FRAMES,
+        perfState: o.gpuState ? countersMod.PERF_STATES[o.gpuState] : 0 })
         .then((c) => { log('GPU counters recording'); return c; });
       countersStarting.catch((e) => { slot.countersError = String(e?.message ?? e); });
     }
@@ -327,7 +345,7 @@ async function main() {
       finally { clearTimeout(silent); }
     };
     await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused || o.frozen, deadline,
-      knockout: o.knockout, knock: o.knock ? o.knock.split(',').map((x) => x.trim()).filter(Boolean) : null, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, cost: o.cost, setup: o.setup });
+      knockout: o.knockout, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, depsFrames: DEPS_FRAMES, cost: o.cost, setup: o.setup });
     await answered(page.evaluate(() => window.__profTool.prepare()));
     // Metal's encoder times over the poses' frames only: started after the boot's compiles, each pose's
     // timed frames tagged "@<pose>" in the encoder labels (gpu/timing.js labelTag)
@@ -346,7 +364,18 @@ async function main() {
     // a pose that stalls ends the poses, not the run: the ones captured still report, and the stall is said
     for (let i = 0; i < o.poseSpecs.length; i++) {
       try {
-        runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]])));
+        const run = await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]]));
+        runs.push(run);
+        // --knockout: the N longest passes, each alone, its dependants alone and both (gfx/profileCauses.js knockoutPlan)
+        if (o.knockout) {
+          const dependants = passDependants(run.depLog);
+          const names = o.knockoutNames ?? run.report.passes.filter((p) => p.perFrame > 0).sort((x, y) => y.perFrame - x.perFrame).slice(0, o.knockout).map((p) => p.name);
+          const plan = knockoutPlan(names, dependants);
+          const base = { interval: run.report.frames.interval.median, span: run.report.frames.span.median };
+          run.report.knockout = { base, dependants, targets: plan.targets, measured: {} };
+          delete run.depLog;
+          run.report.knockout.measured = await answered(page.evaluate(([i, sets]) => window.__profTool.knock(i, sets), [i, plan.sets]));
+        }
         // --shot: each pose's frame as the player sees it after its capture (frame-<i>-<pose>.png: a picture pair per pose for an A/B)
         if (o.shot) { mkdirSync(o.out, { recursive: true }); writeFileSync(join(o.out, `frame-${i}-${o.poseSpecs[i].name}.png`), await page.screenshot()); }
       }
@@ -399,6 +428,12 @@ async function main() {
 // The report: written and printed as soon as the capture is back, inside the slot (closing the browser
 // can take seconds: a report that waited for it could be lost to the slot's deadline), and again with
 // what comes after the browser has closed (the GPU's busy share, Metal's encoder times, the GPU counters).
+// "Maximum 72% · Medium 28% (requested Maximum, not enforced)" (as tools/gpu-counters.mjs stateText, without importing it on CPU-only paths)
+function stateText(st) {
+  if (!st?.shares) return 'unknown';
+  return Object.entries(st.shares).map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(' · ') + (st.requested ? ` (requested ${st.requested}${st.enforced === false ? ', not enforced' : ''})` : '');
+}
+
 function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLines, quiet = false, pending = false }) {
   runs = structuredClone(runs);
   const reports = runs.map((run, i) => {
@@ -406,9 +441,18 @@ function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLi
     delete r.text;
     // Metal's per-encoder ms for this pose, as the authoritative pass times (gfx/profileCauses.js)
     if (gpuCounters?.byEncoder) r = applyMetal(r, metalTimes(r, gpuCounters.byEncoder, i));
+    // the GPU performance state this pose's frames ran at (Metal trace): --compare refuses runs at different ones
+    const ps = gpuCounters?.summary?.perfState;
+    if (ps) {
+      const mine = ps.byTag?.[String(i)] ?? ps;
+      Object.assign(r.setup, { gpuPerfState: mine?.dominant ?? null, gpuPerfStateShares: mine?.shares ?? null,
+        gpuPerfStateText: stateText({ ...mine, requested: ps.requested, enforced: ps.enforced }), gpuPerfStateRequested: ps.requested,
+        gpuThermalText: gpuCounters.summary.thermal ? stateText(gpuCounters.summary.thermal) : null });
+    }
     else if (pending) r.notes.push('Metal encoder times follow in the final report (the trace is parsed after the browser closes)');
     else if (o.counters) r.notes.push(`no Metal encoder times (${slot.countersError ?? gpuCounters?.text ?? 'counters off'}): pass ms are timestamps`);
     if (slot.poseError) r.notes.push(`poses cut short: ${slot.poseError}`);
+    if (r.knockout?.targets) r.knockout.rows = knockoutRows(r.knockout.base, r.knockout.measured, r.knockout.targets);
     r = annotate(r, { cost: run.cost, gpuCounters: i === 0 ? gpuCounters && { text: gpuCounters.text, summary: gpuCounters.summary } : null, gpuShared: shared });
     Object.assign(r.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot,
       adapter: info && { vendor: info.vendor, architecture: info.architecture, description: info.description },
@@ -465,10 +509,8 @@ function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLi
   let text = formatReport(main0);
   for (const [i, r] of reports.entries()) {
     const k = r.knockout;
-    if (!k) continue;
-    text += `\n\nknockout (pose ${i}: each pass's draws or dispatches dropped for ${KNOCKOUT_FRAMES} frames; the picture is wrong meanwhile, the frame says what the pass costs):`
-      + `\n  ${'(none)'.padEnd(40)} interval ${k.base.interval?.toFixed(2)} ms · GPU span ${k.base.span?.toFixed(2)} ms`
-      + k.passes.map((p) => `\n  ${p.name.padEnd(40)} interval ${p.interval?.toFixed(2)} ms (${(p.interval - k.base.interval >= 0 ? '+' : '') + (p.interval - k.base.interval).toFixed(2)}) · GPU span ${p.span?.toFixed(2)} ms (${(p.span - k.base.span >= 0 ? '+' : '') + (p.span - k.base.span).toFixed(2)})`).join('');
+    if (!k?.targets) continue;
+    text += knockoutText(i, k);
   }
   if (reports.length > 1) {
     text += '\n\nposes (Metal ms when present, else timestamps):';
@@ -489,6 +531,24 @@ function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLi
   if (quiet) return;
   console.log(text);
   console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter == null ? 'after: measured once the browser has closed' : `${slot.busyAfter}% after`}) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
+}
+
+/** --knockout's printout: per pass, what dropping it saves, with its dependants (passes reading what it rendered) accounted for. */
+export function knockoutText(i, k) {
+  const rows = knockoutRows(k.base, k.measured, k.targets);
+  const f = (x) => (x === null || x === undefined || !Number.isFinite(x) ? '–' : x.toFixed(2));
+  const sv = (x) => (x === null || !Number.isFinite(x) ? '–' : `${x >= 0 ? '−' : '+'}${Math.abs(x).toFixed(2)}`);
+  // GPU span first: the frame interval moves in whole display refreshes (or the fps cap), so it only says
+  // whether a refresh was gained (Lab, 2026-10-25: the march out saved 21 ms of span, 0 of interval)
+  let text = `\n\nknockout (pose ${i}: draws or dispatches dropped for ${KNOCKOUT_FRAMES} frames each; the picture is wrong meanwhile, the frame says what the work costs):`
+    + `\n  base: GPU span ${f(k.base.span)} ms · interval ${f(k.base.interval)} ms. Savings are GPU span ms (interval ms in brackets: it moves in whole refreshes).`;
+  for (const x of rows) {
+    const iv = x.interval, sp = x.span;
+    if (!x.dependants.length) { text += `\n  ${x.name.padEnd(36)} out: ${sv(sp.alone)} [${sv(iv.alone)}]   (nothing reads what it renders: that is its own cost)`; continue; }
+    text += `\n  ${x.name.padEnd(36)} out: ${sv(sp.alone)} [${sv(iv.alone)}] · its dependants out: ${sv(sp.deps)} [${sv(iv.deps)}] · both out: ${sv(sp.group)} [${sv(iv.group)}]`
+      + `\n  ${''.padEnd(36)} → its own cost ≈ ${f(sp.own)} ms [${f(iv.own)}]; ${f(sp.induced)} ms [${f(iv.induced)}] of "out" is its dependants (${x.dependants.join(', ')}) idling without it`;
+  }
+  return text;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

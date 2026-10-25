@@ -41,6 +41,12 @@ export class GpuTiming {
     // interval without a pass's work names the pass that holds the frame back, when neither the
     // timestamps (whole submissions on Apple's tilers) nor Metal's trace (drops intervals) can
     this.knockout = null;
+    // While an array: every pass begun appends { name, kind, frame, writes, reads } (texture ids): the textures
+    // it renders to (its attachments), and the textures its bind groups hold or attachments it loads (a depth gate). gfx/profileCauses.js passDependants
+    // turns that into "which later passes read what this one rendered": tools/profile.mjs --knockout knocks a
+    // pass's dependants out with it, since a pass that clears its targets idles every pass reading them (the
+    // world march's G-buffer gates world reflect and world shade: shaders/world/march.js).
+    this.depLog = null;
     this.onPass = null;
     this.onFrame = null;
     this.passCount = 0;
@@ -86,6 +92,54 @@ export class GpuTiming {
         return p;
       };
     }
+    // texture identity for depLog: views map to their texture (createView on device textures), bind groups to
+    // the textures they hold. Off the hot path: one WeakMap entry per view and per bind group with textures.
+    const viewTexture = new WeakMap(), groupTextures = new WeakMap(), texIds = new WeakMap();
+    let nextTex = 0;
+    const texId = (t) => { let i = texIds.get(t); if (i === undefined) texIds.set(t, i = nextTex++); return i; };
+    const texOf = (r) => viewTexture.get(r)
+      ?? ((typeof GPUTexture !== 'undefined' && r instanceof GPUTexture) || (typeof GPUTextureView !== 'undefined' && r instanceof GPUTextureView) ? r : null);
+    if (typeof device.createTexture === 'function') {
+      const makeTexture = device.createTexture.bind(device);
+      device.createTexture = (...args) => {
+        const t = makeTexture(...args);
+        const view = t?.createView?.bind(t);
+        if (view) t.createView = (...a) => { const v = view(...a); viewTexture.set(v, t); return v; };
+        return t;
+      };
+    }
+    if (typeof device.createBindGroup === 'function') {
+      const makeGroup = device.createBindGroup.bind(device);
+      device.createBindGroup = (desc) => {
+        const g = makeGroup(desc);
+        const held = [];
+        for (const e of desc?.entries ?? []) { const t = e && texOf(e.resource); if (t) held.push(t); }
+        if (held.length) groupTextures.set(g, held);
+        return g;
+      };
+    }
+    const recordDeps = (pass, name, kind, descriptor) => {
+      const entry = { name, kind, frame: gpu.frameNo, writes: [], reads: [] };
+      // an attachment it loads (not clears) it also reads: a depth gate (early-z against an earlier pass's depth) is a read
+      const read = (t) => { const id = texId(t); if (!entry.reads.includes(id)) entry.reads.push(id); };
+      for (const a of descriptor.colorAttachments ?? []) {
+        const t = a?.view && texOf(a.view);
+        if (t) { entry.writes.push(texId(t)); if (a.loadOp === 'load') read(t); }
+        const r = a?.resolveTarget && texOf(a.resolveTarget);
+        if (r) entry.writes.push(texId(r));
+      }
+      const ds = descriptor.depthStencilAttachment, dt = ds?.view && texOf(ds.view);
+      if (dt) {
+        if (ds.depthLoadOp === 'load' || ds.stencilLoadOp === 'load' || ds.depthReadOnly || ds.stencilReadOnly) read(dt);
+        if (!(ds.depthReadOnly && ds.stencilReadOnly)) entry.writes.push(texId(dt));
+      }
+      this.depLog.push(entry);
+      const set = pass.setBindGroup?.bind(pass);
+      if (set) pass.setBindGroup = (i, g, ...rest) => {
+        for (const t of groupTextures.get(g) ?? []) read(t);
+        return set(i, g, ...rest);
+      };
+    };
     const createEncoder = device.createCommandEncoder.bind(device);
     device.createCommandEncoder = (...args) => {
       const enc = createEncoder(...args);
@@ -95,7 +149,9 @@ export class GpuTiming {
         // (the pass by the name the profiler reports, knocked out when it is asked to be)
         enc[method] = (descriptor = {}) => {
           const pass = hooked(descriptor);
-          return this.knockout?.has(this.scope || descriptor.label || `(unlabelled ${kind})`) ? knockedOut(pass, kind) : pass;
+          const name = this.scope || descriptor.label || `(unlabelled ${kind})`;
+          if (this.depLog) recordDeps(pass, name, kind, descriptor);
+          return this.knockout?.has(name) ? knockedOut(pass, kind) : pass;
         };
         const hooked = (descriptor) => {
           this.passCount++;

@@ -10,7 +10,10 @@
 import assert from 'node:assert/strict';
 import { GpuTiming } from '../src/gpu/timing.js';
 import { createProfiler, PHASES } from '../src/gfx/profiler.js';
-import { metalTimes, applyMetal, estimateCauses, causesFor, targetVerdict, compareCauses, categoryTotals, nnls } from '../src/gfx/profileCauses.js';
+import { metalTimes, applyMetal, estimateCauses, causesFor, targetVerdict, compareCauses, categoryTotals, nnls, passDependants, knockoutPlan, knockoutRows } from '../src/gfx/profileCauses.js';
+import { exclusiveShares, unionLength, stateShares } from './gpu-counters.mjs';
+import { laneShare, LANE_BLOCKS } from '../src/gfx/costView.js';
+import { knockoutText } from './profile.mjs';
 import { buildReport, formatReport, reportHtml, compareReports, annotate, stats, MIN_FRAMES } from '../src/gfx/profileReport.js';
 
 globalThis.GPUBufferUsage = { QUERY_RESOLVE: 1, COPY_SRC: 2, MAP_READ: 4, COPY_DST: 8 };
@@ -267,5 +270,107 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   const c = compareCauses(a, b);
   assert.deepEqual([c.rows[0].delta, c.rows[0].workA, c.rows[0].workB], [15, 10, 30]);
 }
+{
+  // Metal bounds: a pass's even share of shared time (lower) and its own time (upper), and what shared it
+  const work = new Map([['m', { spans: [[0, 10]] }], ['k', { spans: [[5, 15]] }]]);
+  const { share, unionNs, overlap } = exclusiveShares(work);
+  assert.deepEqual([share.get('m'), share.get('k'), unionNs], [7.5, 7.5, 15]);
+  assert.equal(overlap.get('m').get('k'), 5);
+  assert.equal(unionLength([[0, 4], [2, 6], [8, 9]]), 7, 'vertex and fragment overlap counted once');
+  // the GPU performance state, time-weighted over a window
+  const st = stateShares([[0, 30, 'Medium'], [30, 100, 'Maximum']], [[10, 50]]);
+  assert.deepEqual(st.shares, { Medium: 0.5, Maximum: 0.5 });
+  assert.deepEqual(stateShares([[0, 30, 'Medium'], [30, 100, 'Maximum']], [[20, 100]]).dominant, 'Maximum');
+  const fr = (i) => ({ frame: i, gpu: 12, coverage: { complete: true, timelineComplete: true, spanMs: 12, missing: [] },
+    passes: [{ name: 'world march', kind: 'render', phase: 'view', error: null, start: 0, gpu: 8 }, { name: 'v2block', kind: 'compute', phase: 'sim', error: null, start: 8, gpu: 4 }],
+    rec: { wall: 2, interval: 16, cpu: null, steps: 0, compiling: 0, created: 1 } });
+  const r = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  const rows = [{ label: 'world march@0', count: 12, totalMs: 12 * 4, ownMs: 9, overlapWith: [{ label: 'v2block@0', ms: 5 }] }, { label: 'v2block@0', count: 12, totalMs: 12 * 3, ownMs: 3.5 }];
+  const m = metalTimes(r, rows, 0);
+  assert.deepEqual([m.perPass['world march'], m.ownPass['world march']], [4, 9]);
+  applyMetal(r, m);
+  const wm = r.passes.find((p) => p.name === 'world march');
+  assert.deepEqual([wm.ms, wm.msOwn, wm.beside[0].name], [4, 9, 'v2block']);
+  r.setup.gpuPerfStateText = 'Maximum 80% · Medium 20%';
+  const txt = formatReport(r);
+  assert.match(txt, /share–own/);
+  assert.match(txt, /world march\s+4\.00–9\.00 ms; beside it: v2block 5\.00/);
+  assert.match(txt, /GPU performance state Maximum 80%/);
+  assert.match(reportHtml(r), /share–own/);
+  // runs at different GPU performance states are not comparable; reports from before the key still are
+  const a = structuredClone(r), b = structuredClone(r);
+  a.setup.gpuPerfState = 'Maximum'; b.setup.gpuPerfState = 'Medium';
+  assert.ok(compareReports(a, b).why.some((w) => /gpuPerfState: Maximum vs Medium/.test(w)));
+  delete a.setup.gpuPerfState;
+  assert.ok(!compareReports(a, b).why.some((w) => /gpuPerfState/.test(w)));
+}
+{
+  // dependants from the resource log: the march renders G (texture 1), reflect reads G and renders O (2),
+  // shade reads G and O; post reads shade's colour (3). A later rewrite takes over the edge.
+  const log = [
+    { name: 'world march', frame: 1, writes: [1], reads: [9] },
+    { name: 'world reflect', frame: 1, writes: [2], reads: [1] },
+    { name: 'world shade', frame: 1, writes: [3], reads: [1, 2] },
+    { name: 'post', frame: 1, writes: [4], reads: [3] },
+    { name: 'clear G', frame: 2, writes: [1], reads: [] },
+    { name: 'world reflect', frame: 2, writes: [2], reads: [1] },
+  ];
+  const d = passDependants(log);
+  assert.deepEqual(d['world march'], ['world reflect', 'world shade']);
+  assert.deepEqual(d['world reflect'], ['world shade']);
+  assert.deepEqual(d['clear G'], ['world reflect']);
+  const plan = knockoutPlan(['world march', 'v2block'], d);
+  assert.deepEqual(plan.sets, [['world march'], ['world reflect', 'world shade'], ['world march', 'world reflect', 'world shade'], ['v2block']]);
+  // the march alone "saves" 14 ms, but reflect + shade alone save 6, all three 16: its own cost is 10
+  const base = { interval: 40, span: 30 };
+  const measured = { 'world march': { interval: 26, span: 17 }, 'world reflect + world shade': { interval: 34, span: 24 },
+    'world march + world reflect + world shade': { interval: 24, span: 14 }, v2block: { interval: 37, span: 27 } };
+  const rows = knockoutRows(base, measured, plan.targets);
+  assert.deepEqual([rows[0].interval.alone, rows[0].interval.deps, rows[0].interval.group, rows[0].interval.own, rows[0].interval.induced], [14, 6, 16, 10, 4]);
+  assert.deepEqual([rows[1].interval.own, rows[1].interval.induced], [3, 0]);
+  const kt = knockoutText(0, { base, measured, targets: plan.targets });
+  assert.match(kt, /its own cost ≈ 10\.00 ms \[10\.00\]/);
+  assert.match(kt, /3\.00 ms \[4\.00\] of "out" is its dependants \(world reflect, world shade\) idling without it/);
+}
+{
+  // gpu/timing.js depLog: attachments are writes, bind groups' textures reads, views mapped to their texture
+  const texture = () => { const t = { createView: () => ({}) }; return t; };
+  const device = { features: new Set(), createTexture: texture, createBindGroup: () => ({}), createCommandEncoder() {
+    const pass = () => ({ setBindGroup() {}, draw() {}, end() {} });
+    return { beginRenderPass: pass, beginComputePass: pass, finish: () => ({}) };
+  } };
+  const gpu = { device, queue: { submit() {} }, frameNo: 7 };
+  const timing = new GpuTiming(gpu);
+  const g = device.createTexture({}), o = device.createTexture({});
+  const bindG = device.createBindGroup({ entries: [{ binding: 0, resource: g.createView() }, { binding: 1, resource: { buffer: {} } }] });
+  timing.depLog = [];
+  const enc = device.createCommandEncoder();
+  enc.beginRenderPass({ label: 'world march', colorAttachments: [{ view: g.createView() }] }).end();
+  const p2 = enc.beginRenderPass({ label: 'world reflect', colorAttachments: [{ view: o.createView() }] });
+  p2.setBindGroup(0, bindG); p2.end();
+  // a pass gated by an earlier pass's depth (loaded, not cleared) depends on it too
+  const z = device.createTexture({});
+  enc.beginRenderPass({ label: 'lean march', colorAttachments: [], depthStencilAttachment: { view: z.createView(), depthLoadOp: 'clear' } }).end();
+  enc.beginRenderPass({ label: 'event kernel', colorAttachments: [{ view: o.createView(), loadOp: 'load' }], depthStencilAttachment: { view: z.createView(), depthLoadOp: 'load' } }).end();
+  assert.deepEqual(passDependants(timing.depLog), { 'world march': ['world reflect'], 'lean march': ['event kernel'], 'world reflect': ['event kernel'] });
+  assert.equal(timing.depLog[0].frame, 7);
+}
+{
+  // busy-lane share over 32-pixel blocks: one slow pixel holds its group; uniform work fills it
+  const w = 16, h = 4, n = w * h, cov = new Uint8Array(n).fill(1);
+  const one = new Uint16Array(n); one[0] = 32;
+  assert.equal(laneShare(one, cov, w, h), 1 / 32);
+  assert.equal(laneShare(new Uint16Array(n).fill(5), cov, w, h), 1);
+  const half = new Uint16Array(n); for (let p = 0; p < n; p++) half[p] = (p % w) < 8 ? 4 : 2;   // left block 4s, right block 2s
+  assert.equal(laneShare(half, cov, w, h, LANE_BLOCKS['8x4']), 1);
+  assert.equal(laneShare(half, cov, w, h, LANE_BLOCKS['16x2']), 0.75);
+  // the report: the share per counter and a verdict line when the march is divergent
+  const fr = (i) => ({ frame: i, gpu: 12, coverage: { complete: true, timelineComplete: true, spanMs: 12, missing: [] },
+    passes: [{ name: 'scene', kind: 'render', phase: 'view', error: null, start: 0, gpu: 12 }], rec: { wall: 2, interval: 16, cpu: null, steps: 0, compiling: 0, created: 1 } });
+  const r = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES, context: { canvas: [100, 100] } });
+  annotate(r, { cost: { pass: 'scene', pixels: 10000, counters: { march: { mean: 10, p50: 8, p95: 30, max: 90, sum: 1e5, busyLanes: 0.31, busyLanesBy: { '8x4': 0.31, '4x8': 0.33, '16x2': 0.29 } } } } });
+  assert.ok(r.verdict.some((v) => /march divergence on scene: 31% .*4×8 33%, 16×2 29%/.test(v)), r.verdict.join(' | '));
+  assert.match(formatReport(r), /march busy lanes by block shape: 8×4 31% · 4×8 33% · 16×2 29%/);
+}
 assert.deepEqual([stats([3, 1, 2]).median, stats([]).median], [2, null]);
-console.log('profile CPU check OK: enable sticks, renderOnce frames sample, capture(n), ranking/median/spread, untrusted reasons, work vs time, text/html/compare');
+console.log('profile CPU check OK: enable sticks, renderOnce frames sample, capture(n), ranking/median/spread, untrusted reasons, work vs time, text/html/compare, Metal share/own bounds, GPU performance state, knockout dependants, busy lanes');

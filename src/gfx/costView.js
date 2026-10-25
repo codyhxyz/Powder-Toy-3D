@@ -90,6 +90,34 @@ export function stats(v, covered, count, cap = Infinity) {
   return { mean: count ? sum / count : 0, p50: pct(0.5), p95: pct(0.95), p99: pct(SCALE_PERCENTILE), max, sum, saturated };
 }
 
+// SIMD divergence (research/gpu-architecture/KNOWLEDGE.md, "What we missed" 1): an Apple GPU runs 32 fragment
+// lanes in lockstep, and a group pays, per loop trip, for its slowest lane. Over 32-pixel blocks, a counter's
+// busy-lane share is Σ count ÷ Σ (lanes × the block's max): 1 when every lane in a block does the same work,
+// 1/32 when one pixel holds the whole group. Fragment work goes out in 2×2 quads, 8 quads a 32-wide batch
+// (desktop GPUs; Apple's packing isn't published), so the blocks are made of quads: 8×4 the default, 4×8 and
+// 16×2 beside it for the march. A block's pixels the volume didn't cover count as idle lanes (they ran the
+// shader and left at once); only blocks with a covered pixel count. It is a model of the grouping, not a
+// measurement of it: a low share says the cost is lanes waiting on a few slow pixels in their group.
+export const LANE_BLOCKS = { '8x4': [8, 4], '4x8': [4, 8], '16x2': [16, 2] };
+export const LANE_BLOCK = '8x4';
+export function laneShare(v, covered, w, h, [bw, bh] = LANE_BLOCKS[LANE_BLOCK]) {
+  let work = 0, paid = 0;
+  for (let by = 0; by < h; by += bh) {
+    const ye = Math.min(h, by + bh);
+    for (let bx = 0; bx < w; bx += bw) {
+      const xe = Math.min(w, bx + bw);
+      let sum = 0, max = 0, any = 0;
+      for (let y = by; y < ye; y++) {
+        const row = y * w;
+        for (let x = bx; x < xe; x++) { const p = row + x, c = v[p]; any |= covered[p]; sum += c; if (c > max) max = c; }
+      }
+      if (!any || !max) continue;
+      work += sum; paid += max * (ye - by) * (xe - bx);
+    }
+  }
+  return paid ? work / paid : null;
+}
+
 // the storage sink's texture (w × ROWS·h rgba32uint: the pixel's words four a row, rows ROWS·y …) as decode's words
 export function storageWords(t, w, h) {
   const out = new Uint32Array(COST_WORDS * w * h);
@@ -196,7 +224,14 @@ export function attachCostView(app) {
   // the result's shared tail: stats over the covered pixels, the costliest counter, its heatmap
   function result(base, { vals, covered, count, w, h, stages = null, kind, caps }) {
     const counters = {};
-    COST_COUNTERS.forEach((c, s) => { counters[c.key] = { label: c.label, where: c.where, ...stats(vals[s], covered, count, caps[s]) }; });
+    COST_COUNTERS.forEach((c, s) => {
+      counters[c.key] = { label: c.label, where: c.where, ...stats(vals[s], covered, count, caps[s]) };
+      // the busy-lane share over 32-pixel blocks (laneShare); every block shape for the march
+      if (counters[c.key].sum) {
+        counters[c.key].busyLanes = laneShare(vals[s], covered, w, h);
+        if (c.key === 'march') counters[c.key].busyLanesBy = Object.fromEntries(Object.entries(LANE_BLOCKS).map(([k, b]) => [k, laneShare(vals[s], covered, w, h, b)]));
+      }
+    });
     const warnings = COST_KINDS.filter((k) => counters[k].saturated).map((k) => `${k}: ${counters[k].saturated} pixel(s) reached the 16-bit ceiling (their counts are lower bounds)`);
     if (stages) {
       for (const [st, x] of Object.entries(stages)) {
@@ -349,7 +384,11 @@ export function attachCostView(app) {
     });
     const stageStats = rec.split ? Object.fromEntries(per.map((x) => [x.st, {
       pass: `world ${x.st}`, covered: x.count,
-      counters: Object.fromEntries(COST_COUNTERS.map((c, s) => [c.key, stats(x.vals[s], covered, count, s === 0 ? COST_MARCH_MAX : COST_MAX)])),
+      counters: Object.fromEntries(COST_COUNTERS.map((c, s) => {
+        const st = stats(x.vals[s], covered, count, s === 0 ? COST_MARCH_MAX : COST_MAX);
+        if (st.sum) st.busyLanes = laneShare(x.vals[s], covered, w, h);   // (this stage's own lanes: its pass's groups)
+        return [c.key, st];
+      })),
     }])) : null;
     // the comparisons: the picture with a tolerance (as the box's), every stage output word for word
     const pic = compare(got.S[0], got.S[1], covered);

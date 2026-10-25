@@ -2,7 +2,7 @@
 
 One action shows what is wrong with performance, in one run.
 
-- **Agents:** `node tools/profile.mjs --map <key> [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz] [--view realistic] [--frames 60] [--counters] [--out dir]`
+- **Agents:** `node tools/profile.mjs --map <key> [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz] [--view realistic] [--frames 60] [--counters] [--knockout N|"pass,pass"] [--gpu-state min|med|max] [--out dir]`
 - **In the browser:** `?profile=1`, or Settings → Developer → Profiler, or `__app.prof.enable(true)`. `await __app.prof.capture({ frames: 60 })` returns the report for the next 60 frames, and `__app.prof.report()` returns it for the frames already kept. `.text` holds the printout, the same text the tool prints.
 
 **The rule:** if the report doesn't tell you what you need, improve the profiler. Add the pass label, the counter or the report line here, so every later agent gets it. Don't work around it with ad-hoc `performance.now()` timing, a private frame pump or a one-off bench. "Build the perfect profiler waterfall; all else will come downstream."
@@ -26,7 +26,20 @@ One action shows what is wrong with performance, in one run.
 
 `--setup '<js>'` runs a fixture before each pose's warmup: an async function body given `window.__app` as `a` (say a blast repainted every few hundred ms, so particles fly through the timed frames). Its code is in the report's setup as `fixture`, and `--compare` calls two runs comparable only with the same one; what it returns is `fixtureResult`.
 
-`--knockout N`, after the timed frames, drops the draws or dispatches of the N longest passes, one at a time for a few frames each (`gpu/timing.js knockout`), and prints the frame interval and GPU span without each. Use it when the timestamps and Metal disagree (Apple's tilers can put a whole submission in every render pass; Metal's trace drops intervals under load): the pass whose knockout gives the frame back is the one holding it. The picture is wrong while a pass is knocked out. `--no-cost` skips the cost view, whose compiles take ~10 s, so a big map fits its 25 s slot. `--knock "world march,world event"` drops the named passes instead, one at a time in that order: the only trusted per-pass ms for the world march's stages, whose Metal encoder times read 2–3× low (knockout, 2026-10-25).
+`--knockout N` (the N longest passes by timestamp) or `--knockout "world march,scene"` (or `--knock "world march,scene"`: those passes; on Apple the timestamps that rank passes can span whole submissions, so naming the pass is the reliable way), after the timed frames, drops the draws or dispatches of each pass for a few frames (`gpu/timing.js knockout`) and prints what the GPU span and frame interval save. The picture is wrong while a pass is knocked out. `--no-cost` skips the cost view, whose compiles take ~10 s; use it with `--knockout` (Lab with the cost view and knockouts doesn't fit the 25 s slot).
+
+Knockout accounts for **dependants**. A pass whose draws are dropped leaves its targets cleared, so every later pass reading them runs on nothing: with the world march out, `world reflect` and `world shade` discard every pixel (`shaders/world/march.js`). A plain knockout of the march would charge their cost to it. So, for two frames before the knockouts, `gpu/timing.js depLog` records each pass's attachments (writes) and its bind groups' textures and loaded (not cleared) attachments (reads: a depth gate is one), and `passDependants` (`gfx/profileCauses.js`) finds, per frame and in order, which later passes read what each pass rendered. No names are hard-coded. Each target is then knocked out alone, its dependants alone, and both together:
+
+```
+knockout (pose 0: …)
+  base: GPU span 27.58 ms · interval 33.30 ms. Savings are GPU span ms (interval ms in brackets: it moves in whole refreshes).
+  world march                          out: −21.13 [−0.00] · its dependants out: −3.38 [−0.00] · both out: −20.84 [−16.60]
+                                       → its own cost ≈ 17.46 ms [16.60]; 3.67 ms [-16.60] of "out" is its dependants (world reflect, world shade) idling without it
+```
+
+own = saved(pass + dependants) − saved(dependants); the rest of "out" is the dependants idling. Read the GPU span: the frame interval moves in whole display refreshes or the fps cap, so it only says whether a refresh was gained (above: 0 ms for the march alone, 16.6 for all three). Compute passes' storage writes are not seen as writes: knocking out a kernel leaves its data stale, not empty, so its readers keep their cost. `profile.json` keeps the graph (`knockout.dependants`), the sets measured and the rows.
+
+`--gpu-state min|med|max` asks the Metal trace for a GPU performance state (the template's `gpuperformancestate`). On this Mac (M5, Xcode 27.1, 2026-10-25) the request is recorded ("desired state Maximum") but not enforced ("consistent state" not enabled), so the report states what the GPU actually ran at either way.
 
 ## Reading the report
 
@@ -48,6 +61,9 @@ The header says `PROFILE (trusted)`, or `UNTRUSTED:` followed by every reason. B
 | `untimed:<why>` | Its timestamps are missing. The frame's total is invalid, not zero. |
 | `work (agent C's cost counters…)` | Per-pixel work in the tracer (steps, samples…), shown beside the pass's real time. It is never a time. |
 | `GPU counters` | Agent D's Apple GPU counters (occupancy, limiters), from the real shader. |
+| `GPU performance state` | The state the GPU ran at during this pose's frames, time-weighted, from the Metal trace's `gpu-performance-state-intervals` (e.g. `Maximum 77% · Medium 23%`), and the thermal state. Apple: state changes "can affect profiling results" (WWDC 10157). `--compare` says NOT comparable when two runs' dominant states differ (`gpuPerfState`). |
+| `Metal share–own ms` | Two bounds on a pass's GPU cost (below, "Trusted per-pass ms"). |
+| `lanes` (cost view) | The busy-lane share of a counter over 32-pixel blocks (below, "Cost view"). |
 
 `profile.html` draws the median frame as a waterfall. Each pass is one bar at its GPU start, coloured by phase, with markers at 16.7 ms and at the frame's interval. The page also has the ranked table, the phases, C's heatmap and the setup.
 
@@ -78,7 +94,22 @@ The header says `PROFILE (trusted)`, or `UNTRUSTED:` followed by every reason. B
 - a pass with no labelled Metal encoder keeps its timestamp only when timestamps are trusted. Otherwise its ms is `–` with the reason, and the report is UNTRUSTED while such passes hold more than 5% of the timestamp time;
 - Metal GPU time with no pass label is listed separately as unlabelled.
 
-Render passes (Lab, M5, 2026-10-25): under load the trace's app-side encoder list misses about half the encoders, most render work among them. Those intervals showed as "GPU Execution" or "Render Command N". `tools/gpu-counters.mjs` now labels them from Metal's object-label table, which uses the same encoder id. A pass's Metal ms is its mean GPU ms per run times the runs per timed frame the report counted. The trace drops whole intervals but not parts of them, so its run counts are low (GI and shadow at half) while its durations hold. Encoder ms are shares of the GPU's busy time: overlapping work is split evenly, so the passes sum to the busy time. A report whose Metal ms sum past the frame's GPU span is untrusted. On one Lab pose: scene 44.8 ms Metal against 45.6 ms timestamp, 91 of 110 passes with Metal ms, summing to 53.6 ms against a 59.3 ms span.
+Render passes (Lab, M5, 2026-10-25): under load the trace's app-side encoder list misses about half the encoders, most render work among them. Those intervals showed as "GPU Execution" or "Render Command N". `tools/gpu-counters.mjs` now labels them from Metal's object-label table, which uses the same encoder id. A pass's Metal ms is its mean GPU ms per run times the runs per timed frame the report counted. The trace drops whole intervals but not parts of them, so its run counts are low (GI and shadow at half) while its durations hold. Encoder ms are shares of the GPU's busy time: overlapping work is split evenly, so the passes sum to the busy time. A report whose Metal ms sum past the frame's GPU span is untrusted.
+
+**Share and own: two bounds.** Apple's GPUs run vertex, fragment and compute work at once, and the next render pass's vertex stage overlaps this one's fragments (WWDC 10632). The even split above therefore gives a heavy pass running beside other work only part of its time. Each pass now shows both: `share` (the even split, a lower bound, what ranks the table and sums to the busy time) and `own` (the union of its own intervals, every channel, time shared with other encoders included: an upper bound). Under the table, the passes whose two bounds differ most say what ran beside them:
+
+```
+pass (ranked by Metal ms/frame)            phase    Metal share–own ms  share [p10–p90]   timestamp ms/frame [p10–p90]   ×/frame
+world march                               view        9.441–17.801   [8.753–10.086]     17.863 [16.586–19.090]      1
+world shade                               view        2.395–2.397    [2.349–2.454]      20.761 [19.564–21.887]      1
+Metal share is a lower bound (time shared with other encoders split evenly), own an upper bound (its whole time on the GPU). Widest:
+  world march                              9.44–17.80 ms; beside it: scene 16.69, (unlabelled) 0.02, Blit Command 4 0.01
+  scene                                    8.48–16.69 ms; beside it: world march 15.81, Render Command 0 0.62
+```
+
+In that run (Lab, 2026-10-25) knockout with dependants put the march's own cost at 17.5 ms of GPU span: the `own` bound, not the share. The `scene` pass's vertex work (three's meshes) runs beside the march for most of its fragment time. `tools/gpu-counters.mjs` gives each encoder `ownMs` (with `ownMsP10`/`ownMsP90`) and `overlapWith` ([{ label, ms per run }]); the report's passes carry `msOwn` and `beside`. A kept trace re-reads without a GPU: `TPT_XCTRACE_KEEP=1` on the run, then `node tools/gpu-counters.mjs --trace <summary.trace> --pid <summary.pid>`.
+
+On one Lab pose: scene 44.8 ms Metal against 45.6 ms timestamp, 91 of 110 passes with Metal ms, summing to 53.6 ms against a 59.3 ms span.
 
 The Metal column also shows `[p10–p90]` over the pass's encoders in the timed frames (`gpuMsP10`/`gpuMsP90` in `tools/gpu-counters.mjs`, `msP10`/`msP90` on the pass). That is one run's spread. Runs differ by more: two plain Lab runs 25 minutes apart put the world march at 10.5 and 6.7 ms (docs/march-spill.md). For an A/B, profile both sides back to back and treat a delta inside either side's spread as no change.
 
@@ -145,6 +176,8 @@ binding), three times the scene target's height: the pixel's twelve words, four 
 3y + 2 (slots past the last counter stay 0). It writes right after the trace, before the miss's
 discard, so a ray that crossed the box and hit nothing shows its cost too. (Twenty-four 16-bit counts
 don't fit beside the colour in the 32 bytes a sample may have, as the first twelve did.)
+
+**Busy lanes (divergence).** An Apple GPU runs 32 fragment lanes in lockstep, and a group pays, per loop trip, for its slowest lane, so per-pixel counts can't tell "expensive work" from "groups held by one slow pixel" (research/gpu-architecture/KNOWLEDGE.md). Each counter's `busyLanes` (`gfx/costView.js laneShare`, from the per-pixel counts read back) is Σ count ÷ Σ (lanes × the block's max) over 32-pixel blocks: 100% when every lane does its block's slowest pixel's work, 1/32 when one pixel holds the group. Fragment work goes out in 2×2 quads, 8 to a 32-wide batch (desktop GPUs; Apple's packing isn't published), so blocks are made of quads: 8×4 in the `lanes` column (each split stage's own too), and the march also by 4×8 and 16×2 (`busyLanesBy`). A block's uncovered pixels count as idle lanes (they ran the shader and left at once); only blocks with a covered pixel count. Below 50% for the march (`DIVERGENT_SHARE`), the verdict says the time is groups waiting on their slowest pixels. It is a model of the grouping, not a measurement of it (the capture route below would measure it). Lab's default pose, 2026-10-25: march 95% (8×4), 94% (4×8), 93% (16×2), so not divergent there.
 
 The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
 `skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split).
@@ -272,7 +305,9 @@ recording, or a start or save timeout. It kills xctrace and never hangs.
 |---|---|
 | `label` | the WebGPU pass label. Dawn names the Metal encoder `Dawn_ComputePassEncoder_<label>` and the tool strips that prefix. Unlabelled passes show as `(unlabelled)`, and other Metal work as `Blit Command N` or `GPU Execution` |
 | `count` | how many times that encoder ran during the capture |
-| `gpuMs` | mean GPU time per run: the longest of its channels, because vertex and fragment work overlap on Apple's tiler |
+| `gpuMs` | mean GPU time per run: its even share of the GPU's busy time (`exclusiveShares`), a lower bound |
+| `ownMs` | mean GPU time per run: the union of its own intervals (every channel), time shared with other encoders included, an upper bound |
+| `overlapWith` | the encoders that ran beside it longest, ms per run of this one |
 | `channels.Vertex / Fragment / Compute` | mean GPU ms per run in each hardware channel. A render pass whose Fragment time dwarfs Vertex is pixel-bound |
 | `spills.bytesMax` | the largest register spill reported for one shader run in this encoder (driver "compiler spill events"). Not zero means the shader ran out of registers and spills to memory |
 | `spills.pipelinesPerEncoder` | spilling pipeline uses per encoder run. In timing split mode each dispatch is its own pass, so this names the kernel |
@@ -280,6 +315,8 @@ recording, or a start or save timeout. It kills xctrace and never hangs.
 | `summary.top` | the most expensive encoders and their share of this process's GPU time |
 | `summary.spilling` | encoders whose shaders spill, worst first |
 | `summary.counterNote` | which counters the device streamed and why some fields are null |
+| `summary.perfState` | the GPU performance state over the encoders' window (`shares`, `dominant`) and per pose tag (`byTag`), with `requested` and `enforced` |
+| `summary.thermal` | the thermal state over the same window |
 
 ### What a register-pressure / occupancy problem looks like
 
@@ -320,6 +357,8 @@ and limiters therefore need **Instruments.app** (Metal System Trace, set
 GPU > Counter Set to Performance Limiters, attach to the Chrome GPU process)
 or an Xcode GPU capture. The tool's spills and channel times are real and
 come from the same trace.
+
+Adding Xcode's separate **Metal GPU Counters** instrument (`--instrument 'Metal GPU Counters'`, 2026-10-25) does not help: on top of the patched template the trace then has no counters at all (not even RT Unit Active), and on the Blank template its counter table names no device and stays empty. The tool doesn't add it. Some recordings stream no counter at all; `counterNote` says so.
 
 Attaching and recording all processes give the same Metal tables, which are
 system-wide either way, so the tool always filters to the pid.

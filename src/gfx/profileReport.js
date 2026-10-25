@@ -26,6 +26,9 @@ export const SUM_OVER_SPAN = 1.5;      // …or past this × the frame's GPU spa
 // Agent C's cost view (variant passes, not the player's pipeline): never timed (docs/profiler.md)
 export const EXCLUDED_PASS = /^cost view (live|counted)/;
 export const VIEW_SHARE = 0.5;         // the traced pass alone over this share of a capped frame is "time high"
+// the march's busy-lane share (gfx/costView.js laneShare: Σ steps ÷ Σ 32 × the 32-pixel block's max) under this:
+// most lane-steps wait on a slow pixel in their group, so the time is divergence more than work per pixel
+export const DIVERGENT_SHARE = 0.5;
 const MS_PER_S = 1000;
 const NS_PER_MS = 1e6;
 const MB = 1024 * 1024;
@@ -252,16 +255,27 @@ function costFindings(c, passes, context) {
   let flag = null;
   if (timeHigh && judged && !outside.length) flag = `work normal, time high on ${passName} (${nsPerPixel.toFixed(2)} ns/px): shader occupancy/register pressure suspected; run --counters`;
   else if (timeHigh && outside.length) flag = `work high on ${passName}: ${outside.join(', ')} outside normal; the scene asks more of the shader per pixel`;
+  // divergence (gfx/costView.js laneShare): the march's loop trips per 32-lane group vs per pixel
+  const m = c.counters?.march;
+  const divergence = Number.isFinite(m?.busyLanes) ? { counter: 'march', share: m.busyLanes, by: m.busyLanesBy ?? null, divergent: m.busyLanes < DIVERGENT_SHARE } : null;
+  if (divergence?.divergent) {
+    const line = `march divergence on ${passName}: ${Math.round(divergence.share * 100)}% of 32-lane groups' march steps do work (8×4 blocks${divergence.by ? `; ${Object.entries(divergence.by).filter(([k]) => k !== '8x4').map(([k, v]) => `${k.replace('x', '×')} ${Math.round(v * 100)}%`).join(', ')}` : ''}): groups wait on their slowest pixels, so cutting the slow pixels' steps (or grouping them) buys more than cutting average work`;
+    flag = flag ? `${flag}; ${line}` : line;
+  }
   if (c.trusted === false) flag = `cost counters UNTRUSTED: ${c.reason}`;
-  return { pass: passName, passMs: ms, pixels, nsPerPixel, highNsPerPixel: highNs, timeHigh, outside, counters: c.counters ?? {}, normal: c.normal ?? null, flag,
+  return { pass: passName, passMs: ms, pixels, nsPerPixel, highNsPerPixel: highNs, timeHigh, outside, counters: c.counters ?? {}, normal: c.normal ?? null, flag, divergence,
     trusted: c.trusted ?? null, reason: c.reason ?? null, covered: c.covered ?? null, path: c.path ?? null, samePicture: c.samePicture ?? null, exactShare: c.exactShare ?? null,
     stages: c.stages ? Object.fromEntries(Object.entries(c.stages).map(([k, v]) => [k, { pass: v.pass, covered: v.covered, counters: v.counters }])) : null };
 }
 
 const setupKeys = ['map', 'mode', 'view', 'detail', 'canvas', 'renderScale', 'pixelRatio', 'taa', 'upscale', 'adaptive', 'autoRes',
-  'pose', 'grid', 'world', 'gpuName', 'shaderFeatures', 'chromeArgs', 'split', 'testMode', 'paused', 'pov', 'fixture'];
+  'pose', 'grid', 'world', 'gpuName', 'shaderFeatures', 'chromeArgs', 'split', 'testMode', 'paused', 'pov', 'fixture', 'gpuPerfState'];
 // setup keys added after reports were already kept: compared only when both reports have them
-const LATER_KEYS = ['shaderFeatures'];
+// (gpuPerfState: the GPU performance state the pose ran in, from the Metal trace; Apple: state changes
+// "can affect profiling results", WWDC 10157; two runs at different states are not an A/B)
+const LATER_KEYS = ['shaderFeatures', 'gpuPerfState'];
+export const BESIDE_SHOWN = 4;         // passes whose share and own time differ most, explained under the table
+export const BESIDE_GAP = 1.25;        // own over share past this: the pass ran beside other work for a real part of its time
 
 /** Can reports `a` and `b` be compared? { comparable, differences: [{ key, a, b }], passes: [{ name, a, b, delta }] } */
 export function compareReports(a, b) {
@@ -301,6 +315,7 @@ export function formatReport(r) {
   out.push(setupLine(s));
   const pose = s.pose ? `pose ${s.pose.name ?? 'custom'} eye ${s.pose.eye?.map((x) => f(x, 1)).join(',')} → ${s.pose.target?.map((x) => f(x, 1)).join(',')}` : 'pose ?';
   out.push(`${pose} · grid ${(s.grid ?? []).join('×') || '–'}${s.world ? ` · world ${s.world.join('×')}` : ''} · ${s.gpuName ?? '?'}`);
+  if (s.gpuPerfStateText) out.push(`GPU performance state ${s.gpuPerfStateText}${s.gpuThermalText ? ` · thermal ${s.gpuThermalText}` : ''} (Metal trace; --compare refuses runs at different states)`);
   out.push(`frames ${r.frames.n} (since boot ${s.framesSinceBoot ?? '?'}) · compiles: cache ${s.pipelines?.cachePending ?? '?'}, device ${s.pipelines?.deviceCompiling ?? '?'} · GPU slot ${s.gpuShared ? `SHARED (${s.gpuShared})` : 'not shared'} · memory ${f((s.memory?.bytes ?? 0) / MB, 0)} MB`);
   // the physics governor (v2/host.js): game speed, each tick stage's GPU cost, a frame's budget
   const ph = s.physics;
@@ -319,12 +334,19 @@ export function formatReport(r) {
   // the authoritative ms: Metal's encoder times when the run has them (gfx/profileCauses.js applyMetal)
   const metal = r.timeSource === 'metal';
   out.push(metal
-    ? `pass (ranked by Metal ms/frame)            phase    Metal ms [p10–p90]       timestamp ms/frame [p10–p90]   ×/frame`
+    ? `pass (ranked by Metal ms/frame)            phase    Metal share–own ms  share [p10–p90]   timestamp ms/frame [p10–p90]   ×/frame`
     : `pass (ranked by ms/frame)                 phase    ms/frame  median [p10–p90]       ×/frame  share`);
   for (const p of r.passes.slice(0, TEXT_PASSES)) {
     const flags = [p.noisy ? 'noisy' : '', p.failed ? `untimed:${p.error}` : '', p.presence < 1 ? `in ${Math.round(p.presence * PCT)}%` : ''].filter(Boolean).join(' ');
-    if (metal) { const ms = p.msP10 != null ? `[${f(p.msP10, 3)}–${f(p.msP90, 3)}]` : ''; out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)} ${pad(ms, 15)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}${p.ms === null && p.msSource ? ` ${p.msSource}` : p.msSource === 'timestamps' ? ' (timestamp)' : ''}`); continue; }
+    if (metal) { const ms = p.msP10 != null ? `[${f(p.msP10, 3)}–${f(p.msP90, 3)}]` : ''; out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)}–${pad(p.msOwn != null ? f(p.msOwn, 3) : '', 8)} ${pad(ms, 15)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}${p.ms === null && p.msSource ? ` ${p.msSource}` : p.msSource === 'timestamps' ? ' (timestamp)' : ''}`); continue; }
     out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.perFrame, 3), 8)}  ${lpad(f(p.median, 3), 6)} [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 14 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${lpad(p.share === null ? '–' : `${Math.round(p.share * PCT)}%`, 4)} ${flags}`);
+  }
+  if (metal) {
+    // share = its even split of the time it ran beside other encoders (a lower bound), own = its whole time
+    // on the GPU (an upper bound): its real cost to the frame is between them; what shared its time
+    const gaps = r.passes.filter((p) => p.msOwn > 0 && p.ms > 0 && p.msOwn > BESIDE_GAP * p.ms).sort((a, b) => (b.msOwn - b.ms) - (a.msOwn - a.ms)).slice(0, BESIDE_SHOWN);
+    if (gaps.length) out.push('Metal share is a lower bound (time shared with other encoders split evenly), own an upper bound (its whole time on the GPU). Widest:');
+    for (const p of gaps) out.push(`  ${pad(p.name.slice(0, 40), 40)} ${f(p.ms, 2)}–${f(p.msOwn, 2)} ms; beside it: ${(p.beside ?? []).map((b) => `${b.name} ${f(b.ms, 2)}`).join(', ') || '?'}`);
   }
   if (metal && r.metal) out.push(`Metal: ${f(r.metal.total)} ms/frame of GPU time over ${f(r.metal.frames, 1)} frames in the window${r.metal.unattributed.length ? `; unlabelled: ${r.metal.unattributed.slice(0, 4).map((u) => `${u.label} ${f(u.ms, 2)}`).join(', ')}` : ''}`);
   if (r.causes) {
@@ -348,11 +370,16 @@ export function formatReport(r) {
       out.push(`  ${r.cost.trusted ? `trusted: same picture as the live pipeline (${f(PCT * (r.cost.exactShare ?? 0), 2)} % bit-exact)` : `UNTRUSTED: ${r.cost.reason}`} · ${r.cost.path ?? '?'} · per pixel over ${r.cost.covered ?? '?'} covered px`);
     }
     const stages = r.cost.stages ? Object.entries(r.cost.stages) : [];
-    if (stages.length) out.push(`  ${pad('', 24)} ${'total (mean p50 p95 max)'.padEnd(52)}${stages.map(([k]) => lpad(`${k} mean`, 13)).join('')}`);
+    // lanes: the busy-lane share over 8×4 blocks (gfx/costView.js laneShare): 100% = every lane of a 32-wide group
+    // did the block's slowest pixel's work, low = most lanes waited on a few slow pixels
+    if (stages.length) out.push(`  ${pad('', 24)} ${'total (mean p50 p95 max)'.padEnd(52)}${lpad('lanes', 6)}${stages.map(([k]) => lpad(`${k} mean`, 13) + lpad('lanes', 6)).join('')}`);
+    else out.push(`  ${pad('', 24)} ${'(mean p50 p95 max)'.padEnd(52)}${lpad('lanes', 6)}`);
+    const pctOf = (x) => (Number.isFinite(x) ? `${Math.round(x * PCT)}%` : '–');
     for (const [k, v] of Object.entries(r.cost.counters)) {
       const nrm = r.cost.normal?.[k];
-      out.push(`  ${pad(k, 24)} mean ${lpad(f(v.mean), 8)}  p50 ${lpad(f(v.p50), 8)}  p95 ${lpad(f(v.p95), 8)}  max ${lpad(f(v.max), 8)}${stages.map(([, st]) => lpad(f(st.counters[k]?.mean), 13)).join('')}${nrm ? `  normal ${nrm[0]}–${nrm[1]}${r.cost.outside.includes(k) ? ' OUTSIDE' : ''}` : ''}`);
+      out.push(`  ${pad(k, 24)} mean ${lpad(f(v.mean), 8)}  p50 ${lpad(f(v.p50), 8)}  p95 ${lpad(f(v.p95), 8)}  max ${lpad(f(v.max), 8)}${lpad(pctOf(v.busyLanes), 6)}${stages.map(([, st]) => lpad(f(st.counters[k]?.mean), 13) + lpad(pctOf(st.counters[k]?.busyLanes), 6)).join('')}${nrm ? `  normal ${nrm[0]}–${nrm[1]}${r.cost.outside.includes(k) ? ' OUTSIDE' : ''}` : ''}`);
     }
+    if (r.cost.divergence?.by) out.push(`  march busy lanes by block shape: ${Object.entries(r.cost.divergence.by).map(([k, x]) => `${k.replace('x', '×')} ${pctOf(x)}`).join(' · ')} (32 lanes; Apple's pixel packing isn't published)`);
     if (r.cost.flag) out.push(`  ⚑ ${r.cost.flag}`);
   }
   if (r.gpuCounters) {
@@ -392,7 +419,7 @@ export function reportHtml(r, { heatmap = null, title = 'Profile' } = {}) {
     const left = p.start === null ? 0 : (p.start / scale) * PCT, width = p.gpu === null ? 0 : Math.max(0.15, (p.gpu / scale) * PCT);
     return `<div class="row"><span class="nm" title="${esc(p.name)}">${esc(p.name)}</span><span class="tr"><span class="bar" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%;background:hsl(${hue} ${sat}% 52%)" title="${esc(p.name)} ${f(p.gpu, 3)} ms @ ${f(p.start, 3)}"></span></span><span class="ms">${f(p.gpu, 3)}</span></div>`;
   }).join('') : '<p>No frame with a whole timeline.</p>';
-  const passRows = r.passes.map((p) => `<tr><td>${esc(p.name)}</td><td><i style="background:hsl(${PHASE_HUE[p.phase] ?? 0} ${p.phase === 'other' ? 0 : 65}% 52%)"></i>${esc(p.phase)}</td><td>${f(p.perFrame, 3)}</td><td>${f(p.median, 3)}</td><td>${f(p.p10, 3)}–${f(p.p90, 3)}</td><td>${f(p.count, 0)}</td><td>${p.share === null ? '–' : Math.round(p.share * PCT) + '%'}</td><td>${[p.noisy ? 'noisy' : '', p.failed ? 'untimed: ' + esc(p.error) : '', p.unlabelled ? 'unlabelled' : ''].filter(Boolean).join(' ')}</td></tr>`).join('');
+  const passRows = r.passes.map((p) => `<tr><td>${esc(p.name)}</td><td><i style="background:hsl(${PHASE_HUE[p.phase] ?? 0} ${p.phase === 'other' ? 0 : 65}% 52%)"></i>${esc(p.phase)}</td><td>${f(p.ms, 3)}–${f(p.msOwn, 3)}</td><td>${f(p.perFrame, 3)}</td><td>${f(p.median, 3)}</td><td>${f(p.p10, 3)}–${f(p.p90, 3)}</td><td>${f(p.count, 0)}</td><td>${p.share === null ? '–' : Math.round(p.share * PCT) + '%'}</td><td>${[p.noisy ? 'noisy' : '', p.failed ? 'untimed: ' + esc(p.error) : '', p.unlabelled ? 'unlabelled' : ''].filter(Boolean).join(' ')}</td></tr>`).join('');
   const phaseRows = r.phases.filter((p) => p.gpu.median || p.cpu.median).map((p) => `<tr><td>${esc(p.label)}</td><td>${f(p.gpu.median)}</td><td>${f(p.gpu.p10)}–${f(p.gpu.p90)}</td><td>${f(p.cpu.median)}</td></tr>`).join('');
   const marker = (ms, label) => `<span class="mk" style="left:${((ms / scale) * PCT).toFixed(3)}%"><b>${label}</b></span>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
@@ -420,7 +447,7 @@ td i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4p
 <h2>Waterfall: median frame${w ? ` #${w.frame}, GPU sum ${f(w.gpu)} ms, span ${f(w.span)} ms` : ''}</h2>
 <div class="wf"><div class="axis">${marker(0, '0')}${marker(MS_PER_S / CAP_FPS, `${f(MS_PER_S / CAP_FPS, 1)} ms (${CAP_FPS} fps)`)}${w?.interval ? marker(w.interval, `interval ${f(w.interval, 1)}`) : ''}</div>${bars}</div>
 <h2>Phases</h2><div class="scroll"><table><tr><th>phase</th><th>GPU ms</th><th>p10–p90</th><th>CPU ms</th></tr>${phaseRows}</table></div>
-<h2>Passes over ${r.frames.n} frames</h2><div class="scroll"><table><tr><th>pass</th><th>phase</th><th>ms/frame</th><th>median</th><th>p10–p90</th><th>×/frame</th><th>share</th><th></th></tr>${passRows}</table></div>
+<h2>Passes over ${r.frames.n} frames</h2><div class="scroll"><table><tr><th>pass</th><th>phase</th><th>Metal share–own</th><th>timestamp ms/frame</th><th>median</th><th>p10–p90</th><th>×/frame</th><th>share</th><th></th></tr>${passRows}</table></div>
 ${r.cost ? `<h2>Work (cost counters) on ${esc(r.cost.pass)}</h2><pre>${esc(JSON.stringify(r.cost, null, 1))}</pre>` : ''}
 ${heatmap ? `<h2>Cost heatmap</h2><img alt="per-pixel cost heatmap" src="${esc(heatmap)}">` : ''}
 ${r.gpuCounters ? `<h2>GPU counters</h2><pre>${esc(typeof r.gpuCounters.text === 'string' ? r.gpuCounters.text : JSON.stringify(r.gpuCounters, null, 1))}</pre>` : ''}

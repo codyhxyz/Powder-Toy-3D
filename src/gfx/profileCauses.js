@@ -87,7 +87,9 @@ export function metalTimes(report, byEncoder, pose) {
   const estimates = renderEst.length ? renderEst : estimatesOf(null);
   const frames = estimates.length ? estimates[Math.floor((estimates.length - 1) / 2)] : null;
   const agree = frames ? estimates.filter((x) => Math.abs(x - frames) <= FRAME_AGREE * frames).length / estimates.length : 0;
-  const perPass = {}, spread = {}, unattributed = [], disagree = [];
+  // perPass: each pass's even share of the time it ran beside other encoders (a lower bound on its cost);
+  // ownPass: its whole time on the GPU, shared time included (an upper bound); beside: what shared it
+  const perPass = {}, ownPass = {}, spread = {}, unattributed = [], disagree = [], beside = {};
   for (const e of rows) {
     const p = ours.get(e.name);
     if (p) {
@@ -98,6 +100,8 @@ export function metalTimes(report, byEncoder, pose) {
       const perFrame = (p.count ?? 0) * (p.presence ?? 0);
       if (!(e.count > 0) || !(perFrame > 0)) continue;
       perPass[e.name] = (perPass[e.name] ?? 0) + (e.totalMs / e.count) * perFrame;
+      if (Number.isFinite(e.ownMs)) ownPass[e.name] = (ownPass[e.name] ?? 0) + e.ownMs * perFrame;
+      if (e.overlapWith?.length) beside[e.name] = e.overlapWith.map((o) => ({ name: splitTag(o.label)[0], ms: o.ms * perFrame }));
       // the encoders' [p10, p90] (tools/gpu-counters.mjs), per frame the same way: one row a pass, else unknown
       if (Number.isFinite(e.gpuMsP10) && Number.isFinite(e.gpuMsP90)) spread[e.name] = spread[e.name] === undefined ? [e.gpuMsP10 * perFrame, e.gpuMsP90 * perFrame] : null;
       const implied = p.presence === 1 && p.count ? e.count / p.count : null;
@@ -105,7 +109,7 @@ export function metalTimes(report, byEncoder, pose) {
     } else if (!/^cost view/.test(e.name)) unattributed.push({ label: e.label, ms: frames ? e.totalMs / frames : null, count: e.count });
   }
   const total = Object.values(perPass).reduce((a, b) => a + b, 0) + unattributed.reduce((a, b) => a + (b.ms ?? 0), 0);
-  return { frames, agree, perPass, spread, disagree, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
+  return { frames, agree, perPass, ownPass, beside, spread, disagree, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
     trusted: !!frames && rows.length > 0 };
 }
 
@@ -130,7 +134,12 @@ export function applyMetal(report, metal) {
     p.timestampMs = p.perFrame;
     const m = metal.perPass[p.name];
     // Metal's when it has the pass; else the timestamp only when timestamps are trusted; else unknown, said why
-    if (m !== undefined) { p.ms = m; p.msSource = 'metal'; const sp = metal.spread?.[p.name]; if (sp) [p.msP10, p.msP90] = sp; }
+    if (m !== undefined) {
+      p.ms = m; p.msSource = 'metal'; const sp = metal.spread?.[p.name]; if (sp) [p.msP10, p.msP90] = sp;
+      // the upper bound beside it: the pass's own time on the GPU, time other encoders shared included
+      if (metal.ownPass?.[p.name] !== undefined) p.msOwn = metal.ownPass[p.name];
+      if (metal.beside?.[p.name]) p.beside = metal.beside[p.name];
+    }
     else if (stampsOk) { p.ms = p.perFrame; p.msSource = 'timestamps'; }
     else { p.ms = null; p.msSource = metal.disagree?.includes(p.name) ? 'none: Metal encoder count off the frames' : `none: no labelled Metal encoder${p.kind === 'render' ? ' (render pass)' : ''}`; }
   }
@@ -314,4 +323,66 @@ export function compareCauses(a, b) {
       .sort((p, q) => Math.abs(q.delta ?? 0) - Math.abs(p.delta ?? 0)),
     coverage: { a: coverage(a), b: coverage(b) },
   };
+}
+
+// ---------- knockout with dependants ----------
+
+/**
+ * Which passes read what a pass rendered: { name: [dependant names] }, from gpu/timing.js depLog entries
+ * ({ name, frame, writes, reads }: texture ids). Within each frame, in order, a pass that binds a texture
+ * depends on the last pass that rendered to it before (a later rewrite takes over). A pass whose draws are
+ * knocked out leaves its targets cleared (or stale), so its dependants run on nothing: the world march's
+ * empty G-buffer makes world reflect and world shade discard every pixel (shaders/world/march.js).
+ * Compute passes' storage writes are not seen (their bind groups count as reads): knocking a kernel out
+ * leaves its data stale, not empty, so its readers keep their cost.
+ */
+export function passDependants(log) {
+  const byFrame = new Map();
+  for (const e of log ?? []) { if (!byFrame.has(e.frame)) byFrame.set(e.frame, []); byFrame.get(e.frame).push(e); }
+  const deps = new Map();
+  for (const passes of byFrame.values()) {
+    const writer = new Map();
+    for (const e of passes) {
+      for (const t of e.reads) {
+        const w = writer.get(t);
+        if (w !== undefined && w !== e.name) { if (!deps.has(w)) deps.set(w, new Set()); deps.get(w).add(e.name); }
+      }
+      for (const t of e.writes) writer.set(t, e.name);
+    }
+  }
+  return Object.fromEntries([...deps].map(([k, v]) => [k, [...v]]));
+}
+
+const setKey = (names) => [...new Set(names)].sort().join(' + ');
+/**
+ * The knockouts that price each pass with its dependants accounted for: the pass alone, its dependants
+ * alone, and both together. { sets: [[names]] (each once), targets: [{ name, dependants, alone, deps, group }] (set keys) }.
+ */
+export function knockoutPlan(names, dependants) {
+  const sets = new Map(), targets = [];
+  const add = (list) => { const k = setKey(list); if (!sets.has(k)) sets.set(k, [...new Set(list)].sort()); return k; };
+  for (const name of names) {
+    const d = (dependants?.[name] ?? []).filter((x) => x !== name);
+    targets.push({ name, dependants: d, alone: add([name]), deps: d.length ? add(d) : null, group: d.length ? add([name, ...d]) : null });
+  }
+  return { sets: [...sets.values()], targets };
+}
+
+/**
+ * Per target, what knocking it out saves, and its own cost once its dependants are out of the picture.
+ * base: { interval, span }; measured: { [set key]: { interval, span } }. saved(X) = base − frame without X.
+ * own = saved(pass + dependants) − saved(dependants); induced = saved(pass) − own (its dependants idling
+ * without it, which a plain knockout wrongly charges to the pass).
+ */
+export function knockoutRows(base, measured, targets) {
+  const saved = (key, k) => (key && measured[key] && Number.isFinite(measured[key][k]) && Number.isFinite(base[k]) ? base[k] - measured[key][k] : null);
+  return targets.map((t) => {
+    const row = { name: t.name, dependants: t.dependants };
+    for (const k of ['interval', 'span']) {
+      const alone = saved(t.alone, k), deps = saved(t.deps, k), group = saved(t.group, k);
+      const own = t.deps ? (group !== null && deps !== null ? group - deps : null) : alone;
+      row[k] = { alone, deps, group, own, induced: own !== null && alone !== null ? alone - own : null };
+    }
+    return row;
+  });
 }
