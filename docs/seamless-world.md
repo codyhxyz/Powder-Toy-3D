@@ -33,8 +33,10 @@ detail; Teardown ray-marches a fully resident voxel level.
 ## Census (2026-10-24, CPU, exact)
 
 Table plus mixed-brick pool: Island 8 + 14 MB, Lab Complex 8 + 12, Volcano Isles 8 + 6, Giant Volcano 24 + 7,
-Tinker Creek 24 + 4. Descent is out of scope for now (user: "don't worry about descent"). It must keep loading,
-on the old path if need be. About 99 % of mixed bricks hold a smooth-surface element, natural rock included.
+Tinker Creek 24 + 4. Descent, a band (2560 × 320 × 2560; 2026-10-25, `tools/world-copy-cpu-check.mjs --census
+descent`, stride 4): a sparse table over its ring's 85,856 of 409,600 brick columns, table + info and occupancy 28 +
+40 MB (dense: 125 + 138), pool 178–377 MB over six bands (0.73–1.54 M mixed bricks). About 99 % of mixed bricks
+hold a smooth-surface element, natural rock included.
 
 ## Coordinates
 

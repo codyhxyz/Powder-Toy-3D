@@ -70,6 +70,11 @@ export function createTerrainPersistence() {
       if (pending || !old?.scene.sourceRegion || old===incomplete) throw new Error('Terrain window is not available for capture');
       pending=true; // Same tick: app's remaining writers must stop before awaiting.
       let captured=false;
+      // The new band's world copy waits for its restored edits (world/worldCopy.js build: editsPending), so the
+      // whole band is drawn with them from its first frame, not only where the window is.
+      const scene=app.sceneByKey?.(key);
+      let restored=()=>{};
+      if (scene) scene.editsPending=new Promise((r)=>{ restored=r; });
       try {
         const store=await old.captureEdits();
         if (app.win!==old) throw new Error('Terrain capture was replaced');
@@ -88,6 +93,9 @@ export function createTerrainPersistence() {
         if (captured && app.win!==old) { incomplete=app.win; observe(app.win); }
         pending=false;
         throw error;
+      } finally {
+        if (scene) delete scene.editsPending;
+        restored();
       }
     },
     async enter(fn) { try { return await fn(); } finally { pending=false; } },

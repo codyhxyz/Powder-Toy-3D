@@ -2,7 +2,7 @@
 // brick's own info, the dilation, the occupancy, and a CPU world copy (WorldCopyTwin) whose commit and
 // allocator follow the GPU's (a free-list pop, else a bump; a brick that turns uniform gives its slot back).
 // The GPU build uses wcWordOfCore for saved bricks; tools/world-copy-cpu-check.mjs runs the rest against
-// dense worlds. Pure JS: no WebGPU.
+// dense worlds, and sparse ones (copy.js wcLayout's columns: Descent's ring). Pure JS: no WebGPU.
 import { wcWord, wcUnword, wcTempOf, WC_MIXED, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from '../shaders/world/cellWord.js';
 import { BRICK_INFO, AIR } from '../shaders/bindings.js';
 import { WC_OWN, WC_OWN_ONLY, WC_AIR_SNAP, WC_GAS_IDS, WC_NODE1, WC_NODE2, WC_DILATE, WC_HF, wcLayout, wcLifeFull, wcGpuLayout } from '../shaders/world/copy.js';
@@ -89,14 +89,14 @@ export function wcOwnInfo(words, airT = PHYS.AMBIENT) {
   return ((low & WC_OWN_ONLY) | own) >>> 0;
 }
 
-/** copy.js wcDilateFrag for brick b of info (a Uint32Array over the world's bricks), from own bits only. */
+/** copy.js wcDilateFrag for brick b of info (a Uint32Array over the table's bricks: L.bi), from own bits only. */
 export function wcDilated(info, L, b, dilate = WC_DILATE) {
-  const [BX, BY, BZ] = L.bricks, bi = b[0] + BX * (b[1] + BY * b[2]), me = info[bi];
+  const [BX, BY, BZ] = L.bricks, bi = L.bi(b), me = info[bi];
   let near = 0, whole = (me & WC_OWN.LIQ_WHOLE) !== 0;
   for (let dz = -dilate; dz <= dilate; dz++) for (let dy = -dilate; dy <= dilate; dy++) for (let dx = -dilate; dx <= dilate; dx++) {
     const x = b[0] + dx, y = b[1] + dy, z = b[2] + dz;
     if (x < 0 || y < 0 || z < 0 || x >= BX || y >= BY || z >= BZ) continue;
-    const o = info[x + BX * (y + BY * z)];
+    const o = info[L.bi([x, y, z])];
     near |= o;
     if (!(o & WC_OWN.LIQ_WHOLE)) whole = false;
   }
@@ -116,8 +116,10 @@ export function wcDilated(info, L, b, dilate = WC_DILATE) {
  * and the occupancy, committed a brick at a time as the GPU's kernels do.
  */
 export class WorldCopyTwin {
-  constructor(size, { capacity = 64, airT = PHYS.AMBIENT } = {}) {
-    this.L = wcLayout(size);
+  /** columns: wcLayout's (a sparse table over them; a brick written off them is dropped, `lost` counting matter). */
+  constructor(size, { capacity = 64, airT = PHYS.AMBIENT, columns = null } = {}) {
+    this.L = wcLayout(size, { columns });
+    this.lost = 0;
     this.airT = airT;
     this.air = wcWordOf(E.EMPTY, airT, 0, 0, 0, airT);
     this.table = new Uint32Array(this.L.nBricks).fill(this.air);
@@ -129,7 +131,13 @@ export class WorldCopyTwin {
     this.bump = 0;
     this.grows = 0;
   }
-  bi(b) { return b[0] + this.L.bricks[0] * (b[1] + this.L.bricks[1] * b[2]); }
+  bi(b) { return this.L.bi(b); }
+  // a brick of a column the scene proved empty (a sparse table's air column): never written (copy.js wcTabled)
+  _untabled(bi, words) {
+    if (this.L.tabled(bi)) return false;
+    if (words.some((w) => (w & 255) !== E.EMPTY)) this.lost++;
+    return true;
+  }
   get used() { return this.bump - this.free.length; }
   grow(need) {
     const cap = Math.max(need, Math.ceil(this.capacity * 1.5));
@@ -147,6 +155,7 @@ export class WorldCopyTwin {
   /** Commit brick b's 64 words (x + 4 (y + 4 z)): the build's and the writeback's pass. */
   commit(b, words) {
     const bi = this.bi(b), old = this.table[bi];
+    if (this._untabled(bi, words)) return;
     this.info[bi] = wcOwnInfo(words, this.airT);
     const uniform = words.every((w) => w === words[0]);
     if (uniform) {
@@ -165,13 +174,13 @@ export class WorldCopyTwin {
     if (!(e & WC_MIXED)) return e;
     return this.pool[((e & ~WC_MIXED) >>> 0) * WC_BRICK_CELLS + ((x & 3) + WC_BRICK * ((y & 3) + WC_BRICK * (z & 3)))];
   }
-  dilate(bricks) { for (const b of bricks) { const i = this.bi(b); this.info[i] = wcDilated(this.info, this.L, b); } }
+  dilate(bricks) { for (const b of bricks) { const i = this.bi(b); if (this.L.tabled(i)) this.info[i] = wcDilated(this.info, this.L, b); } }
   dilateAll() { const [X, Y, Z] = this.L.bricks; for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) this.dilate([[x, y, z]]); }
   // the occupancy levels from the info, everywhere (copy.js wcOccFrag)
   occupancy() {
     const L = this.L, occ = this.occ.fill(0), [BX, BY, BZ] = L.bricks, [AX, AY] = L.n1, [CX, CY] = L.n2;
     for (let z = 0; z < BZ; z++) for (let y = 0; y < BY; y++) for (let x = 0; x < BX; x++) {
-      if (!(this.info[x + BX * (y + BY * z)] & BRICK_INFO.MATTER)) continue;
+      if (!(this.info[this.bi([x, y, z])] & BRICK_INFO.MATTER)) continue;
       const n1 = (x >> 2) + AX * ((y >> 2) + AY * (z >> 2));
       occ[n1 >> 5] |= 1 << (n1 & 31);
       const n2 = L.occ2Rel * 32 + (x >> 4) + CX * ((y >> 4) + CY * (z >> 4));
@@ -213,6 +222,7 @@ export class WorldCopyTwin {
     // decode + alloc
     for (const wb of cand) {
       const b = wb.map((v, k) => v + ob[k]), bi = this.bi(b), w = wordsOf(wb), was = this.words(b);
+      if (this._untabled(bi, w)) continue;
       if (w.every((v, i) => v === was[i])) continue;
       const own = wcOwnInfo(w, this.airT), prev = this.info[bi];
       if (((prev ^ own) & OWN_BITS) === 0) this.info[bi] = ((prev & ~WC_OWN_ONLY) | (own & WC_OWN_ONLY)) >>> 0;
@@ -232,7 +242,7 @@ export class WorldCopyTwin {
     for (const wb of out.seeds) for (let dz = -D; dz <= D; dz++) for (let dy = -D; dy <= D; dy++) for (let dx = -D; dx <= D; dx++) {
       const q = [wb[0] + ob[0] + dx, wb[1] + ob[1] + dy, wb[2] + ob[2] + dz];
       if (q.some((v, k) => v < 0 || v >= L.bricks[k])) continue;
-      if (mark(G.marks.dil, idx(q.map((v, k) => v - lo[k]), G.padB))) out.dil.push(q);
+      if (L.tabled(this.bi(q)) && mark(G.marks.dil, idx(q.map((v, k) => v - lo[k]), G.padB))) out.dil.push(q);
       const n1 = q.map((v) => v >> 2), n2 = q.map((v) => v >> 4);
       if (mark(G.marks.occ1, idx(n1.map((v, k) => v - (lo[k] >> 2)), G.padN1))) out.occ1.push(n1);
       if (mark(G.marks.occ2, idx(n2.map((v, k) => v - (lo[k] >> 4)), G.padN2))) out.occ2.push(n2);
@@ -310,6 +320,6 @@ export class WorldCopyTwin {
   hfTop(k, x, z) { const [nx] = this.L.hfDims[k]; return this._hf()[k][(x >> (2 * k)) + nx * (z >> (2 * k))]; }
 
   /** Bytes the GPU copy of this would hold: table, pool at capacity, info, occupancy, free list. */
-  bytes(capacity = this.capacity) { return 4 * (this.L.nBricks + this.L.metaWords) + capacity * (WC_BRICK_CELLS + 1) * 4; }
+  bytes(capacity = this.capacity) { return 4 * (this.L.tableWords + this.L.metaWords) + capacity * (WC_BRICK_CELLS + 1) * 4; }
 }
 export { wcUnword };
