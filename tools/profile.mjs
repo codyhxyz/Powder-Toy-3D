@@ -174,7 +174,14 @@ async function main() {
     const page = await newTestPage(browser, { mode: 'visual', viewport: o.viewport, deviceScaleFactor: o.dpr });
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
-    page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) errors.push(`console.${m.type()}: ${m.text().slice(0, 300)}`); });
+    // exceptions and GPU failures make the capture untrusted; other console errors (a failed fetch) are notes
+    const consoleLines = [];
+    const GPU_FAILURE = /GPU validation|Graphics stopped|device (was )?lost|GraphicsFailure/i;
+    page.on('console', (m) => {
+      if (!['error', 'warning'].includes(m.type())) return;
+      const line = `console.${m.type()}: ${m.text().slice(0, 300)}`;
+      (GPU_FAILURE.test(line) ? errors : consoleLines).push(line);
+    });
     const log = (msg) => console.error(`[profile] +${((Date.now() - t0) / 1000).toFixed(1)} s ${msg}`);
     log('browser up');
     await page.goto(url.href);
@@ -196,6 +203,7 @@ async function main() {
     log('captured');
     if (counters) { try { result.gpuCounters = await counters.stop(); } catch (e) { result.gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; } counters = null; }
     result.errors = errors;
+    result.console = consoleLines;
     slot.ms = Date.now() - t0;
   } finally {
     await counters?.stop?.().catch(() => {});
@@ -210,6 +218,7 @@ async function main() {
     adapter: info && { vendor: info.vendor, architecture: info.architecture, description: info.description },
     pageErrors: result.errors, costError: result.costError ?? null });
   if (result.errors.length) { report.untrusted.push(`page errors: ${result.errors.slice(0, 3).join(' | ')}`); report.trusted = false; }
+  if (result.console?.length) report.notes.push(`console (not timing): ${[...new Set(result.console)].slice(0, 3).join(' | ')}`);
   delete report.text;
   mkdirSync(o.out, { recursive: true });
   let heatmap = null;
