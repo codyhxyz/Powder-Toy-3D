@@ -30,8 +30,8 @@ import { worldMarchFrag, WORLD_MARCH_LAYOUTS, worldMarchLayoutNames, worldMarchP
  */
 export const COST_COUNTERS = [
   { key: 'march', label: 'main march steps', where: "iterations of traceView's main loop (refraction restarts included)" },
-  { key: 'brickSkips', label: 'bricks skipped', where: "traceView's empty-region jumps (skipEmpty; curved: warpSkip)" },
-  { key: 'cellSteps', label: 'cells stepped', where: "traceView's DDA advances (the crisp-only fast path, ddaStep; curved: warpAdvance)" },
+  { key: 'brickSkips', label: 'bricks skipped', where: "traceView's empty-region jumps (skipEmpty; curved: warpSkip; the world's distance LOD: a brick crossed on the field)" },
+  { key: 'cellSteps', label: 'cells stepped', where: "traceView's DDA advances (the crisp-only fast path, ddaStep; curved: warpAdvance; the world's distance LOD: marchCoarse's field steps)" },
   { key: 'shadowSteps', label: 'sun-ray walk steps', where: 'iterations of sunRayClear (secondary shadow rays)' },
   { key: 'nearSteps', label: 'near-field / AO / lamp walk steps', where: 'iterations of traceNearSteps' },
   { key: 'reflSteps', label: 'reflection march steps', where: 'iterations of reflectHit (the traced reflection)' },
@@ -167,6 +167,9 @@ const RULES = [
   { k: 'cellSteps', after: 'traceView', stmt: 'cell[ax] += istp[ax];' },
   { k: 'cellSteps', after: 'traceView', stmt: 'ax = ddaStep(istp, tDelta, &cell, &tMax);' },
   { k: 'cellSteps', after: 'traceView', stmt: 'warpAdvance(&walk);' },
+  // the world march's distance LOD (shaders/world/march.js marchCoarse): its field steps, and the walk's jumps by it
+  { k: 'cellSteps', loop: 'marchCoarse', header: /^loop$/ },
+  { k: 'brickSkips', after: 'traceView', stmt: '        tEnter = lod.x;' },
   // the box's sun ray walks itself; the world's asks traceNearSteps (lcNext steps it), flagged
   { k: 'shadowSteps', loop: 'sunRayClear', header: /MAX_STEPS|marchMaxSteps/ },
   { k: 'shadowSteps', fn: 'sunRayClear', when: (c, body) => c.slice(...body).includes('traceNearSteps('), text: SUN_SET, counts: [] },

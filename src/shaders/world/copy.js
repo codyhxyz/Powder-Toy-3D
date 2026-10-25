@@ -45,6 +45,8 @@ export const WC_OWN = {
   LIQ_WHOLE: 1 << 27,     // every cell a whole cell of a liquid-channel liquid, nothing opaque
   MATTER: 1 << 28,        // a cell that isn't air
   OPAQUE: 1 << 29,        // a cell that stops light (not gas, liquid or glass)
+  CRISP: 1 << 30,         // a crisp cell (no smooth-surface or media channel: walls, metal, glass), which no
+                          // field draws: the march's distance LOD steps a brick's fields only without one
 };
 // The low bits only a brick's own cells decide: kept as they are by the dilation.
 export const WC_OWN_ONLY = BRICK_INFO.THIN | BRICK_INFO.MIXED | (7 << BRICK_INFO.AIR_SHIFT) | (127 << BRICK_INFO.GAS_SHIFT);
@@ -288,6 +290,7 @@ fn wcCellOwn(w: u32) -> vec2u {
   if (ch >= 0) { own |= WC_OWN_SURF; }
   if (ch >= 0 && ch != WC_CH_LIQUID) { own |= WC_OWN_OPAQUE_SURF; }
   if (MEDIACH(id) >= 0) { own |= WC_OWN_MEDIA; }
+  if (ch < 0 && MEDIACH(id) < 0) { own |= WC_OWN_CRISP; }
   if (!isGasLike(id) && r != R_LIQUID && r != R_GLASS) { own |= WC_OWN_OPAQUE; }
   if (ch == WC_CH_LIQUID && ((w >> 24u) & 127u) == WC_AUX_WHOLE && (own & WC_OWN_OPAQUE) == 0u) { own |= WC_OWN_LIQ_WHOLE; }
   if (id == WC_GAS_A || id == WC_GAS_B || id == WC_GAS_C) { low |= 1u << WC_I_GAS_SHIFT; }
