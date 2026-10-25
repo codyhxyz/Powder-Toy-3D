@@ -75,6 +75,7 @@ import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
 import { buildReport as buildProfileReport, formatReport as formatProfileReport } from './gfx/profileReport.js';
+import { attachCostView } from './gfx/costView.js';
 import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
@@ -3232,6 +3233,7 @@ try {
       },
     } : null,
   };
+  attachCostView(window.__app);   // __app.prof.cost: per-pixel work counters (docs/profiler.md)
   gpuLoss.settle();
   loop = createFrameLoop(frame);
   loop.start();

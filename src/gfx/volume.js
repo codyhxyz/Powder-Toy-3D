@@ -301,16 +301,18 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      *   drawn when src/deco.js decoShown(sim) says so (painted, display on)
      * @returns {boolean}
      */
-    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null } = {}) {
+    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null, pipe: twin = null } = {}) {
       const curved = isCurved(warp);
       const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
       if ((header.format ?? 0) !== format) return false;
       const state = sim.bindRO;
       const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
+      // the cost view (gfx/costView.js): what was drawn, and its counted twin of `pipe` drawn the same way
+      if (!twin) volume.lastDraw = { view, detail, meshDepth, marchNear, aerCopy, warp, pipe, n: (volume.lastDraw?.n ?? 0) + 1 };
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
-      pipe.draw(rp, {
+      (twin ?? pipe).draw(rp, {
         bind: [volumeFrameGroup(depth), state, lightingGroup(L.LIGHTING)], header,
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
