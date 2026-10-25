@@ -36,6 +36,8 @@ const PAGE_ANSWER_MS = 1000;           // ... and the tool this long after the p
 const SHARED_BUSY_PCT = 25;            // GPU busy % right after our browser closed: someone else was using it
 export const POSES = ['default', 'landDown', 'sky', 'horizon'];
 const MAX_POSES = 6;
+const POSE_MS = 2500;                  // a pose's warmup, settle, timed frames and cost capture, about (Lab, 20 frames)
+const BOOT_FRAMES = 600;               // frames xctrace may see before the poses (its recording length only)
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
@@ -219,6 +221,14 @@ async function main() {
       (GPU_FAILURE.test(line) ? errors : consoleLines).push(line);
     });
     log(`browser up (${((t0 - (slotDeadlineAt() - SLOT_MS)) / 1000).toFixed(1)} s of the slot gone)`);
+    // Metal's encoder times: xctrace takes seconds to attach, so it starts now, beside the boot (whose
+    // encoders carry no pose tag and are left out); the poses wait for it only as long as the slot allows
+    let countersStarting = null;
+    if (countersMod) {
+      countersStarting = countersMod.start({ browser, page, outDir: o.out, frames: o.poseSpecs.length * (o.frames + o.warmup) * 2 + BOOT_FRAMES })
+        .then((c) => { log('GPU counters recording'); return c; });
+      countersStarting.catch((e) => { slot.countersError = String(e?.message ?? e); });
+    }
     await page.goto(url.href);
     await page.waitForFunction(() => window.__app?.sim && window.__app?.prof, null, { polling: 100, timeout: BOOT_TIMEOUT_MS });
     log('app booted');
@@ -241,9 +251,17 @@ async function main() {
     await answered(page.evaluate(() => window.__profTool.prepare()));
     // Metal's encoder times over the poses' frames only: started after the boot's compiles, each pose's
     // timed frames tagged "@<pose>" in the encoder labels (gpu/timing.js labelTag)
-    if (countersMod) {
-      try { counters = await countersMod.start({ browser, page, outDir: o.out, frames: o.poseSpecs.length * (o.frames + o.warmup) * 2 }); log('GPU counters recording'); }
-      catch (e) { console.error(`[profile] GPU counters did not start: ${e?.message ?? e}`); slot.countersError = String(e?.message ?? e); }
+    if (countersStarting) {
+      // the poses need about POSE_MS each: wait for xctrace no longer than leaves them that
+      const wait = deadline - Date.now() - o.poseSpecs.length * POSE_MS;
+      let timer;
+      const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), Math.max(0, wait)); });
+      try { counters = await Promise.race([countersStarting, late]); } catch { counters = null; } finally { clearTimeout(timer); }
+      if (!counters) {
+        slot.countersError ??= `xctrace was not recording within the slot (${(Math.max(0, wait) / 1000).toFixed(1)} s left for it)`;
+        console.error(`[profile] GPU counters: ${slot.countersError}; timestamps only`);
+        countersStarting.then((c) => c.stop()).catch(() => {});   // (it may still start: end it)
+      }
     }
     for (let i = 0; i < o.poseSpecs.length; i++) runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]])));
     log('captured');
