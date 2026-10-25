@@ -276,6 +276,8 @@ function hookBrowserLog(fn) {
  * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void } & object} [options] Playwright launch options
  * @returns {Promise<import('playwright').Browser>}
  */
+/** When this process's GPU slot ends (ms since the epoch; 0 before launchBrowser takes one): a tool's own deadlines race this, not its own clock. */
+export const slotDeadlineAt = () => slotDeadline;
 export async function launchBrowser(options = {}) {
   const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, ...launch } = options;
   budgetMs(lifetimeMs);

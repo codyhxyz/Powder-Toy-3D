@@ -31,6 +31,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const SLOT_MS = process.env.TPT_LEAD_LONG_SLOT === '1' ? 120000 : 25000;
 const BOOT_TIMEOUT_MS = 15000;         // the page's own boot, inside the slot
 const PAGE_MARGIN_MS = 6000;           // the page gives up this long before the slot ends (the launcher's cleanup is 4 s)
+const PAGE_ANSWER_MS = 1000;           // ... and the tool this long after the page should have (it says the last stage the page reported)
 const SHARED_BUSY_PCT = 25;            // GPU busy % right after our browser closed: someone else was using it
 export const POSES = ['default', 'landDown', 'sky', 'horizon'];
 
@@ -103,11 +104,16 @@ async function captureInPage({ pose, frames, warmup, autores, paused, deadline }
     frameNo: a.gpu.frameNo, asleep: a.loop?.asleep, parked: a.test?.parked, failure: a.gpu.failure?.message ?? null });
   const step = (name, p) => {
     state.stage = name; state.stages.push([name, Math.round(performance.now() - t0)]);
+    console.info(`[profile-stage] ${name}`);   // (the tool prints it as it happens: a page that stops answering still said where)
     let timer;
     return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`profile stalled at "${name}": ${JSON.stringify(why())}`)), Math.max(1, deadline - Date.now())); })])
       .finally(() => clearTimeout(timer));
   };
   await step('test.ready', a.test.ready());
+  // the cost view's counted twins, queued to build with the rest (gfx/costView.js prepare): settled waits for them
+  if (typeof a.prof.cost?.prepare === 'function') {
+    try { await step('cost.prepare', a.prof.cost.prepare()); } catch (e) { console.warn(`cost view: ${e?.message ?? e}`); }
+  }
   await step('pipelines.settled', a.gpu.settled());
   const readyWaitMs = performance.now() - t0;   // (page load to here is not in it)
   if (!autores) a.autoRes.enabled = false;   // frozen at the scale it has (the report says so)
@@ -156,7 +162,7 @@ async function main() {
   if (o.help) { console.log(HELP); return; }
   if (o.selfTest) { await selfTest(); return; }
   if (onBattery() && !o.allowBattery) throw new Error('On battery: no GPU runs (docs/profiler.md). Plug in, or --allow-battery when the user allows it.');
-  const { launchBrowser, newTestPage, gpuInfo, gpuBusyPct } = await import('./browser.mjs');
+  const { launchBrowser, newTestPage, gpuInfo, gpuBusyPct, slotDeadlineAt } = await import('./browser.mjs');
   let vite = null, browser = null, counters = null, countersDone = null, result, info, slot = {};
   const url = new URL(o.url ?? 'http://127.0.0.1/');
   try {
@@ -182,12 +188,14 @@ async function main() {
     const consoleLines = [];
     const GPU_FAILURE = /GPU validation|Graphics stopped|device (was )?lost|GraphicsFailure/i;
     page.on('console', (m) => {
+      if (m.type() === 'info' && m.text().startsWith('[profile-stage] ')) { lastStage = m.text().slice(16); log(`stage ${lastStage}`); return; }
       if (!['error', 'warning'].includes(m.type())) return;
       const line = `console.${m.type()}: ${m.text().slice(0, 300)}`;
       (GPU_FAILURE.test(line) ? errors : consoleLines).push(line);
     });
     const log = (msg) => console.error(`[profile] +${((Date.now() - t0) / 1000).toFixed(1)} s ${msg}`);
-    log('browser up');
+    let lastStage = 'boot';
+    log(`browser up (${((t0 - (slotDeadlineAt() - SLOT_MS)) / 1000).toFixed(1)} s of the slot gone)`);
     await page.goto(url.href);
     await page.waitForFunction(() => window.__app?.sim && window.__app?.prof, null, { polling: 100, timeout: BOOT_TIMEOUT_MS });
     log('app booted');
@@ -197,13 +205,20 @@ async function main() {
       if (existsSync(mod)) counters = await (await import(pathToFileURL(mod).href)).start({ browser, page, outDir: o.out, frames: o.frames });
       else console.error('[profile] --counters: tools/gpu-counters.mjs is not there yet (agent D); skipped');
     }
-    // the page gives up (with where it stalled) before the launcher's own deadline closes it
-    const deadline = t0 + SLOT_MS - PAGE_MARGIN_MS;
+    // the page gives up (with where it stalled) before the launcher's own deadline closes it: the
+    // slot's, which started before the browser launched (its launch and the boot are in it)
+    const deadline = Math.min(t0 + SLOT_MS, slotDeadlineAt() || Infinity) - PAGE_MARGIN_MS;
+    // and the tool gives up on a page that stopped answering, saying the last stage it reported
+    let silent;
+    const unanswered = new Promise((_, reject) => {
+      silent = setTimeout(() => reject(new Error(`profile stalled at "${lastStage}": the page did not answer by its deadline (+${((deadline - t0) / 1000).toFixed(1)} s)`)),
+        Math.max(1, deadline + PAGE_ANSWER_MS - Date.now()));
+    });
     try {
-      result = await page.evaluate(captureInPage, { pose: o.poseSpec, frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline });
+      result = await Promise.race([page.evaluate(captureInPage, { pose: o.poseSpec, frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline }), unanswered]);
     } catch (e) {
       throw new Error(`${e.message.split('\n')[0]}\npage errors/warnings: ${errors.slice(0, 8).join('\n  ') || 'none'}`);
-    }
+    } finally { clearTimeout(silent); }
     log('captured');
     // the GPU counters: end the recording now, but parse the trace (10-60 s of CPU) only after the browser
     // has closed, so the GPU slot isn't held during it (tools/gpu-counters.mjs)

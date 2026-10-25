@@ -220,6 +220,20 @@ export function attachCostView(app) {
   const detailList = (d) => Object.keys(d ?? {}).filter((k) => d[k]).sort();
   const untrustedWhy = (what, diffShare, maxDiff) => `the counted variant drew a different ${what} than the live pipeline (${(100 * diffShare).toFixed(3)} % of covered pixels differ, up to ${maxDiff}): its counts do not describe the real frame`;
 
+  // The counted twins of what the frame draws, queued now (not awaited). A twin is a cold compile of
+  // the lit tracer (seconds: its text is new to the shader cache whenever the tracer or the counters
+  // change), so a tool that will capture queues it before it waits for pipelines to settle: the build
+  // overlaps the others and ends before any timed frame, instead of after them inside the slot.
+  // Resolves with the twins' names once queued; null when the view isn't a lit one.
+  async function prepare() {
+    const src = await freshFrame();
+    if (!isMaterialView(src.rec.view)) return null;
+    const twins = src.world
+      ? (src.rec.split ? Object.entries(src.rec.pipe.parts) : [['whole', src.rec.pipe]]).map(([st, p]) => app.worldView.costTwin(p, st))
+      : [app.vol.costTwin(src.rec.pipe)];
+    return twins.map((t) => t.name);
+  }
+
   async function capture({ kind } = {}) {
     if (kind !== undefined && !COST_KINDS.includes(kind)) throw new Error(`cost view: no counter ${kind} (${COST_KINDS.join(', ')})`);
     await gpu.pipelines.settled();
@@ -428,7 +442,7 @@ export function attachCostView(app) {
     }
   }
 
-  const cost = { kinds: COST_COUNTERS, capture, show };
+  const cost = { kinds: COST_COUNTERS, prepare, capture, show };
   if (app.prof) app.prof.cost = cost;
   return cost;
 }
