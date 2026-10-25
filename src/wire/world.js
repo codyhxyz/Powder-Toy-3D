@@ -7,7 +7,7 @@ import { structureClear, shrineAltars as worldShrineAltars } from '../world/stru
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
 import { WorldWindow, WIN_STEP } from '../world/window.js';
 import { bakedAir } from '../constructions/runtime.js';
-import { beyondLevel } from '../world/far.js';
+import { beyondLevel, FarField } from '../world/far.js';
 import { worldCopyWGSL } from '../shaders/world/copy.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
@@ -58,7 +58,24 @@ const world = {
     // The cumulus deck overhead and its optical shadows.
     gfxUniforms.uClouds.value=true;
     gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
-    // No distance pass: the whole map is drawn from the world copy (gfx/worldView.js, built at loadScene).
+    // Its distance pass (world/far.js, app.js farPass): the far field's brick-resolution grid of the
+    // whole world, drawn past the world march's reach (shaders/world/reach.js) in a pass of its own, as
+    // live drew it past the window. Joined once its kernels are built, so it never holds up the load
+    // (win.whenReady waits on win.far), and built from the world copy then (useWorldCopy, SUM's builder:
+    // until it is there the far view never draws and the march keeps the whole world, reach 0). Its
+    // lighting group is the window volume's, with the far grid in it (attachVolume).
+    const far = new FarField(app.renderer, win, { sun: app.sun });
+    far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
+    far.attachVolume(app.vol);
+    far.onChange = () => app.wakeLoop();
+    far.whenReady().then(() => {
+      if (app.win !== win || win.far) { far.dispose(); return; }
+      win.far = far;
+      // built from the world copy (world/far.js useWorldCopy): now if it is in, else when it is (buildWorldCopy)
+      const copy = app.worldView?.worldCopy;
+      if (win.loaded && copy?.bindGroup) far.useWorldCopy?.(copy);
+      app.wakeLoop();
+    }, error => { console.warn('World far field could not build', error); far.dispose(); });
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
@@ -152,6 +169,7 @@ const world = {
     if (!view) return;
     view.build(w).then((copy) => {
       if (app.win !== w || !copy?.bindGroup) return;
+      w.far?.useWorldCopy?.(copy);   // the far field, built from it and kept current from its changes (world/far.js)
       return w.attachWorldCopy(copy, { wgsl: worldCopyWGSL });
     }).then(() => app.wakeLoop(), (err) => console.error('world copy: not attached', err));
   },
