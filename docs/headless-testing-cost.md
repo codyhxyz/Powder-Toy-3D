@@ -69,6 +69,7 @@ Process identity checks and a unique launch marker prevent another session's pro
 One launch attempt is allowed per test process. Additional pages must reuse that browser.
 
 The machine-wide slot remains at `~/.cache/tpt-headless/slot`.
+Every launch also appends to the shared GPU log, `~/.cache/tpt-headless/log.jsonl`: a `start` line (agent, session, worktree, branch, command, `why`) or a `refused` line with the reason. `node tools/gpu-log.mjs` reads it with the guard's run reports for end times, and lists runs from older launchers without who/why. It only records; it never refuses a run.
 A dead or malformed holder is unverified: the launcher refuses acquisition and preserves the lease/report regardless of age. A dead numeric PID does not prove that orphan browsers are absent; recovery requires separate ownership/cleanup verification, not automatic reclamation.
 An existing lease is not adopted merely because its holder matches this process's PID.
 Once a guard is spawned, only its verified `released` acknowledgment allows the launcher to reset local ownership. The guard alone unlinks its lease. Unexpected guard exit, failed readiness, and uncertain browser closure preserve it.

@@ -48,7 +48,9 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 - `tools/browser.mjs` rejects budgets over 25 seconds. Its independent watchdog stops only the test's own process tree.
 - The launcher releases its slot if the player uses the GPU. It does not hold the slot while waiting for the player.
 - Never set `TPT_IGNORE_PLAYER` without explicit user approval.
-- If another test holds the slot, identify its owner and require compliance. Do not kill unrelated processes.
+- `node tools/gpu-log.mjs` is the shared GPU log: who holds the GPU now (session, worktree, what for, how long) and every recent run; `--since 6h` totals per session. Check it before a GPU run instead of guessing from pids.
+- Say why a run exists: `TPT_GPU_WHY="island cold-load timing" node tools/...` (or `launchBrowser({ why })`). Optional; without it the log shows the command. GPU use outside the launcher (windowed Chrome, Claude in Chrome) gets one line: `node tools/gpu-log.mjs note "why" --secs 60`.
+- If another test holds the slot, the refusal and `gpu-log` name its owner; require compliance. Do not kill unrelated processes.
 
 - Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher. The deploy enforces it: `tools/check-browser-launch.mjs` fails on any script in `tools/` or `scripts/` that launches a browser itself, except the legacy list in that file, which only shrinks.
 - Pick the cheapest mode that preserves the assertion:

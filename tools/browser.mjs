@@ -15,6 +15,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, slotCeiling, processTable } from './gpu-deadline.mjs';
+import { logGpu, whoAmI, describeHolder } from './gpu-log.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -272,22 +273,26 @@ function hookBrowserLog(fn) {
  * player check, launch, compilation, assertions and cleanup; maximum 25s
  * (LEAD_SLOT_MS with TPT_LEAD_LONG_SLOT=1: gpu-deadline.mjs, the lead session only).
  * `browserLog(line)` receives the browser's stderr, GPU process included
- * (adds --enable-logging=stderr).
- * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void } & object} [options] Playwright launch options
+ * (adds --enable-logging=stderr). `why` (or TPT_GPU_WHY) is what the shared
+ * GPU log (tools/gpu-log.mjs) says this run is for; optional.
+ * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void, why?: string } & object} [options] Playwright launch options
  * @returns {Promise<import('playwright').Browser>}
  */
 /** When this process's GPU slot ends (ms since the epoch; 0 before launchBrowser takes one): a tool's own deadlines race this, not its own clock. */
 export const slotDeadlineAt = () => slotDeadline;
 export async function launchBrowser(options = {}) {
-  const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, ...launch } = options;
+  const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, why = process.env.TPT_GPU_WHY ?? '', ...launch } = options;
   budgetMs(lifetimeMs);
   if (attempted) throw new Error('One browser launch per test process. Reuse contexts; do not retry or renew the GPU slot.');
   attempted = true; launching = true;
   const logArgs = browserLog && hookBrowserLog(browserLog) ? ['--enable-logging=stderr', '--v=0'] : [];
-  let browser;
+  let browser, logged = false;
+  const who = () => { try { return whoAmI(processTable()); } catch { return whoAmI(); } };
   try {
     await takeSlot();
     await guardSlot(lifetimeMs);
+    logGpu({ event: 'start', why, ...who(), guardPid: slotGuardPid, budgetMs: lifetimeMs });
+    logged = true;
     const remaining = slotDeadline - Date.now() - CLEANUP_MS;
     if (remaining <= 0) throw new Error('GPU slot budget exhausted before browser launch');
     launching = true;
@@ -302,6 +307,9 @@ export async function launchBrowser(options = {}) {
   } catch (e) {
     launching = false;
     if (!browsers.size) releaseSlot();
+    const holder = /held by pid (\d+)/.exec(e.message ?? '');
+    if (holder) e.message = e.message.replace(holder[0], `held by ${describeHolder(Number(holder[1]))}`);
+    if (!logged) logGpu({ event: 'refused', why, ...who(), reason: String(e.message ?? e).slice(0, 300) });
     throw e;
   }
   if (!browsers.size) for (const [event, fn] of Object.entries(handlers)) process.on(event, fn);
