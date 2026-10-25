@@ -14,6 +14,7 @@ import { metalTimes, applyMetal, estimateCauses, causesFor, targetVerdict, compa
 import { exclusiveShares, unionLength, stateShares } from './gpu-counters.mjs';
 import { laneShare, LANE_BLOCKS } from '../src/gfx/costView.js';
 import { knockoutText } from './profile.mjs';
+import { parseBoundaries, busiestQueue, lastJson, passLabel } from './gpu-capture.mjs';
 import { buildReport, formatReport, reportHtml, compareReports, annotate, stats, MIN_FRAMES } from '../src/gfx/profileReport.js';
 
 globalThis.GPUBufferUsage = { QUERY_RESOLVE: 1, COPY_SRC: 2, MAP_READ: 4, COPY_DST: 8 };
@@ -379,6 +380,16 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   annotate(r, { cost: { pass: 'scene', pixels: 10000, counters: { march: { mean: 10, p50: 8, p95: 30, max: 90, sum: 1e5, busyLanes: 0.31, busyLanesBy: { '8x4': 0.31, '4x8': 0.33, '16x2': 0.29 } } } } });
   assert.ok(r.verdict.some((v) => /march divergence on scene: 31% .*4×8 33%, 16×2 29%/.test(v)), r.verdict.join(' | '));
   assert.match(formatReport(r), /march busy lanes by block shape: 8×4 31% · 4×8 33% · 16×2 29%/);
+}
+{
+  // --capture's parsing (tools/gpu-capture.mjs): gpucapture's boundary table, Dawn's queue, gpudebug's JSON and labels
+  const before = parseBoundaries('  ID    Type     Label  GPU(ms)  Count\n   1  Device  Apple M5     0.00      2\n   2   Queue    (null)     0.00      0\n  70   Queue    (null)     0.00      1\n');
+  const after = parseBoundaries('   1  Device  Apple M5     0.00      9\n   2   Queue    (null)     0.00      0\n  70   Queue    (null)     0.00     40\n');
+  assert.equal(busiestQueue(before, after).id, 70);
+  assert.equal(busiestQueue(after, after), null);
+  assert.deepEqual(lastJson('{"children":[1]}\n{"children":[{"name":"re1","values":[{"type":"string","value":"a\\"}b"}]}]}'), { children: [{ name: 're1', values: [{ type: 'string', value: 'a"}b' }] }] });
+  assert.equal(passLabel('"Dawn_RenderPassEncoder_world march@- (2)"'), 'world march');
+  assert.equal(passLabel('Dawn_ComputePassEncoder_v2block@0'), 'v2block');
 }
 assert.deepEqual([stats([3, 1, 2]).median, stats([]).median], [2, null]);
 console.log('profile CPU check OK: enable sticks, renderOnce frames sample, capture(n), ranking/median/spread, untrusted reasons, work vs time, text/html/compare, Metal share/own bounds, GPU performance state, knockout dependants, busy lanes');

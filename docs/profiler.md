@@ -364,3 +364,25 @@ Adding Xcode's separate **Metal GPU Counters** instrument (`--instrument 'Metal 
 
 Attaching and recording all processes give the same Metal tables, which are
 system-wide either way, so the tool always filters to the pid.
+
+## Capture (`--capture`, on branch tools/profiler-truth; not on main yet)
+
+Apple's own answer to "what does one pass cost and why" is a GPU capture replayed with one pass at a time on the GPU. `tools/gpu-capture.mjs` does it from the command line (Xcode 27.1's `gpucapture` and `gpudebug`; research/apple-metal/KNOWLEDGE.md 4A):
+
+1. The browser launches through `tools/browser.mjs` with `MTL_CAPTURE_ENABLED=1` (`CAPTURE_ENV`, passed as `launchBrowser({ env })`) and `--disable-gpu-sandbox` (`CAPTURE_CHROME_ARGS`). Playwright's Chromium GPU process then shows in `gpucapture list`, with a Device boundary and its Metal queues.
+2. While the page renders, `captureFrames` lists the boundaries twice 0.6 s apart, takes the queue that submitted the most (Dawn's), and captures 48 command buffers to `<out>/frame.gputrace` (a probe page: 1 s, 5 MB). Chrome did not hang after it.
+3. After the browser closes, `analyzeCapture` replays under an exclusive GPU claim (`tools/gpu-log.mjs claim`): `profile run --exec serial --gpu-state high --embed` in one gpudebug session, then a second session loads the embedded profile (after `profile run` the first session's performance tree stays empty) and reads, per pass (encoders merged by label): cost share, serial duration, FS/CS occupancy, Occupancy Manager Target and every limiter; per shader: cost, temp registers, spilled bytes, instruction count and mix; the three costliest draws' heat maps (execution cost, thread divergence, instruction count) as PNG plus their top-100 JSON; every counter group's averages, with the occupancy series as JSON. All of it lands in `<out>/capture.json`. `--reuse` re-reads an embedded profile without the GPU.
+
+Sample (the probe page, 2026-10-25):
+
+```
+GPU capture replay (serial: one pass at a time on the GPU, GPU state high; Apple's per-pass numbers, not the frame's overlap):
+  pass                                cost      ms  occupancy   top limiters
+  probe view                           84%   0.767   77%   F32 85% · Instruction Throughput 80% · Integer and Conditional 72%
+  probe sim                            13%   0.117   69%   F32 68% · Instruction Throughput 60% · Compute Shader Launch 50%
+  shader (pipeline · stage)                 cost regs  spill B  instr
+  probe render · fragment                    84%   12        0     72
+  occupancy over the capture: vs_occupancy 0.00% · fs_occupancy 54.27% · kernel_occupancy 8.03% · total_occupancy 62.29%
+```
+
+What stops it on the game: under the capture layer, Lab took 12 s to boot (3.6 s without) and still had 8 pipelines compiling, so the 25 s slot ended before the pipelines settled and no frame was captured. Agents can't use the long slot; the lead can: `TPT_LEAD_LONG_SLOT=1 node tools/profile.mjs --map lab --capture --no-cost --frames 12 --warmup 4`. It needs one such run before it goes to main.
