@@ -277,7 +277,7 @@ function emit(o, result, { url, info, slot, shared, quiet = false }) {
       + c.passes.slice(0, 10).map((p) => `\n  ${p.name.padEnd(40)} ${p.a?.toFixed(3) ?? '–'} → ${p.b?.toFixed(3) ?? '–'} (${p.delta === null ? 'new/gone' : (p.delta >= 0 ? '+' : '') + p.delta.toFixed(3)})`).join('');
   }
   console.log(text);
-  console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter ?? 'not yet measured'}% after) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
+  console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter == null ? 'after: measured once the browser has closed' : `${slot.busyAfter}% after`}) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
