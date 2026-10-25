@@ -252,6 +252,7 @@ async function main() {
     if (counters) { countersDone = counters.stop(); countersDone.catch(() => {}); counters = null; }
     await page.evaluate(() => window.__profTool.stop()).catch(() => {});
     slot.ms = Date.now() - t0;
+    emit(o, runs, { url, info, slot, shared: null, gpuCounters: null, errors, consoleLines, pending: !!countersDone });   // (now, inside the slot: closing the browser can take seconds)
   } finally {
     await counters?.stop?.().catch(() => {});
     await browser?.close().catch(() => {});
@@ -265,11 +266,27 @@ async function main() {
     try { gpuCounters = await countersDone; } catch (e) { gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; }
   }
   const shared = slot.busyAfter >= SHARED_BUSY_PCT ? `GPU ${slot.busyAfter}% busy right after the capture` : null;
+  if (shared || gpuCounters) {
+    // (the report printed inside the slot lacked these: the final one, in full)
+    console.log(`\n---- final report (${[shared && 'the GPU was shared', gpuCounters && 'Metal encoder times and GPU counters'].filter(Boolean).join(', ')}) ----`);
+    emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLines });
+  } else {
+    emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLines, quiet: true });
+    console.log(`GPU busy ${slot.busyAfter}% right after the capture: not shared · ${join(o.out, 'profile.json')} updated`);
+  }
+}
+
+// The report: written and printed as soon as the capture is back, inside the slot (closing the browser
+// can take seconds: a report that waited for it could be lost to the slot's deadline), and again with
+// what comes after the browser has closed (the GPU's busy share, Metal's encoder times, the GPU counters).
+function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLines, quiet = false, pending = false }) {
+  runs = structuredClone(runs);
   const reports = runs.map((run, i) => {
     let r = run.report;
     delete r.text;
     // Metal's per-encoder ms for this pose, as the authoritative pass times (gfx/profileCauses.js)
     if (gpuCounters?.byEncoder) r = applyMetal(r, metalTimes(r, gpuCounters.byEncoder, i));
+    else if (pending) r.notes.push('Metal encoder times follow in the final report (the trace is parsed after the browser closes)');
     else if (o.counters) r.notes.push(`no Metal encoder times (${slot.countersError ?? gpuCounters?.text ?? 'counters off'}): pass ms are timestamps`);
     r = annotate(r, { cost: run.cost, gpuCounters: i === 0 ? gpuCounters && { text: gpuCounters.text, summary: gpuCounters.summary } : null, gpuShared: shared });
     Object.assign(r.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot,
@@ -339,8 +356,9 @@ async function main() {
       if (ca && cb && JSON.stringify(ca.passes) !== JSON.stringify(cb.passes)) text += `\n  NOT the same pixels counted: ${ca.passes.join('+') || 'none'} vs ${cb.passes.join('+') || 'none'} (uncounted ms: ${ca.uncounted.map((u) => u.name).join(', ')} vs ${cb.uncounted.map((u) => u.name).join(', ')})`;
     }
   }
+  if (quiet) return;
   console.log(text);
-  console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter}% after) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
+  console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter == null ? 'after: measured once the browser has closed' : `${slot.busyAfter}% after`}) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

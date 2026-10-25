@@ -122,6 +122,7 @@ warning says their counts are lower bounds.
 
 ```js
 __app.prof.cost.kinds                    // the counters: [{ key, label, where }]
+await __app.prof.cost.prepare()          // queues the counted twins of what the frame draws (a cold compile: tools/profile.mjs calls it before pipelines settle, so it ends before the timed frames)
 await __app.prof.cost.capture({ kind })  // kind optional: the heatmap's counter
 await __app.prof.cost.show(on, { kind }) // the overlay (F9 toggles it)
 ```
