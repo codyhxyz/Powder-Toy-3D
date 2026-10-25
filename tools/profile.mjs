@@ -44,17 +44,19 @@ const POSE_MS = 2500;                  // a pose's warmup, settle, timed frames 
 const BOOT_FRAMES = 600;               // frames xctrace may see before the poses (its recording length only)
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
-  [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
+  [--frames 30] [--warmup 10] [--no-counters] [--no-cost] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
   [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--gpufeatures core|LIST] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
-  const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
+  const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null, cost: true,
     port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, gpufeatures: null, shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
   const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'gpufeatures'];
-  argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } return true; });
+  // --no-cost: no cost view (agent C's counted twins): a new shader's twins compile cold for seconds, and the
+  // capture waits for every build, so they can stall a run whose timed passes are ready (f16 A/B, 2026-10-25)
+  argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (flags[a]) { o[flags[a]] = true; continue; }
@@ -91,7 +93,7 @@ export function parsePose(p) {
 // window.__profTool: prepare() once, then pose(i, spec) per pose (timed frames, then the cost
 // counters); stop() ends the frame pump. Every stage races the slot's deadline, so a stalled run
 // says where and why.
-function installInPage({ frames, warmup, autores, paused, deadline }) {
+function installInPage({ frames, warmup, autores, paused, deadline, costView = true }) {
   const a = window.__app;
   const t0 = performance.now();
   const state = { stage: 'start', stages: [] };
@@ -137,7 +139,7 @@ function installInPage({ frames, warmup, autores, paused, deadline }) {
     async prepare() {
       await step('test.ready', a.test.ready());
       // the cost view's counted twins, queued to build with the rest (gfx/costView.js prepare): settled waits for them
-      if (typeof a.prof.cost?.prepare === 'function') {
+      if (costView && typeof a.prof.cost?.prepare === 'function') {
         try { await step('cost.prepare', a.prof.cost.prepare()); } catch (e) { console.warn(`cost view: ${e?.message ?? e}`); }
       }
       await step('pipelines.settled', a.gpu.settled());
@@ -167,7 +169,7 @@ function installInPage({ frames, warmup, autores, paused, deadline }) {
       finally { timing.labelTag = '@-'; }
       // outside the timed frames: agent C's cost view (a variant: shown as work, never as time)
       let cost = null, costError = null;
-      if (typeof a.prof.cost?.capture === 'function') {
+      if (costView && typeof a.prof.cost?.capture === 'function') {
         try { cost = await step(`pose ${i} cost.capture`, a.prof.cost.capture()); } catch (e) { costError = String(e?.message ?? e); }
       }
       report.setup.stages = state.stages.slice();
@@ -192,6 +194,7 @@ async function selfTest() {
   assert.throws(() => parseArgs(['--port', '5173']));
   assert.throws(() => parseArgs(['--bogus']));
   assert.equal(parseArgs(['--gpufeatures', 'subgroups']).gpufeatures, 'subgroups');
+  assert.equal(parseArgs(['--no-cost']).cost, false);
   console.log('PASS: profile.mjs arguments (the report path: node tools/profile-cpu-check.mjs)');
 }
 
@@ -262,7 +265,7 @@ async function main() {
       catch (e) { throw new Error(`${e.message.split('\n')[0]}\npage errors/warnings: ${errors.slice(0, 8).join('\n  ') || 'none'}`); }
       finally { clearTimeout(silent); }
     };
-    await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline });
+    await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline, costView: o.cost });
     await answered(page.evaluate(() => window.__profTool.prepare()));
     // Metal's encoder times over the poses' frames only: started after the boot's compiles, each pose's
     // timed frames tagged "@<pose>" in the encoder labels (gpu/timing.js labelTag)

@@ -260,11 +260,15 @@ function costFindings(c, passes, context) {
 
 const setupKeys = ['map', 'mode', 'view', 'detail', 'canvas', 'renderScale', 'pixelRatio', 'taa', 'upscale', 'adaptive', 'autoRes',
   'pose', 'grid', 'world', 'gpuName', 'shaderFeatures', 'split', 'testMode', 'paused', 'pov'];
+// setup keys added after reports were already kept: compared only when both reports have them
+const LATER_KEYS = ['shaderFeatures'];
 
 /** Can reports `a` and `b` be compared? { comparable, differences: [{ key, a, b }], passes: [{ name, a, b, delta }] } */
 export function compareReports(a, b) {
   const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
-  const differences = setupKeys.filter((k) => !same(a.setup?.[k], b.setup?.[k])).map((k) => ({ key: k, a: a.setup?.[k] ?? null, b: b.setup?.[k] ?? null }));
+  // (a key a report predates, such as shaderFeatures before 2026-10-25, is unknown there, not a difference)
+  const known = (k) => !LATER_KEYS.includes(k) || (a.setup?.[k] != null && b.setup?.[k] != null);
+  const differences = setupKeys.filter((k) => known(k) && !same(a.setup?.[k], b.setup?.[k])).map((k) => ({ key: k, a: a.setup?.[k] ?? null, b: b.setup?.[k] ?? null }));
   const names = new Set([...a.passes.map((p) => p.name), ...b.passes.map((p) => p.name)]);
   const get = (r, n) => { const p = r.passes.find((x) => x.name === n); return p ? (p.ms ?? p.perFrame ?? null) : null; };
   const passes = [...names].map((name) => {
