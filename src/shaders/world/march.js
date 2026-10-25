@@ -1,3 +1,4 @@
+import { marchVariant } from './marchVariant.local.js';   // LOCAL ONLY
 // The seamless world's march (docs/seamless-world.md, "M — the march"): the realistic view, and
 // its detail variants (gfx/detail.js) and material styles, as one full-screen ray march in world
 // cells over the world copy (W), the field clipmaps (F) and the lighting (L). Every map draws its
@@ -688,7 +689,9 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     worldGroup2WGSL(WORLD_GROUP2()),
     renamed(shading),
   ].join('\n');
-  return code.replaceAll('FU.materialStyle', `${materialStyleForView(view) ?? 0}.0`);
+  const out = code.replaceAll('FU.materialStyle', `${materialStyleForView(view) ?? 0}.0`);
+  const mv = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_MARCH_VARIANT) || globalThis.__MARCH_VARIANT;   // LOCAL ONLY
+  return mv && stage === 'march' ? marchVariant(out, mv) : out;
 }
 
 /** The march's bind group layouts, groups 0-3 (group 1 is W's: its class's `layout` entries); a split stage's group 0 adds its G-buffer textures. */
