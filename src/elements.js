@@ -649,7 +649,7 @@ const defs = [
   // particle moving into VOID is drained (Simulation.cpp eval_move). With
   // Clone upstream, a stream runs forever without flooding. Insulating, like
   // Wall; acid can't eat it (TPT: VOID's Hardness 0).
-  { key: 'VOID', traits: ['matter-consuming'], abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
+  { key: 'VOID', traits: ['matter-consuming', 'mobile-matter-only'], abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
     cond: 0.001, cap: 1.0, acidProof: true, singProof: true, antimatterProof: true,
     desc: 'Void. Hole, will drain away any powder, liquid or gas that touches it. Pair it with clone for waterfalls that never flood.' },
   // Brick: fired clay brick, 1.9 g/cm³ (0.84 J/g·K: cap 0.38; k ≈ 0.7 W/m·K:

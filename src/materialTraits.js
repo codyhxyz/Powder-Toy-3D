@@ -35,10 +35,11 @@ export const MATERIAL_TAGS = Object.freeze({
   growing: tag('behavior', 'Growing', 'Its active special rule converts nearby resources into more growth.'),
   replicating: tag('behavior', 'Replicating', 'Its active clone rule can create neighboring matter.'),
   'matter-consuming': tag('hazard', 'Consumes matter', 'Its active special rule deletes or absorbs nearby matter.'),
+  'mobile-matter-only': tag('behavior', 'Drains movable matter only', 'Its drain rule consumes powders, liquids and gases, not solid supports.'),
   biological: tag('behavior', 'Biological effect', 'Has a verified body-contact or ingestion effect, not just a biological name.'),
   potion: tag('behavior', 'Potion', 'Applies a modeled magical body status.'),
 });
-const SEMANTIC = new Set(['decaying', 'growing', 'replicating', 'matter-consuming', 'biological', 'potion', 'airborne-explosive', 'oxidizer', 'pressure-anomaly']);
+const SEMANTIC = new Set(['decaying', 'growing', 'replicating', 'matter-consuming', 'mobile-matter-only', 'biological', 'potion', 'airborne-explosive', 'oxidizer', 'pressure-anomaly']);
 const KINDS = { [K.EMPTY]: 'air', [K.SOLID]: 'solid', [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas' };
 
 export function describeTag(key) {

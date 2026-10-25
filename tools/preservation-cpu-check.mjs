@@ -108,17 +108,25 @@ test('all plaques have exposed anchors and nearby reachable inspection space', (
   }
 });
 
-test('stocks follow catalog admission; impossible specimens are not faked', () => {
+test('live display is not gated by unverified indefinite storage', () => {
   for (const stock of built.stocks) {
     const [x0, y0, z0, x1, y1, z1] = stock.bounds;
     let found = false;
     for (let y = y0 + 1; y < y1 - 1; y++) for (let z = z0 + 1; z < z1 - 1; z++) for (let x = x0 + 1; x < x1 - 1; x++) {
       if (at(x, y, z) === stock.elementId) found = true;
     }
-    if (stock.status === 'candidate' && stock.type === 'material') assert(found, `missing ${stock.key}`);
+    if (stock.specimen.mode !== 'none') assert(found, `missing ${stock.key}`);
     else if (stock.elementId != null) assert(!found, `unsupported live ${stock.key}`);
   }
-  assert(!ids.includes(E.SINGULARITY) && !ids.includes(E.ANTIMATTER) && !ids.includes(E.PLUTONIUM));
+  for (const element of ELEMENTS) {
+    if (element.id === E.SINGULARITY) assert(!ids.includes(element.id));
+    else assert(ids.includes(element.id), `material has only a sign, not matter: ${element.key}`);
+  }
+  assert(built.stocks.filter(s => s.type === 'material').every(s => s.specimen.mode !== 'none'));
+  for (const key of ['ACID', 'SNOW', 'LAVA', 'SMOKE', 'FIRE', 'PLASMA', 'URANIUM', 'PLUTONIUM',
+    'VOID', 'ANTIMATTER', 'GUNPOWDER', 'NITRO', 'C4', 'TNT', 'CLONE', 'PLANT']) {
+    assert(built.stocks.some(s => s.key === key && s.specimen.mode !== 'none'), key);
+  }
 });
 
 test('an appended element is stocked without editing a chapter or map list', () => {
@@ -126,6 +134,33 @@ test('an appended element is stocked without editing a chapter or map list', () 
   const added = buildPreservation({ box() {}, set() {}, elements: [...ELEMENTS, extra] });
   assert.equal(added.plaques.filter(p => p.elementKey === 'NEW_STOCK').length, 1);
   assert(added.stocks.some(entry => entry.key === 'NEW_STOCK' && entry.category === 'powder'));
+  const transient = elementRow({ key: 'NEW_TRANSIENT', name: 'New transient', kind: K.GAS, temp: 300,
+    traits: ['decaying'] }, ELEMENTS.length);
+  const next = buildPreservation({ box() {}, set() {}, elements: [...ELEMENTS, transient] });
+  assert.equal(next.stocks.find(s => s.key === transient.key).specimen.mode, 'feed');
+});
+
+test('actual preset upload includes live samples and programmed native sources', () => {
+  let uploaded;
+  buildPreset('preservationLab', {
+    g: { nx, ny, nz }, blankState: () => [new Float32Array(ids.length * 4), new Float32Array(ids.length * 4)],
+    cellTexel: index, load(A) { uploaded = A; },
+  });
+  for (const stock of built.stocks.filter(s => s.type === 'material')) {
+    const [x, y, z] = stock.bounds;
+    const cell = stock.specimen.mode === 'feed' ? [x + 3, y + 3, z + 3] :
+      stock.specimen.mode === 'cup' ? [x + 3, y + 2, z + 3] : [x + 2, y + 1, z + 2];
+    const at = index(...cell) * 4, element = ELEMENTS[stock.elementId];
+    assert.equal(uploaded[at], element.id, stock.key);
+    assert.equal(uploaded[at + 1], Math.fround(element.temp), stock.key);
+    assert.equal(uploaded[at + 2], Math.fround(element.life), stock.key);
+    if (stock.specimen.mode === 'feed') {
+      const source = index(x + 3, y + 3, z + 4) * 4;
+      assert.equal(uploaded[source], E.CLONE, stock.key);
+      assert.equal(Math.floor(uploaded[source + 3]) % 256, element.id, stock.key);
+      assert.equal(uploaded[index(x + 3, y + 1, z + 3) * 4], E.VOID);
+    }
+  }
 });
 
 test('software preview traces the real public and empty-chamber geometry without GPU use', () => {

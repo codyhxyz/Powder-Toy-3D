@@ -29,7 +29,7 @@ export function createElementInspector() {
         h('ul', {}, entry.facts.map(fact => h('li', { text: fact.chips.join('') }))),
         h('p.material-inspector-note', { text: 'Unlisted transitions are not modeled or not applicable; they are not assumed to occur at 0 °C.' }),
         h('h3', { text: 'Persistent storage assessment' }),
-        h('p', { text: entry.status === 'candidate' ? 'Candidate exhibit — containment still needs testing.' : 'No supported persistent specimen recipe.' }),
+        h('p', { text: entry.status === 'candidate' ? 'Candidate storage — containment still needs testing.' : 'Indefinite storage is unverified. This does not prohibit live demonstrations.' }),
         h('p', { text: entry.reason }),
         h('ul', {}, entry.requirements.map(key => h('li', {
           text: `${STORAGE_REQUIREMENTS[key].label}: ${STORAGE_REQUIREMENTS[key].reason}`,

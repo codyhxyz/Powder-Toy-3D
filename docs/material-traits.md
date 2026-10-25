@@ -51,6 +51,9 @@ geometric/separation suggestions. It does **not** mean built, tested, safe, or
 safe indefinitely. `supported: true` has only that policy-level meaning; it is
 not a simulation-tested recipe. `status: 'plaque-only'` means at least one
 requirement is unsupported; `reason` includes every unsupported obligation.
+This legacy status describes indefinite storage, not physical display availability.
+`src/lab/specimens.js` separately chooses live static, wall-cup, clone-fed, or absent displays from the same tags.
+An unverified passive store must not automatically become an empty case.
 Never silently replace an unsupported store with an ordinary glass box.
 Temperature control, pressure shielding, neutron shielding, replication/growth
 isolation, acid-compatible storage, matter-consumption isolation, replenishment,
@@ -122,6 +125,7 @@ zero-buoyancy cloud gets no blanket “Rises” claim.
    | `growing` | `src/v2/contact.js`: plant, moss and fungus special rules |
    | `replicating` | `src/v2/contact.js`: clone and powered-clone rules |
    | `matter-consuming` | `src/v2/contact.js`: void deletion and singularity absorption |
+   | `mobile-matter-only` | `src/v2/contact.js`: void drains movable matter but leaves solid supports |
    | `airborne-explosive` | `src/v2/contact.js` dust-cloud ignition/burst; airborne contact wiring in `src/shaders/v2/particles.js` |
    | `oxidizer` | `src/v2/contact.js`: oxygen accelerates burning and raises flame temperature |
    | `pressure-anomaly` | `src/v2/contact.js`: singularity suction and its mass-dependent burst; composes with decay and matter consumption |
@@ -134,6 +138,7 @@ zero-buoyancy cloud gets no blanket “Rises” claim.
    admission in `materialTraits.js`, then an explicit compositional storage
    policy in `lab/catalog.js`. An unknown tag throws; an unimplemented required
    containment capability must produce plaque-only with a reason.
+   Extend `lab/specimens.js` if the new instability needs a different display fixture.
 5. Run `node --test tools/lab-catalog-cpu-check.mjs`. Add a combination and
    unsupported-storage test for new hazards. CPU data checks cannot establish
    an indefinite containment recipe; that requires separate runtime evidence.

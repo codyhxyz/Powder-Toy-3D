@@ -59,9 +59,13 @@ export function buildPreservation({ box, set, elements = ELEMENTS }) {
   box(138, 2, 116, 154, 28, 126, E.METAL);
   box(140, 28, 114, 152, 42, 118, E.EMPTY);
   ceilingLight(box, 100, 44, 122, 12);
-  plaques.push({ cell: [148, 32, 117], normal: [0, 0, 1], text: 'ACCOUNTING DOWNSTAIRS / Every other material. Nothing discarded.' });
+  plaques.push({ cell: [148, 32, 117], normal: [0, 0, 1], text: 'MATERIAL ARCHIVE DOWNSTAIRS / Every other material. Follow the stairs.' });
   // The sign above has a physical jamb, not a free-floating text anchor.
   box(148, 28, 116, 150, 36, 118, E.CERAMIC);
+  plaques.push({ cell: [5, 34, 28], normal: [1, 0, 0],
+    text: 'ALL MATERIALS / Archive downstairs, through processing. Tour continues ahead.' });
+  plaques.push({ cell: [88, 34, 114], normal: [0, 0, -1],
+    text: 'MATERIAL ARCHIVE / Follow this rear wall to the marked descending stairs.' });
 
   const featured = plaques.filter(p => p.elementKey).map(p => p.elementKey);
   if (new Set(featured).size !== featured.length) throw new Error('Preservation repeats a primary specimen.');

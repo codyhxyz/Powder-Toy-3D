@@ -35,8 +35,15 @@ Other occurrences, such as glass windows and metal walkways, remain part of the 
 
 Fresh generation includes newly registered elements automatically.
 The archive groups entries by physical kind and storage status.
-Geometric candidates receive isolated physical samples.
-Unsupported requirements produce empty cases with an explanation and material inspection.
+Display recipes come from `src/lab/specimens.js`, using the catalog's tags.
+The indefinite-storage assessment does not decide whether a material can be displayed.
+Acid uses acid-proof walls; unlit explosives rest in supported shallow trays.
+Growth specimens have no feedstock, and dormant clones have no cloneable neighbors.
+Antimatter rests in a wall-lined retaining cup.
+Hot, cold, short-lived, and spontaneously emitting specimens use native clone-fed cases with void drains.
+These replace spent material; they do not lock temperature or lifetime.
+The singularity remains absent because starvation destroys it and feeding can cause a burst.
+Photon, neutron, and spark tools have explanatory plates rather than fake material cubes.
 The current archive supports 384 cases, beyond the engine's 256 material IDs and three named effects.
 
 The complete plaque manifest can exceed the sign system's 64 slots.
@@ -57,6 +64,8 @@ Real battery-fed lamps illuminate the facility.
 Disconnected housings do not simulate pumps or refrigeration.
 Insulation slows the ice sample's warming but does not maintain its temperature.
 The map does not claim validated radiation shielding or indefinite containment.
+Small radioactive samples are live and explicitly marked as not neutron-shielded.
+The archive supply and drains are native simulation materials, not protected map-only overrides.
 
 ## Validation
 
@@ -66,7 +75,9 @@ Run the CPU tests:
 npm run check:lab
 ```
 
-The tests cover registry growth, unique exhibits, storage admission, connected routes, stair clearance, enclosed walking spaces, and plaque ownership.
+The tests cover registry growth, unique exhibits, actual uploaded sample/source state, connected routes, stair clearance, enclosed walking spaces, and plaque ownership.
+Local native-kernel tests check acid-compatible neighbors, dormant clones, and repeated short-lived sample generation.
+These checks are not a full-map, long-duration physics test.
 They also block each chapter connection to detect unintended route shortcuts.
 
 The browser check uses one 25-second GPU slot:
@@ -77,6 +88,16 @@ node tools/preservation-browser-check.mjs --port 54983
 
 It checks automatic first-person entry and material inspection in Plain view.
 Physics remains paused during this UI check.
+
+Check actual native inventory before and across 24 physics ticks:
+
+```sh
+node tools/preservation-browser-check.mjs --port 54987 --inventory
+```
+
+This uses the full map in Plain view, without compiling an unused player model.
+It verifies rendered-state material IDs, not merely the plaque manifest.
+It does not establish long-duration thermal or neutron containment.
 
 Capture the authentic material lighting separately:
 

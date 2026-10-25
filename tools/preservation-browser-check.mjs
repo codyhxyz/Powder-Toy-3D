@@ -1,20 +1,21 @@
-// A single bounded UI slot: real first-person entry, specimen inspector,
-// generated-sign serialization, and two story viewpoints. No physics stepping.
+// One bounded slot: UI/visual checks, or --inventory native specimen census.
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { launchBrowser, newTestPage, ready, render, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
-import { PRESERVATION_SPAWN } from '../src/lab/preservation/index.js';
+import { PRESERVATION_SPAWN, preservationManifest } from '../src/lab/preservation/index.js';
 
 const option = (key, fallback) => {
   const i = process.argv.indexOf(`--${key}`);
   return i < 0 ? fallback : process.argv[i + 1];
 };
 const visualOnly = process.argv.includes('--visual-only');
+const inventory = process.argv.includes('--inventory');
 const uiOnly = !visualOnly, bake = process.argv.includes('--bake-preview');
 const external = option('url', null), view = option('view', visualOnly ? 'realistic' : 'plain');
 assert(!visualOnly || !process.argv.includes('--ui-only'), 'Choose UI or visual-only.');
+assert(!inventory || !visualOnly && !process.argv.includes('--ui-only'), 'Choose inventory or UI/visual.');
 assert(!bake || visualOnly && !external, 'Bake from local rendered geometry only.');
 const vite = external ? null : await startVite({
   port: Number(option('port', 54983)), warmupEntries: ['/src/main.js', '/src/app.js'],
@@ -24,9 +25,9 @@ const out = '/tmp/tpt-preservation';
 mkdirSync(out, { recursive: true });
 let browser;
 try {
-  browser = await launchBrowser({ lifetimeMs: 25000, why: visualOnly ? 'Preservation story viewpoints, authentic material lighting; no body compilation' : 'Preservation first-person entry and material inspector' });
+  browser = await launchBrowser({ lifetimeMs: 25000, why: inventory ? 'Preservation missing materials: native census before and after 24 physics ticks' : visualOnly ? 'Preservation story viewpoints, authentic material lighting; no body compilation' : 'Preservation first-person entry and material inspector' });
   const page = await newTestPage(browser, {
-    mode: 'ui', viewport: visualOnly ? { width: 400, height: 400 } : { width: 800, height: 600 },
+    mode: inventory ? 'manual' : 'ui', viewport: visualOnly || inventory ? { width: 400, height: 400 } : { width: 800, height: 600 },
   });
   page.setDefaultTimeout(13000);
   const errors = [];
@@ -36,7 +37,7 @@ try {
   });
   // The existing raw-preset URL does not request a gamemode start. Reuse it
   // for visual checkpoints without compiling a body invisible in these shots.
-  const query = visualOnly ? `?size=valley&preset=preservationLab&view=${view}` : `?map=preservationLab&view=${view}`;
+  const query = visualOnly || inventory ? `?size=valley&preset=preservationLab&view=${view}` : `?map=preservationLab&view=${view}`;
   await page.goto(new URL(query, base).href);
   await page.waitForFunction(() => window.__app?.sim || document.getElementById('error')?.textContent, null, { timeout: 10000 });
   const bootError = await page.evaluate(() => document.getElementById('error')?.textContent ?? '');
@@ -49,7 +50,7 @@ try {
   });
   console.log('app ready:', await page.evaluate(bootState));
   try {
-    if (!visualOnly) await page.waitForFunction(() => __app.pov?.player && __app.pov.mode === 'on', null, { timeout: 7000 });
+    if (!visualOnly && !inventory) await page.waitForFunction(() => __app.pov?.player && __app.pov.mode === 'on', null, { timeout: 7000 });
   } catch (error) {
     console.error('entry stalled:', await page.evaluate(bootState), errors);
     throw error;
@@ -61,11 +62,29 @@ try {
     return { current: a.current(), feet: a.pov.player?.pos.toArray(), signs: a.signs.list.length };
   });
   assert.deepEqual(initial.current, { map: 'preservationLab', mode: 'sandbox' });
-  if (!visualOnly) {
+  if (!visualOnly && !inventory) {
     assert.deepEqual(initial.feet, PRESERVATION_SPAWN);
     assert(initial.signs > 0 && initial.signs <= 32);
   }
   console.log('adapter:', (await gpuInfo(page)).description);
+  if (inventory) {
+    const entries = preservationManifest().catalog.filter(e => e.type === 'material' && e.key !== 'SINGULARITY')
+      .map(e => ({ key: e.key, id: e.elementId }));
+    const result = await page.evaluate(async entries => {
+      const a = __app, initial = await a.sim.census(), seen = new Set();
+      const missingInitially = entries.filter(e => !initial[e.id]?.n).map(e => e.key);
+      for (let sample = 0; sample < 3; sample++) {
+        a.test.step(8);
+        await a.sim.gpuSync();
+        const census = await a.sim.census();
+        for (const e of entries) if (census[e.id]?.n) seen.add(e.key);
+      }
+      return { missingInitially, missingAfterPhysics: entries.filter(e => !seen.has(e.key)).map(e => e.key) };
+    }, entries);
+    console.log('native inventory:', result);
+    assert.deepEqual(result.missingInitially, []);
+    assert.deepEqual(result.missingAfterPhysics, []);
+  }
   if (!uiOnly) {
     if (visualOnly) {
       await page.addStyleTag({ content: 'body * { visibility: hidden !important; } #app > canvas { visibility: visible !important; }' });
@@ -81,7 +100,7 @@ try {
     console.log('arrival checkpoint captured');
     if (bake) execFileSync('magick', [`${out}/arrival.png`, '-resize', '400x400^', '-gravity', 'center', '-extent', '400x400', '-quality', '85', 'public/maps/preservationLab.webp']);
   }
-  if (!visualOnly) {
+  if (!visualOnly && !inventory) {
     await page.evaluate(() => {
       const a = __app, saved = a.signs.toJSON();
       a.signs.fromJSON(saved);
@@ -108,7 +127,7 @@ try {
     await page.screenshot({ path: `${out}/empty-chamber.png` });
   }
   assert.deepEqual(errors, []);
-  console.log(visualOnly ? `PASS full-size authored story viewpoints: ${out}` :
+  console.log(inventory ? 'PASS physical materials before/after native stepping (singularity intentionally absent)' : visualOnly ? `PASS full-size authored story viewpoints: ${out}` :
     `PASS Preservation entry at ${initial.feet}, ${initial.signs} nearby plaques, inspector and saved generated keys${uiOnly ? '' : `; story screenshots ${out}`}`);
 } finally {
   await browser?.close();

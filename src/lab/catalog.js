@@ -1,4 +1,4 @@
-// Catalog admission is not a safety proof and does not place any voxels.
+// Persistent-storage assessment, NOT display availability. See specimens.js.
 import { ELEMENTS, itemByKey } from '../elements.js';
 import { materialTags, describeTag } from '../materialTraits.js';
 import { elementFacts } from './facts.js';
@@ -14,12 +14,12 @@ export const STORAGE_REQUIREMENTS = Object.freeze({
   'electrical-isolation': requirement('Electrical isolation', true, 'Separate conductors from spark sources; candidate geometry only.'),
   'ignition-separation': requirement('Ignition separation', true, 'Keep away from flames and hot neighbors; not an indefinite safety proof.'),
   'mechanical-isolation': requirement('Mechanical isolation', true, 'Keep the sample at rest and away from impact/pressure sources; candidate geometry only.'),
-  'corrosion-resistant': requirement('Acid-resistant storage', false, 'A compatible enclosure has not been validated.'),
+  'corrosion-resistant': requirement('Acid-resistant storage', false, 'Compatible walls alone do not establish indefinite storage.'),
   'contact-isolation': requirement('Contact isolation', true, 'Separate specific reaction partners; compatible geometry still needs validation.'),
   'growth-isolation': requirement('Growth isolation', false, 'Resource and growth isolation have not been validated.'),
   'replication-isolation': requirement('Replication isolation', false, 'Clone isolation has not been validated.'),
   'matter-isolation': requirement('Matter-consumption isolation', false, 'No validated enclosure for matter-consuming behavior.'),
-  replenishment: requirement('Replenishment', false, 'Short-lived matter cannot be promised to persist without replenishment.'),
+  replenishment: requirement('Replenishment', false, 'Short-lived matter requires an active supply, not just a sealed vessel.'),
   'body-isolation': requirement('Body-contact isolation', true, 'Keep samples inaccessible to bodies and ingestion; candidate geometry only.'),
   'effect-source': requirement('Controlled effect source', false, 'A persistent, isolated effect demonstration is not implemented.'),
 });
@@ -36,6 +36,7 @@ const BY_TAG = Object.freeze({
   'thermally-unstable': ['thermal-control'], 'phase-changing': [], conductive: ['electrical-isolation'], 'acid-resistant': [],
   decaying: ['replenishment'], growing: ['growth-isolation'], replicating: ['replication-isolation'],
   'matter-consuming': ['matter-isolation'], biological: ['body-isolation'], potion: ['body-isolation'],
+  'mobile-matter-only': [],
 });
 export function requirementsForTags(tags) {
   if (!Array.isArray(tags)) throw new Error('requirementsForTags expects an array of material tag strings.');
