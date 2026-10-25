@@ -181,7 +181,7 @@ test('source adapter retains shared near/far call sites behind the compile-time 
   const worldFar = readFileSync(new URL('../src/world/far.js', import.meta.url), 'utf8');
   assert.match(app, /createVolume\(gpu, sim, \{[^\n]*sourceAppearance: !mapKind\.presets && !!sceneByKey\(settings.scene\).importManifest\?\.appearance/, 'near capability follows selected scene metadata, not mode/style');
   assert.match(worldFar, /this.sourceAppearance = SOURCE_APPEARANCE_ENABLED && !!win.scene.importManifest\?\.appearance/);
-  assert.match(worldFar, /farFrag\(this.sim.g, this.L, \{ curved, sourceAppearance: this.sourceAppearance \}\)/);
+  assert.match(worldFar, /farFrag\(this.sim.g, this.L, \{ curved, sourceAppearance: this.sourceAppearance, mixed \}\)/);
   assert.match(surface, /sourceMaterial\(id, p, n\)/);
   assert(surface.indexOf('let original = sourceMaterial') < surface.indexOf('if (FU.matDetail < 0.5)'));
   assert.match(far, /sourceShade\(p, normalize\(m.sourceNormal\)/);

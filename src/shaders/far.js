@@ -925,7 +925,7 @@ fn farSunVis(p: vec3f, ch: i32) -> f32 {
 `;
 
 // The view's params: the ray's world frame and the world beyond.
-export const FarViewParams = uniformStruct('FarViewParams', {
+const FAR_VIEW_FIELDS = {
   clipToWorld: 'mat4x4f',   // clip → world cells (the jittered camera's, FrameUniforms.viewProj's inverse through the window)
   worldToClip: 'mat4x4f',   // world cells → clip: the depth written
   eye: 'vec3f',             // the camera in world cells
@@ -939,7 +939,49 @@ export const FarViewParams = uniformStruct('FarViewParams', {
   // 1: the world march draws the window this frame (app.js worldLit: the window's GI probes aren't kept);
   // 0: the box volume does (the rolling log), with the window's light
   march: 'u32',
-});
+};
+export const FarViewParams = uniformStruct('FarViewParams', FAR_VIEW_FIELDS);
+// The mixed-resolution variant's (FAR_MIXED): 0 the quarter-pixel pass, 1 the full-resolution resolve.
+export const FarViewParamsMixed = uniformStruct('FarViewParams', { ...FAR_VIEW_FIELDS, resolve: 'u32' });
+
+// ---- mixed resolution (the efficient detail levels: gfx/detail.js DETAIL_FAR_FULL off) ----
+// The view is drawn twice: first at half resolution each way (a quarter of the pixels) into a target of
+// its own, its colour with the hit's distance in alpha; then at full resolution, where each pixel reads the
+// four low-resolution samples around it. Where their distances agree the pixel takes their bilinear colour
+// (and the farthest distance's depth along its own ray, so nothing coarse steps in front of the window's
+// march by the interpolation); where they don't
+// (a silhouette against the sky, the window box's faces, a ridge in front of a valley) the pixel is drawn
+// in full, exactly as the Full level draws it, so edges keep full resolution and never halo. This is
+// mixed-resolution rendering with edge pixels re-rendered at full resolution (Cantlay, "High-Speed,
+// Off-Screen Particles", GPU Gems 3 ch. 23, 2007: an edge test on the low-resolution depth picks the
+// pixels redrawn at full size), the way half-resolution volumetrics and clouds are composited (Hillaire,
+// "Physically Based and Unified Volumetric Rendering in Frostbite", SIGGRAPH 2015; Schneider, "The
+// Real-Time Volumetric Cloudscapes of Horizon Zero Dawn", SIGGRAPH 2015), with the depth-aware test of
+// nearest-depth upsampling (Bavoil, "Fast Mixed-Resolution Particles", NVIDIA 2010) deciding where.
+export const FAR_MIXED = {
+  // A relative step in distance between neighbouring low-resolution samples (two pixels apart) above this
+  // marks an edge. A plane seen at angle θ below the eye steps by 2·pixAng/θ between them, so on open
+  // ground this redraws in full only the rows within ~2° of its horizon (at 800 rows and a 55° field),
+  // where its distance grows fastest, and every step from one surface to another.
+  DEPTH_TOL: 1 / 16,
+  // The distance rides in the low target's alpha, a half float (its 11-bit mantissa: 1/2048 relative), so
+  // it is held under the format's largest value, and the depth drawn from it is pushed back by twice its
+  // rounding so it never comes out in front of the true hit.
+  T_MAX: 65000,            // cells (a half float's largest is 65504)
+  T_ROUND: 1 / 1024,
+  SKY: -1,                 // the alpha of a sample with nothing hit
+  SKY_T: 1e20,             // cells: the distance it reads as
+};
+// (A storage texture read in place of a sampled one: the view's fragment stage already binds the 16 sampled
+// textures WebGPU allows, and no storage textures.)
+const farMixedGLSL = /* wgsl */ `
+@group(0) @binding(4) var tFarLow: texture_storage_2d<rgba16float, read>;   // the quarter-pixel pass (FAR_MIXED)
+const FAR_MIX_DEPTH_TOL: f32 = ${glf(FAR_MIXED.DEPTH_TOL)};
+const FAR_MIX_T_MAX: f32 = ${glf(FAR_MIXED.T_MAX)};
+const FAR_MIX_T_ROUND: f32 = ${glf(FAR_MIXED.T_ROUND)};
+const FAR_MIX_SKY: f32 = ${glf(FAR_MIXED.SKY)};
+const FAR_MIX_SKY_T: f32 = ${glf(FAR_MIXED.SKY_T)};
+`;
 
 // The view (docs/webgpu.md G1): a full-screen triangle drawn before a big
 // map's volume, in its own pass (world/far.js drawPass), depth tested and
@@ -962,9 +1004,9 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // the displayed rays' parabolas in the flat world (gFarRay) and whose window
 // and world are their spans (gFarWindow, gFarWorld); x and z stay linear
 // along them, so the slab crossings of x and z are the flat ones.
-export const farFrag = (g, L, { curved = false, sourceAppearance = false } = {}) => {
+export const farFrag = (g, L, { curved = false, sourceAppearance = false, mixed = false } = {}) => {
   return /* wgsl */ `
-// far view${curved ? ', curved' : ''}
+// far view${curved ? ', curved' : ''}${mixed ? ', mixed resolution' : ''}
 ${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
 ${presentationWGSL}
 ${reachWGSL}${curved ? `
@@ -989,8 +1031,8 @@ ${farLayoutGLSL(L)}
 ${farSampleGLSL}
 ${occupancyGLSL('read')}
 ${farSkyGLSL}
-${FarViewParams.wgsl}
-@group(3) @binding(1) var<uniform> P: FarViewParams;
+${(mixed ? FarViewParamsMixed : FarViewParams).wgsl}
+@group(3) @binding(1) var<uniform> P: FarViewParams;${mixed ? farMixedGLSL : ''}
 // the air's sky share at window point q: the probes in the window (the box volume's frames), the far
 // field's sky past it and on the world march's frames (P.march: the window's probes aren't kept then)
 fn farAirSky(q: vec3f) -> f32 {
@@ -1357,7 +1399,31 @@ struct FarOut {
   let rd = safeDir(normalize(far.xyz / far.w - ro));
   surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)${curved ? `
   warpUse(P.warpK, P.warpAnchor, P.warpDir);
-  gFarRay = warpRay(ro, rd);` : ''}
+  gFarRay = warpRay(ro, rd);` : ''}${mixed ? `
+  // the resolve (FAR_MIXED): the four low-resolution samples around this pixel, bilinear where they agree
+  if (P.resolve != 0u) {
+    let lowSize = vec2i(textureDimensions(tFarLow));
+    let q = (v.ndc * vec2f(0.5, -0.5) + 0.5) * vec2f(lowSize) - 0.5;
+    let i0 = vec2i(floor(q));
+    let f = q - floor(q);
+    var tMin = FAR_MIX_SKY_T;
+    var tMax = 0.0;
+    var lowCol = vec3f(0.0);
+    for (var k = 0; k < 4; k++) {
+      let o = vec2i(k & 1, k >> 1);
+      let s = textureLoad(tFarLow, clamp(i0 + o, vec2i(0), lowSize - 1));
+      let t = select(s.a, FAR_MIX_SKY_T, s.a < 0.0);
+      tMin = min(tMin, t);
+      tMax = max(tMax, t);
+      lowCol += select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * s.rgb;
+    }
+    if (tMax <= tMin * (1.0 + FAR_MIX_DEPTH_TOL)) {
+      var r: FarOut;
+      r.color = vec4f(lowCol, 1.0);
+      r.depth = select(farDepth(farPath(ro, rd, tMax * (1.0 + FAR_MIX_T_ROUND))), 1.0, tMax >= FAR_MIX_SKY_T);
+      return r;
+    }
+  }` : ''}
   let inv = 1.0 / rd;
   let winLo = vec3f(P.winLo);
   // the window's stretch, left out (the world march's or the box volume's), as the world march spans it
@@ -1450,7 +1516,9 @@ struct FarOut {
     col = farHaze(col, rd, tAt, farAirLit(ro - winLo, pAt - winLo));
     o.depth = farDepth(pAt);
   }
-  o.color = vec4f(col, 1.0);
+  o.color = vec4f(col, 1.0);${mixed ? `
+  // (the quarter-pixel pass: the hit's distance in alpha for the resolve, FAR_MIX_SKY where there is none)
+  if (P.resolve == 0u) { o.color.a = select(FAR_MIX_SKY, min(tAt, FAR_MIX_T_MAX), hit); }` : ''}
   return o;
 }
 `;
@@ -1472,9 +1540,14 @@ export const FAR_VIEW_FRAME = [
   { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
   { binding: 3, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } },
 ];
-export const FAR_VIEW_LAYOUTS = () => {
+// ...and the mixed-resolution variant's (FAR_MIXED): the quarter-pixel pass's colour and depth after them
+export const FAR_VIEW_FRAME_MIXED = [
+  ...FAR_VIEW_FRAME,
+  { binding: 4, visibility: STAGE.FRAGMENT, storageTexture: { access: 'read-only', format: 'rgba16float', viewDimension: '2d' } },
+];
+export const FAR_VIEW_LAYOUTS = (mixed = false) => {
   const [, state, lighting, params] = libLayouts('LIGHTING');
-  return [FAR_VIEW_FRAME, state, lighting, params];
+  return [mixed ? FAR_VIEW_FRAME_MIXED : FAR_VIEW_FRAME, state, lighting, params];
 };
 /** The view's render pipeline description: the scene target's formats, depth less-equal and written (its pass, before the volume's), opaque. */
 export const farViewPipeline = () => ({
@@ -1531,4 +1604,10 @@ export const WGSL_CHECK = () => [
     name: 'far view curved', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw, { curved: true }),
     layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
   },
+  // the efficient levels' (FAR_MIXED), flat and curved
+  ...[false, true].map((curved) => ({
+    name: `far view mixed${curved ? ' curved' : ''}`, kind: 'render', grids: ['64', '128'], warm: false,
+    code: (g) => farFrag(g, Lw, { curved, mixed: true }),
+    layouts: () => FAR_VIEW_LAYOUTS(true), params: FarViewParamsMixed, ...farViewPipeline(),
+  })),
 ];

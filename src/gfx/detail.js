@@ -145,6 +145,16 @@ export const DETAIL = [
   // where it reaches inside such a brick, for a ray leaving the liquid there (no exit bend).
   { key: 'waterSteps', define: 'DETAIL_WATER_STEPS', label: 'Deep water cell by cell', cost: 'high', since: '2026-10-25',
     desc: 'Rays through deep water read every cell (its paint, its surfaces) instead of a brick at a time' },
+  // Big maps' distant view (the user's rule, 2026-10-25, as above: efficient by default, the richer look at
+  // Full). On (Full) the far view (world/far.js, shaders/far.js) shades every pixel, as origin/main 729778e1
+  // drew it at every level. Off (Off and Balanced) it is drawn mixed-resolution (shaders/far.js FAR_MIXED):
+  // a quarter of its pixels, the rest bilinear from them where their distances agree, and every pixel at an
+  // edge (a silhouette, the window's faces) drawn in full, so edges stay sharp and nothing halos. What it
+  // gives up: texture and cloud detail finer than two pixels on smooth distant ground and sky.
+  // high: Island whole-frame GPU span at Balanced, origin/main 03b045db vs mixed (tools/profile.mjs --frozen
+  // --detail balanced, Apple M5, 1280x800 @2x, 2026-10-25): default pose 20.19 -> 17.89 ms, horizon 11.07 -> 8.93 ms.
+  { key: 'farFull', define: 'DETAIL_FAR_FULL', label: 'Distant view at full resolution', cost: 'high', since: '2026-10-25',
+    desc: 'On big maps, shades every pixel of the land, sea and sky past the area around you instead of a quarter of them, with edges drawn in full either way' },
 ];
 
 // Features whose realistic module SwiftShader (the software adapter: the test

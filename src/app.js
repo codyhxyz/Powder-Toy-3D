@@ -2728,7 +2728,8 @@ const frameHooks = {
     const fv = frameValues(camera, renderView, p.jitter);
     const written = writeFrameUniforms(gpu, fv);
     worldView?.writeUniforms(fv, written);   // (the same values in world cells, the camera and settings shared: gfx/worldView.js)
-    win?.far?.viewBehind(isMaterialView(renderView));   // a big map's far view (farPass), its derived levels brought up to date
+    // a big map's far view (farPass), its derived levels brought up to date; full or mixed resolution by the detail level
+    win?.far?.viewBehind(isMaterialView(renderView), !!frameDetail.DETAIL_FAR_FULL);
     frameBoxed = marchBoxed(viewKeyOf(renderView), !!warpNow()?.k);
     frameDrawLo = win?.drawOrigin ?? null;
   },

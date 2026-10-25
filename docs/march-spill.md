@@ -306,3 +306,18 @@ origin/main 49.1 ms, branch 31.7 ms; the Lab without gas ~18–20 ms. Where the 
 - A lattice jittered over 1 cell while the step is 2+ draws terraces (sheets): the efficient lattice
   restarts each run of gas at the ray's jitter times its own step.
 
+
+## Far view: mixed resolution at Off and Balanced (2026-10-25, branch `perf/far-efficient`)
+
+Big maps' far view (`shaders/far.js` `FAR_MIXED`, `world/far.js` drawPass) draws a quarter of its pixels at Off
+and Balanced: pass `far view low` at half size each way (colour, the hit's distance in alpha), then `far view` at
+full size takes the bilinear colour where the four samples around a pixel are within 1/16 of each other's
+distance, and shades the rest (silhouettes, the window box's faces) in full (Cantlay, GPU Gems 3 ch. 23). Full
+(`DETAIL_FAR_FULL`) draws as before: its WGSL is byte-identical to origin/main 03b045db.
+Island, `--frozen --detail balanced`, back to back, whole-frame GPU span: default 20.19 -> 17.89 ms, horizon
+11.07 -> 8.93 ms. Exactness at Full (same-pose stills, TAA off, 960x600): sky byte-identical; default and horizon
+differ from origin/main by the same near-window pixels two origin/main runs differ by (38.6 k vs 38.6 k, 3.8 k vs 3.8 k).
+What Balanced gives up, visible in TAA-off stills: texture and material boundaries on distant ground and in the
+clouds are two pixels soft (TAA's jitter sharpens them live); edges between surfaces stay full resolution.
+Not done: skipping far shading where the window's march covers the pixel (the window's G-buffer depth would need a
+binding the view no longer has: its fragment stage holds WebGPU's 16 sampled textures and its 8 storage buffers).

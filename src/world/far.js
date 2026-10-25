@@ -5,7 +5,7 @@ import {
   farClearFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farFrag,
   RegionParams, regionDispatch, ShadowParams, columnDispatch, nodeDispatch,
   FAR_CLEAR_LAYOUT, FAR_BOOST_LAYOUT, FAR_MIP1_LAYOUT, FAR_MIP2_LAYOUT, FAR_TOP_LAYOUT,
-  FAR_SHADOW_LAYOUT, FAR_VIEW_FRAME, FarViewParams, farViewPipeline,
+  FAR_SHADOW_LAYOUT, FAR_VIEW_FRAME, FAR_VIEW_FRAME_MIXED, FarViewParams, FarViewParamsMixed, farViewPipeline,
 } from '../shaders/far.js';
 import { farCopyFrag, FAR_COPY_LAYOUT } from '../shaders/world/farFromCopy.js';
 import { WORLD_COPY_LAYOUT } from '../shaders/world/copy.js';
@@ -56,6 +56,11 @@ import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEA
 // The rolling log (gfx/presentation.js: `presentation`, set by
 // src/wire/world.js): while a gamemode's effect bends the view, the view draws
 // its curved variant (its own pipeline, built the first time it is wanted).
+//
+// The detail levels (gfx/detail.js DETAIL_FAR_FULL): at Full the view shades every pixel; at Off and
+// Balanced it is drawn mixed-resolution (shaders/far.js FAR_MIXED): a pass of its own at half the size
+// each way, 'far view low', into the view's own colour and depth, then 'far view' at full size, which
+// takes their bilinear colour where the four samples around a pixel agree and draws the edges in full.
 
 const COPY_CHUNKS_PER_FRAME = 2;    // the build: chunks summarized a frame (each 16² brick columns, every height: 8192 bricks of the
                                     // 1024² × 128 world, 256 chunks, ~2 s at 60 fps; a uniform neighbour brick is one read)
@@ -74,7 +79,8 @@ const SHADOW_TURN_BRICKS = 0.5;
 // world: a window move costs the far field nothing, so its shadows don't follow the window).
 const NO_SHADOW_BOX = [0, 0, 0, 0];
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
-const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
+const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits)
+const LOW_SCALE = 2;                // the mixed-resolution pass's pixels: the scene target's size over this, each way (shaders/far.js FAR_MIXED)
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
 const CUBE_REACH_BRICKS = 1;        // bricks around a changed cell whose cubes (FAR.CUBE, 2 cells past their brick) or votes (the cell over) read it
 
@@ -183,7 +189,11 @@ export class FarField {
     this.floor = P.sea > 0 ? P.floor : this.level;
     this.fu = frameUniformsOf(gpu);
     this.viewFrameLayout = layout('FAR_VIEW_FRAME', FAR_VIEW_FRAME);
+    this.viewFrameLayoutMixed = layout('FAR_VIEW_FRAME_MIXED', FAR_VIEW_FRAME_MIXED);
     this.viewFrameGroup = null;
+    this.low = null;             // the mixed-resolution pass's targets ({ w, h, color, depth, group }: _lowTargets)
+    this.lowStandIn = null;      // the mixed low pass's own group 0, a 1×1 stand-in in place of its colour (_frameGroupMixed)
+    this.full = true;            // the frame's detail draws the view at full resolution (viewBehind; DETAIL_FAR_FULL)
     this.presentation = null;
     this.viewParams = {
       clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor,
@@ -208,6 +218,32 @@ export class FarField {
       { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
       { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } },
     ], 'far view frame'));
+  }
+
+  // The mixed variant's group 0: the frame's, then the low pass's colour (low: the resolve), or a 1×1
+  // stand-in (the low pass itself, which renders into it).
+  _frameGroupMixed(low = null) {
+    const entries = (color) => [
+      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
+      { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } },
+      { binding: 4, resource: color.createView() },
+    ];
+    if (low) return (low.group ??= this.gpu.bindGroup(this.viewFrameLayoutMixed, entries(low.color), 'far view resolve frame'));
+    if (!this.lowStandIn) {
+      const color = this.gpu.createTexture({ label: 'far view low stand-in', size: [1, 1], format: 'rgba16float', usage: TEX.STORAGE_BINDING });
+      this.lowStandIn = { color, group: this.gpu.bindGroup(this.viewFrameLayoutMixed, entries(color), 'far view low frame') };
+    }
+    return this.lowStandIn.group;
+  }
+
+  // The mixed-resolution pass's colour and depth for a scene target of w × h (made again when that changes).
+  _lowTargets(w, h) {
+    const lw = Math.ceil(w / LOW_SCALE), lh = Math.ceil(h / LOW_SCALE);
+    if (this.low?.w === lw && this.low.h === lh) return this.low;
+    if (this.low) { this.sim._retire(this.low.color); this.sim._retire(this.low.depth); }
+    const t = (label, format, usage) => this.gpu.createTexture({ label, size: [lw, lh], format, usage: TEX.RENDER_ATTACHMENT | usage });
+    const color = t('far view low', 'rgba16float', TEX.STORAGE_BINDING), depth = t('far view low depth', 'depth32float', 0);
+    return (this.low = { w: lw, h: lh, color, depth, colorView: color.createView(), depthView: depth.createView(), group: null });
   }
 
   // A region kernel over world bricks [lo, lo + size) (x, y, z).
@@ -428,12 +464,17 @@ export class FarField {
    * @param {{ march?: boolean, winLo?: number[] | null }} [opts]
    * @returns {boolean} whether it drew
    */
-  drawBehind(rp, { march = false, winLo = null } = {}) {
-    if (!this.drawable) return false;
+  drawBehind(rp, { march = false, winLo = null, resolve = null, low = null } = {}) {
+    const pipe = this._drawPipeline();
+    if (!pipe) return false;
     const marched = march && !this.curved;   // (the rolling log's view is the box volume's)
-    const params = this._params(marched ? winLo : null);
+    const params = { ...this._params(marched ? winLo : null) };
     params.march = marched ? 1 : 0;
-    this.behindPipeline.draw(rp, { bind: [this._frameGroup(), this.sim.bindRO, this.vol.lightingGroup], params,
+    const mixed = pipe === this._pipeline(this.curved, true);
+    // (the mixed variant: the low pass, or with resolve its targets read; drawn alone it is the low pass)
+    if (mixed) params.resolve = resolve ? 1 : 0;
+    const frameGroup = mixed ? this._frameGroupMixed(resolve ? low : null) : this._frameGroup();
+    pipe.draw(rp, { bind: [frameGroup, this.sim.bindRO, this.vol.lightingGroup], params,
       header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, count: 3 });
     return true;
   }
@@ -446,39 +487,60 @@ export class FarField {
    * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean, march?: boolean, winLo?: number[] | null }} opts
    */
   drawPass(frame, { color, depth, load = false, march = false, winLo = null }) {
-    if (!this.drawable) return false;
+    const pipe = this._drawPipeline();
+    if (!pipe) return false;
     const views = (this._targetViews ??= new WeakMap());   // the scene target's views, by texture
     const view = (t) => { let v = views.get(t); if (!v) views.set(t, v = t.createView()); return v; };
-    const rp = frame.render({
-      colorAttachments: [{ view: view(color), loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-      depthStencilAttachment: { view: view(depth), depthClearValue: 1, depthLoadOp: load ? 'load' : 'clear', depthStoreOp: 'store' },
-    }, 'far view');
-    try { return this.drawBehind(rp, { march, winLo }); } finally { rp.end(); }
+    const target = (c, d, load) => ({
+      colorAttachments: [{ view: c, loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      depthStencilAttachment: { view: d, depthClearValue: 1, depthLoadOp: load ? 'load' : 'clear', depthStoreOp: 'store' },
+    });
+    let low = null;
+    if (pipe === this._pipeline(this.curved, true)) {
+      // mixed resolution (FAR_MIXED): the quarter-pixel pass first, into the view's own targets
+      low = this._lowTargets(color.width, color.height);
+      const lp = frame.render(target(low.colorView, low.depthView, false), 'far view low');
+      try { this.drawBehind(lp, { march, winLo, resolve: false }); } finally { lp.end(); }
+    }
+    const rp = frame.render(target(view(color), view(depth), load), 'far view');
+    try { return this.drawBehind(rp, { march, winLo, resolve: !!low, low }); } finally { rp.end(); }
   }
 
   /** Whether the view draws this frame (viewBehind said so, it is built, its pipeline is ready); asks for the pipeline when it isn't. */
-  get drawable() {
-    if (!this.behind || !this.vol) return false;
-    const pipe = this.behindPipeline;
-    if (pipe.state === 'ready') return true;
+  get drawable() { return !!this._drawPipeline(); }
+
+  // The pipeline the view draws with now: the frame's level's (full or mixed resolution), else while that
+  // one builds the other level's if it is ready (a level switch keeps the far view), else none; asks for
+  // the level's pipeline when it isn't built.
+  _drawPipeline() {
+    if (!this.behind || !this.vol) return null;
+    const curved = this.curved, pipe = this._pipeline(curved, !this.full);
+    if (pipe.state === 'ready') return pipe;
     if (pipe.state === 'idle') pipe.build().then(() => this.onChange?.(), () => {});
-    return false;
+    const other = this[this._pipelineKey(curved, this.full)];
+    return other?.state === 'ready' ? other : null;
   }
 
   // Before a frame (app.js prepare): whether the view draws (visible: the
   // material views), and what derives from the grid brought up to date.
-  viewBehind(visible) {
+  // full: the frame's detail draws it at full resolution (gfx/detail.js DETAIL_FAR_FULL), else mixed.
+  viewBehind(visible, full = true) {
     this.behind = visible && this.built;
+    this.full = full;
     if (this.built) this.refresh();
   }
 
   // drawBehind's pipeline: the view's, flat or the rolling log's.
-  get behindPipeline() {
-    const curved = this.curved, key = curved ? 'behindCurved' : 'behindFlat';
+  get behindPipeline() { return this._pipeline(this.curved, !this.full); }
+
+  _pipelineKey(curved, mixed) { return `behind${curved ? 'Curved' : 'Flat'}${mixed ? 'Mixed' : ''}`; }
+  // The view's pipeline, flat or curved, at full or mixed resolution (FAR_MIXED), made on first use.
+  _pipeline(curved, mixed) {
+    const key = this._pipelineKey(curved, mixed);
     return (this[key] ??= this.gpu.renderPipeline({
-      name: curved ? 'far view behind curved' : 'far view behind', code: farFrag(this.sim.g, this.L, { curved, sourceAppearance: this.sourceAppearance }),
-      layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
-      params: FarViewParams, ...farViewPipeline(), build: 'manual',
+      name: `far view behind${curved ? ' curved' : ''}${mixed ? ' mixed' : ''}`, code: farFrag(this.sim.g, this.L, { curved, sourceAppearance: this.sourceAppearance, mixed }),
+      layouts: [mixed ? this.viewFrameLayoutMixed : this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
+      params: mixed ? FarViewParamsMixed : FarViewParams, ...farViewPipeline(), build: 'manual',
     }));
   }
 
@@ -490,6 +552,6 @@ export class FarField {
     this.copy = null;
     this.vol?.attachFar(null);
     const retire = (b) => b && this.sim._retire(b);
-    for (const t of [this.grid, this.field, this.top, this.shadow, this.occ]) retire(t);
+    for (const t of [this.grid, this.field, this.top, this.shadow, this.occ, this.low?.color, this.low?.depth, this.lowStandIn?.color]) retire(t);
   }
 }
