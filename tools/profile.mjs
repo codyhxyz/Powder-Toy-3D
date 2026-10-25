@@ -140,7 +140,13 @@ function installInPage({ frames, warmup, autores, paused, deadline }) {
       }
       await step('pipelines.settled', a.gpu.settled());
       readyWaitMs = Math.round(performance.now() - t0);
-      if (!autores) a.autoRes.enabled = false;   // frozen at the scale it has (the report says so)
+      // frozen at the preset's own scale (resolutionScale 1), not wherever adaptation left it, so two runs (a branch,
+      // live) draw the same pixels: adaptation would hand a faster build more of them (the report says the scale)
+      if (!autores) {
+        a.autoRes.enabled = false;
+        a.autoRes.scale = 1;
+        if (a.post?.settings) a.post.settings.resolutionScale = 1;
+      }
       a.settings.paused = !!paused;
       if (!a.prof.on) a.prof.enable(true);
       timing.labelTag = '@-';   // Metal encoders outside a pose's timed frames (gfx/profileCauses.js UNTIMED_TAG)
