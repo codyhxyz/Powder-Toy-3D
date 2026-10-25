@@ -30,7 +30,7 @@ import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
   worldMarchFrag, worldMarchPipeline, MarchParams, physParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
-  MARCH_STAGES, marchSplits, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufViewDim, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
+  MARCH_STAGES, marchSplits, EVENT_COLOR_BYTES, stageCounted, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufViewDim, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
   COMPOSITE_NAME, COMPOSITE_LAYOUT_NAMES, stagePipeName,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
@@ -163,11 +163,13 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     const copy = worldCopy.bindGroup, g2 = group2();
     for (const st of MARCH_STAGES) {
       // (the event stage's gate: shaders/world/march.js EVENT_GATE_Z)
+      // (the event kernels' gate: depth, shaders/world/march.js "The event kernels")
       const gate = STAGE_GATE[st] === 'write' ? { view: g.views.Z, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
-        : STAGE_GATE[st] === 'test' ? { view: g.views.Z, depthReadOnly: true } : undefined;
+        : STAGE_GATE[st] === 'rewrite' ? { view: g.views.Z, depthLoadOp: 'load', depthStoreOp: 'store' }
+          : STAGE_GATE[st] === 'test' ? { view: g.views.Z, depthReadOnly: true } : undefined;
       const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k) => attach(k, g, STAGE_LOADS.has(st))), ...(gate ? { depthStencilAttachment: gate } : {}) }, names(st));
       try {
-        parts[st].draw(rp, { bind: [frameGroup(depth, st, g, cost?.[st] ?? null), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
+        parts[st].draw(rp, { bind: [frameGroup(depth, st, g, stageCounted(st) ? cost?.[st] ?? null : null), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
       } finally { rp.end(); }
     }
   }
@@ -274,7 +276,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     /** The split march (a test switch: false draws the whole march, the A/B). */
     split: globalThis.__worldSplit ?? true,
     /** Whether `detail` draws through the split stages (prepass, then draw composites). */
-    splits(detail = {}) { return view.split && !view.testVariant && marchSplits(drawableDetail(detail, fallback)); },
+    // (Intentional: a device with WebGPU's default colour bytes, 32, draws the one-pass march: the split's gated
+    // stages need EVENT_COLOR_BYTES, shaders/world/march.js "The event kernels")
+    splits(detail = {}) { return view.split && !view.testVariant && (gpu.limits?.maxColorAttachmentBytesPerSample ?? 0) >= EVENT_COLOR_BYTES && marchSplits(drawableDetail(detail, fallback)); },
     /**
      * The march's pipeline for a material view and its detail, made on first use. One module per
      * (view, detail, optics) serves every map: the world's size is a uniform (W's WC.size).
@@ -450,6 +454,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * texture for the counters in its group 0), made on first use. stage: 'whole' or a split stage.
      */
     costTwin(pipe, stage = 'whole') {
+      if (!stageCounted(stage)) return pipe;   // (nothing to count: the counted chain runs it as it is)
       let t = twins.get(pipe);
       if (!t) {
         const { code, params, vertex, fragment, primitive, depthStencil, multisample } = pipe.desc;

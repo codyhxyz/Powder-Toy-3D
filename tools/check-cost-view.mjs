@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { volumeFrag, REALISTIC_LEVELS, VOLUME_VIEWS, VOLUME_LAYOUTS } from '../src/shaders/render.js';
 import { isMaterialView } from '../src/views.js';
 import { gridLayout } from '../src/sim.js';
-import { worldMarchFrag, MARCH_STAGES, marchSplits, WORLD_MARCH_LAYOUTS } from '../src/shaders/world/march.js';
+import { worldMarchFrag, MARCH_STAGES, marchSplits, stageCounted, WORLD_MARCH_LAYOUTS } from '../src/shaders/world/march.js';
 import { nagaExec } from './naga.mjs';
 
 const argv = process.argv.slice(2);
@@ -45,7 +45,7 @@ for (const view of VOLUME_VIEWS.filter(isMaterialView)) {
 const PHYS = gridLayout(128, 128, 128);
 for (const view of VOLUME_VIEWS.filter(isMaterialView)) {
   for (const [level, d] of Object.entries(REALISTIC_LEVELS)) {
-    for (const stage of ['whole', ...(marchSplits(d()) ? MARCH_STAGES : [])]) {
+    for (const stage of ['whole', ...(marchSplits(d()) ? MARCH_STAGES.filter(stageCounted) : [])]) {
       variants.push({ name: `world.${view}.${level}.${stage}`, split: stage === 'whole' ? null : `${view}.${level}`,
         stage, code: () => worldMarchFrag(PHYS, { view, detail: d(), stage }) });
     }

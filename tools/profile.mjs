@@ -4,7 +4,7 @@
 //   node tools/profile.mjs --map island [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz]
 //     [--view realistic] [--frames 60] [--warmup 30] [--counters] [--out dir]
 //     [--url https://tpt3d.codyh.xyz] [--port N] [--size 1280x800] [--dpr 2]
-//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--no-cost] [--gpufeatures core|subgroups|f16,…]
+//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--knock "pass,pass"] [--no-cost] [--gpufeatures core|subgroups|f16,…]
 //     [--chrome-arg --enable-dawn-features=disable_robustness]…   (repeatable: price a Chrome/Dawn switch)
 //   node tools/profile.mjs --self-test     # CPU only: arguments and the report path
 //
@@ -54,15 +54,15 @@ const MAX_KNOCKOUTS = 8;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, setup: null, gpufeatures: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, knock: null, cost: true, setup: null, gpufeatures: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'gpufeatures', 'setup'];
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -107,7 +107,7 @@ export function parsePose(p) {
 // window.__profTool: prepare() once, then pose(i, spec) per pose (timed frames, then the cost
 // counters); stop() ends the frame pump. Every stage races the slot's deadline, so a stalled run
 // says where and why.
-function installInPage({ frames, warmup, autores, paused, deadline, knockout, koFrames, koWarmup, cost: withCost, setup }) {
+function installInPage({ frames, warmup, autores, paused, deadline, knockout, knock, koFrames, koWarmup, cost: withCost, setup }) {
   const a = window.__app;
   const t0 = performance.now();
   const state = { stage: 'start', stages: [] };
@@ -188,9 +188,10 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, ko
       finally { timing.labelTag = '@-'; }
       // --knockout: the frame without each of the longest passes' work (KNOCKOUT_FRAMES)
       let knocked = null;
-      if (knockout) {
+      if (knockout || knock) {
         knocked = [];
-        const names = report.passes.filter((p) => p.perFrame > 0).sort((x, y) => y.perFrame - x.perFrame).slice(0, knockout).map((p) => p.name);
+        // (--knock: these passes by name, in order; else the --knockout longest by their timestamps)
+        const names = knock ?? report.passes.filter((p) => p.perFrame > 0).sort((x, y) => y.perFrame - x.perFrame).slice(0, knockout).map((p) => p.name);
         try {
           for (const name of names) {
             timing.knockout = new Set([name]);
@@ -321,7 +322,7 @@ async function main() {
       finally { clearTimeout(silent); }
     };
     await page.evaluate(installInPage, { frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline,
-      knockout: o.knockout, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, cost: o.cost, setup: o.setup });
+      knockout: o.knockout, knock: o.knock ? o.knock.split(',').map((x) => x.trim()).filter(Boolean) : null, koFrames: KNOCKOUT_FRAMES, koWarmup: KNOCKOUT_WARMUP, cost: o.cost, setup: o.setup });
     await answered(page.evaluate(() => window.__profTool.prepare()));
     // Metal's encoder times over the poses' frames only: started after the boot's compiles, each pose's
     // timed frames tagged "@<pose>" in the encoder labels (gpu/timing.js labelTag)

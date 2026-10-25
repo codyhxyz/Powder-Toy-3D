@@ -4,7 +4,7 @@
 // No GPU, no browser. node tools/world-march-cpu-check.mjs [--dump DIR]
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf, MARCH_STAGES, marchSplits, compositeWGSL, COMPOSITE_LAYOUT, GBUF_BYTES_PER_PIXEL, worldMarchLayoutNames } from '../src/shaders/world/march.js';
+import { STAGE_GATE, worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf, MARCH_STAGES, marchSplits, compositeWGSL, COMPOSITE_LAYOUT, GBUF_BYTES_PER_PIXEL, worldMarchLayoutNames } from '../src/shaders/world/march.js';
 import { cellSlot, ringOf } from '../src/shaders/common.js';
 import { MAPS } from '../src/maps.js';
 import { REALISTIC_LEVELS } from '../src/shaders/render.js';
@@ -24,6 +24,7 @@ const base = [
 const cases = base.flatMap(([v, k, d]) => [[v, k, d, 'whole'], ...(marchSplits(d) ? MARCH_STAGES.map((st) => [v, k, d, st]) : [])])
   .flatMap((c) => [[...c, true], [...c, false]]);
 let n = 0;
+const GATED = new Set(Object.keys(STAGE_GATE).filter((st) => STAGE_GATE[st] === 'test'));
 for (const [gname, g] of Object.entries(grids)) {
   for (const [view, level, detail, stage, optics] of cases) {
     const name = `march.${view}.${level}${stage === 'whole' ? '' : `.${stage}`}${optics ? '' : '.lean'}.${gname}`;
@@ -34,6 +35,9 @@ for (const [gname, g] of Object.entries(grids)) {
     const textures = res.filter((r) => r[5].startsWith('texture_')).map((r) => r[4]);
     assert(storage.length <= 8, `${name}: ${storage.length} storage buffers (${storage.join(', ')})`);
     assert(textures.length <= 16, `${name}: ${textures.length} textures`);
+    // the gated stages (shaders/world/march.js "The event kernels"): no discard and no storage write, or the
+    // GPU tests their gate after running them (Apple through Dawn, 2026-10-25) and the gate stops nothing
+    if (GATED.has(stage)) assert(!/\bdiscard\b|\btextureStore\s*\(/.test(code), `${name}: a gated stage discards or writes storage`);
     // every declared binding is in the layouts the pipeline is made with
     const layouts = WORLD_MARCH_LAYOUTS(undefined, stage);
     const layoutTextures = layouts.flat().filter((e) => e.texture || e.storageTexture).length;

@@ -43,6 +43,8 @@ export const OPTIONAL_FEATURES = Object.freeze(['timestamp-query']);
 /** Frames a GPU-bound loop may queue (B3): 2, and 1 on WebKit. */
 export const MAX_FRAMES_IN_FLIGHT = 2;
 
+/** The most colour-target bytes a pixel createGpu asks for (where the adapter has them). */
+const COLOR_BYTES_MAX = 128;
 /**
  * The limits createGpu requests from `adapter`.
  * @param {GPUAdapter} adapter
@@ -54,6 +56,9 @@ export function wantedLimits(adapter) {
     ...DEFAULT_LIMITS,
     maxStorageBufferBindingSize: Math.min(a.maxStorageBufferBindingSize, GiB),
     maxBufferSize: Math.min(a.maxBufferSize, GiB),
+    // the world march's gated stages write their G-buffer as colour targets (shaders/world/march.js
+    // EVENT_COLOR_BYTES); a device without the room draws the one-pass march (gfx/worldView.js splits)
+    maxColorAttachmentBytesPerSample: Math.max(DEFAULT_LIMITS.maxColorAttachmentBytesPerSample, Math.min(a.maxColorAttachmentBytesPerSample ?? 0, COLOR_BYTES_MAX)),
   };
 }
 

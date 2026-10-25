@@ -27,6 +27,7 @@
 import { COST_COUNTERS, COST_KINDS, COST_COVERED_BIT, COST_MAX, COST_MARCH_MAX, COST_STORAGE_FORMAT, COST_STORAGE_ROWS, COST_WORDS } from '../shaders/costView.js';
 import { halfToFloat } from '../gpu/readback.js';
 import { isMaterialView } from '../views.js';
+import { stageCounted } from '../shaders/world/march.js';
 
 // GPUTextureUsage bits (no GPU globals at import: tools/check-imports.mjs)
 const USAGE = { COPY_SRC: 0x01, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };
@@ -229,7 +230,7 @@ export function attachCostView(app) {
     const src = await freshFrame();
     if (!isMaterialView(src.rec.view)) return null;
     const twins = src.world
-      ? (src.rec.split ? Object.entries(src.rec.pipe.parts) : [['whole', src.rec.pipe]]).map(([st, p]) => app.worldView.costTwin(p, st))
+      ? (src.rec.split ? Object.entries(src.rec.pipe.parts).filter(([st]) => stageCounted(st)) : [['whole', src.rec.pipe]]).map(([st, p]) => app.worldView.costTwin(p, st))
       : [app.vol.costTwin(src.rec.pipe)];
     return twins.map((t) => t.name);
   }
@@ -282,7 +283,7 @@ export function attachCostView(app) {
 
   // ---- the world march (gfx/worldView.js): the split stages, or the whole march ----
   // the split stages in their order (the record's pipelines: worldView builds them march, reflect, shade)
-  const stagesOf = (rec) => (rec.split ? Object.keys(rec.pipe.parts) : ['whole']);
+  const stagesOf = (rec) => (rec.split ? Object.keys(rec.pipe.parts).filter(stageCounted) : ['whole']);
   // Each stage's twin writes its counters into a storage texture of its own, read back as it is:
   // a stage's counts are the ones that stage made. The live chain and the counted chain each run
   // into a G-buffer of their own; every stage output a target holds is compared (G0, G1: the march;
@@ -292,7 +293,7 @@ export function attachCostView(app) {
     if (world && world.w === w && world.h === h && world.split === split && world.wv === wv) return world;
     if (world) { world.gbA?.destroy(); world.gbB?.destroy(); for (const t of [...Object.values(world.cost), world.colorLive, world.colorTwin, world.depth]) t?.destroy(); }
     const tex = (label, format, size = [w, h], usage = USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC) => gpu.createTexture({ label: `cost view ${label}`, size, format, usage });
-    const stages = split ? Object.keys(wv.lastRecorded?.pipe?.parts ?? {}) : ['whole'];
+    const stages = split ? Object.keys(wv.lastRecorded?.pipe?.parts ?? {}).filter(stageCounted) : ['whole'];
     world = {
       w, h, split, wv,
       cost: Object.fromEntries(stages.map((st) => [st, costTexture(`${st} counters`, w, h)])),

@@ -19,7 +19,7 @@
 import { volumeFrag, VOLUME_LAYOUTS, LAYOUT_NAMES, VolumeParams, volumePipeline, REALISTIC_LEVELS, VOLUME_VIEWS } from './render.js';
 import { isMaterialView } from '../views.js';
 import { STAGE } from './common.js';
-import { worldMarchFrag, WORLD_MARCH_LAYOUTS, worldMarchLayoutNames, worldMarchPipeline, MarchParams, MARCH_STAGES, marchSplits } from './world/march.js';
+import { worldMarchFrag, WORLD_MARCH_LAYOUTS, worldMarchLayoutNames, worldMarchPipeline, MarchParams, MARCH_STAGES, marchSplits, stageCounted } from './world/march.js';
 import { WC_OWN } from './world/copy.js';
 
 // A box skip's region is a cube of 2r + 1 bricks (gfx/core.js skipEmpty: brickDist's radius r); at
@@ -332,7 +332,7 @@ const worldCostCheck = (view, level, d, stage) => {
 };
 export const WGSL_CHECK = () => [
   ...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([level, d]) =>
-    ['whole', ...(marchSplits(d()) ? MARCH_STAGES : [])].map((stage) => worldCostCheck(view, level, d, stage)))),
+    ['whole', ...(marchSplits(d()) ? MARCH_STAGES.filter(stageCounted) : [])].map((stage) => worldCostCheck(view, level, d, stage)))),
   ...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([k, d]) => [false, true].map((curved) => {
     const [frame, ...rest] = VOLUME_LAYOUTS();
     return {
