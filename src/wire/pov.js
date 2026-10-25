@@ -8,11 +8,11 @@
 import { createPov } from '../pov/index.js';
 import { isGearTool } from '../elements.js';
 import { QUARRY_SPAWN } from '../industry/catalog.js';
-import { LAB_STUDIES_SPAWN } from '../lab/studies/index.js';
+import { PRESERVATION_SPAWN } from '../lab/preservation/index.js';
 import { Vector3 } from 'three';
 
 const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
-const PRESET_SPAWNS = { quarry: QUARRY_SPAWN, labStudies: LAB_STUDIES_SPAWN };
+const PRESET_SPAWNS = { quarry: QUARRY_SPAWN, preservationLab: PRESERVATION_SPAWN, labStudies: [128, 2, 16] };
 let factoryBelt = null;
 
 const pov = {

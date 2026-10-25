@@ -4,7 +4,8 @@
 //   node tools/profile.mjs --map island [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz]
 //     [--view realistic] [--frames 60] [--warmup 30] [--counters] [--out dir]
 //     [--url https://tpt3d.codyh.xyz] [--port N] [--size 1280x800] [--dpr 2]
-//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--no-cost]
+//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--no-cost] [--gpufeatures core|subgroups|f16,…]
+//     [--chrome-arg --enable-dawn-features=disable_robustness]…   (repeatable: price a Chrome/Dawn switch)
 //   node tools/profile.mjs --self-test     # CPU only: arguments and the report path
 //
 // What it does, in one 25 s headless GPU slot (tools/browser.mjs):
@@ -53,19 +54,25 @@ const MAX_KNOCKOUTS = 8;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--setup JS] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, setup: null, shot: false, allowBattery: false, selfTest: false, help: false };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, setup: null, gpufeatures: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'setup'];
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'gpufeatures', 'setup'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (flags[a]) { o[flags[a]] = true; continue; }
+    // --chrome-arg SWITCH (repeatable): a Chrome switch for this run only, merged with the counters' own (chromeArgs)
+    if (a === '--chrome-arg') {
+      const v = argv[++i];
+      if (v === undefined || !v.startsWith('--') || v.length < 3) throw new Error('--chrome-arg needs a switch, e.g. --chrome-arg --enable-dawn-features=disable_robustness');
+      o.chromeArgs.push(v); continue;
+    }
     const key = a.slice(2);
     if (!a.startsWith('--') || !values.includes(key)) throw new Error(`Unknown option ${a}\n${HELP}`);
     const v = argv[++i];
@@ -177,7 +184,7 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, ko
       await step(`pose ${i} pipelines.settled`, a.gpu.settled());
       timing.labelTag = `@${i}`;
       let report;
-      try { report = await step(`pose ${i} capture`, a.prof.capture({ frames, extra: { pose: applied, readyWaitMs, fixture: setup, fixtureResult } })); }
+      try { report = await step(`pose ${i} capture`, a.prof.capture({ frames, extra: { pose: applied, readyWaitMs, ...(setup ? { fixture: setup, fixtureResult } : {}) } })); }
       finally { timing.labelTag = '@-'; }
       // --knockout: the frame without each of the longest passes' work (KNOCKOUT_FRAMES)
       let knocked = null;
@@ -207,6 +214,21 @@ function installInPage({ frames, warmup, autores, paused, deadline, knockout, ko
   return true;
 }
 
+// Chrome keeps only the last copy of a switch, so two --enable-dawn-features= lists (the counters' labels and a
+// --chrome-arg) would drop one: list switches (Dawn's toggles, Chrome's features) become one switch with every value.
+// (tools/browser.mjs merges --enable-features/--disable-features again with its own; the merged one is unchanged there.)
+const LIST_SWITCH = /^(--(?:enable|disable)-(?:dawn-)?features)=(.*)$/;
+export function chromeArgs(base, extra) {
+  const out = [], lists = new Map();
+  for (const a of [...base, ...extra]) {
+    const m = LIST_SWITCH.exec(a);
+    if (!m) { if (!out.includes(a)) out.push(a); continue; }
+    if (!lists.has(m[1])) { lists.set(m[1], []); out.push(m[1]); }
+    for (const v of m[2].split(',').filter(Boolean)) if (!lists.get(m[1]).includes(v)) lists.get(m[1]).push(v);
+  }
+  return out.map((a) => (lists.has(a) ? `${a}=${lists.get(a).join(',')}` : a));
+}
+
 function onBattery() {
   if (process.platform !== 'darwin') return false;
   try { return /Battery Power/.test(execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf8', timeout: 1000 })); } catch { return false; }
@@ -220,6 +242,12 @@ async function selfTest() {
   assert.throws(() => parseArgs(['--pose', 'upside']));
   assert.throws(() => parseArgs(['--port', '5173']));
   assert.throws(() => parseArgs(['--bogus']));
+  assert.equal(parseArgs(['--gpufeatures', 'subgroups']).gpufeatures, 'subgroups');
+  assert.deepEqual(parseArgs(['--chrome-arg', '--enable-dawn-features=disable_robustness', '--chrome-arg', '--foo']).chromeArgs, ['--enable-dawn-features=disable_robustness', '--foo']);
+  assert.throws(() => parseArgs(['--chrome-arg']));
+  assert.throws(() => parseArgs(['--chrome-arg', 'disable_robustness']));
+  assert.deepEqual(chromeArgs(['--enable-dawn-features=use_user_defined_labels_in_backend'], ['--enable-dawn-features=disable_robustness', '--x']),
+    ['--enable-dawn-features=use_user_defined_labels_in_backend,disable_robustness', '--x']);
   console.log('PASS: profile.mjs arguments (the report path: node tools/profile-cpu-check.mjs)');
 }
 
@@ -245,9 +273,13 @@ async function main() {
     url.searchParams.set('map', o.map);
     url.searchParams.set('view', o.view);
     url.searchParams.set('profile', '1');
+    // only these optional shader features (gpu/features.js): `core`, or a list such as `subgroups` (f16 off), to A/B one feature
+    if (o.gpufeatures !== null) url.searchParams.set('gpufeatures', o.gpufeatures);
     slot.busyBefore = await gpuBusyPct();
     // the GPU counters need our pass labels to reach Metal (tools/gpu-counters.mjs COUNTER_CHROME_ARGS)
-    browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: countersMod?.COUNTER_CHROME_ARGS ?? [] });   // (waits for the slot; the slot starts inside it)
+    // (and --chrome-arg's switches, merged in: chromeArgs)
+    slot.chromeArgs = chromeArgs(countersMod?.COUNTER_CHROME_ARGS ?? [], o.chromeArgs);
+    browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: slot.chromeArgs });   // (waits for the slot; the slot starts inside it)
     const t0 = Date.now();
     const page = await newTestPage(browser, { mode: 'visual', viewport: o.viewport, deviceScaleFactor: o.dpr });
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -374,6 +406,8 @@ function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLi
     r = annotate(r, { cost: run.cost, gpuCounters: i === 0 ? gpuCounters && { text: gpuCounters.text, summary: gpuCounters.summary } : null, gpuShared: shared });
     Object.assign(r.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot,
       adapter: info && { vendor: info.vendor, architecture: info.architecture, description: info.description },
+      // the run's own Chrome switches (--chrome-arg): what an A/B of a switch differs in (compareReports)
+      chromeArgs: o.chromeArgs.length ? [...o.chromeArgs] : null,
       pageErrors: errors, costError: run.costError ?? null });
     if (errors.length) { r.untrusted.push(`page errors: ${errors.slice(0, 3).join(' | ')}`); r.trusted = false; }
     if (consoleLines.length) r.notes.push(`console (not timing): ${[...new Set(consoleLines)].slice(0, 3).join(' | ')}`);

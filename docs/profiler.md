@@ -18,6 +18,10 @@ One action shows what is wrong with performance, in one run.
 5. after the timed frames, collects agent C's cost counters (`__app.prof.cost?.capture()`) and, with `--counters`, agent D's GPU counters (`tools/gpu-counters.mjs`);
 6. closes the browser, measures GPU utilization again to detect a shared GPU, prints the report, and writes `profile.json`, `profile.html` (a self-contained waterfall) and `cost.png` (C's heatmap) to `--out`. The default is `$TMPDIR/tpt-profile/<map>-<pose>`.
 
+`--gpufeatures core` (or a list such as `subgroups`) boots with only those optional shader features (gpu/features.js), so one feature can be A/B'd on one machine: `--gpufeatures subgroups` against the default is f16 off, everything else equal. The setup line names them (`shaders f16+subgroups`), and `--compare` counts them as a setup difference.
+
+`--chrome-arg SWITCH` (repeatable) launches the browser with one more Chrome switch, to price it: `--chrome-arg --enable-dawn-features=disable_robustness` against the default prices Dawn's bounds checks. Chrome keeps only the last copy of a switch, so list switches (`--enable-dawn-features`, `--disable-dawn-features`, `--enable-features`, `--disable-features`) are merged with the counters' own (`COUNTER_CHROME_ARGS`, the pass labels Metal needs) into one switch. The setup line names them (`chrome --enable-dawn-features=…`), and `--compare` counts them as a setup difference.
+
 `--compare old/profile.json` prints the per-pass deltas. It says "NOT comparable" with the reasons when the setups differ.
 
 `--setup '<js>'` runs a fixture before each pose's warmup: an async function body given `window.__app` as `a` (say a blast repainted every few hundred ms, so particles fly through the timed frames). Its code is in the report's setup as `fixture`, and `--compare` calls two runs comparable only with the same one; what it returns is `fixtureResult`.

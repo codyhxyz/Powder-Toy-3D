@@ -42,8 +42,10 @@ import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, F
 import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
-import { buildPreset, ARENA_PRESETS } from './presets.js';
-import { labStudiesPlaques } from './lab/studies/index.js';
+import { buildPreset, ARENA_PRESETS, freshPresetKey } from './presets.js';
+import { enterAuthoredMap } from './lab/entry.js';
+import { decodeScenePlaques } from './lab/scenePlaques.js';
+import { preservationManifest } from './lab/preservation/index.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -106,7 +108,7 @@ const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], 
   valley: ARENA_PRESETS.damValley.size };
 // Authored fixed-size presets switch to their grid; ordinary box scenes
 // switch back. Their grids aren't in the Grid size row.
-const FIXED_PRESET_GRID = { damValley: 'valley', labStudies: 'valley' };
+const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley' };
 const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset
 const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
@@ -720,6 +722,9 @@ function pickedNow(cell, o) {
 
 // Multiplayer guests follow the host's grid size (a box: never World).
 function setGrid(dims, meta = null) {
+  // Replica terrain is not proof of this client's authored map identity.
+  // Keep its local manifest disabled even if the guest later plays on solo.
+  if (mp.replica) savedScenePlaques = [];
   if (replicaMap?.id === meta?.id && mapKind.streamed === (meta?.mode === 'world') && [sim.g.nx, sim.g.ny, sim.g.nz].every((n, i) => n === dims[i])) return true;
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
   if (meta?.mode === 'world') {
@@ -884,6 +889,13 @@ async function startMode(mode, { fresh = false } = {}) {
   }
   if (!chosen.team || !game) {
     game?.end();   // (end() also cancels a match still starting)
+    const map = mapOf(settings);
+    // Intentional (user request, 2026-10-25): authored exploration begins at
+    // its entrance, not above an opaque roof. Other Sandbox maps keep god view.
+    if (map?.startInPov && pov) {
+      if (fresh) pov.exit(true);
+      await enterAuthoredMap(pov, () => epoch === modeEpoch, map.spawnYaw ?? 0);
+    }
     if (chosen.key === 'noita' && pov && !pov.active) pov.enter();   // its rules are the map's (Descent)
     return false;
   }
@@ -912,6 +924,7 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  name = freshPresetKey(name);
   if (mp.frozen && undoable) { mp.resumeSolo(); replicaMap = null; }
   if (mp.replica) return false;
   ctx.resetWeather?.();
@@ -929,9 +942,14 @@ function loadPreset(name, undoable = true) {
     try { if (ctx.industry) industry = { preset: settings.preset, data: ctx.industry.toJSON() }; }
     catch (error) { hud.toast(error.message); return false; }
     sim.snapshot(sceneLabel(name));
-    if (industry) sim.history.at(-1).note = { industry };
+    const scenePlaques = ctx.getScenePlaques();
+    if (industry || scenePlaques) sim.history.at(-1).note = {
+      ...(industry ? { industry } : {}),
+      ...(scenePlaques ? { scenePlaques: { preset: settings.preset, records: decodeScenePlaques(scenePlaques) } } : {}),
+    };
   }
   settings.preset = name;
+  savedScenePlaques = null;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
   // A big map's world goes in once the passes it is written with are built (wire/world.js
   // loadScene), not behind the simulation's step kernels: its World load starts from it.
@@ -951,13 +969,6 @@ function loadPreset(name, undoable = true) {
     post.reset();
     signs?.clear();
     elementInspector.close();
-    // Intentional (user request, 2026-10-25): these are hand-built vibe studies,
-    // not the future generated collection. Regeneration restores their plaques.
-    if (name === 'labStudies' && mapKind.presets && signs) {
-      for (const p of labStudiesPlaques()) signs.add({
-        ...p, cell: new THREE.Vector3(...p.cell), normal: new THREE.Vector3(...p.normal), edit: false,
-      });
-    }
     resetSpawners(name);
     pov?.worldReplaced();
   });
@@ -1369,6 +1380,7 @@ let eyedropper = false; // armed by the dock's Eyedropper or by I away from any 
 createBrand();
 const card = createCard();
 const elementInspector = createElementInspector();
+let savedScenePlaques = null;
 const hud = createHud({ onTogglePause: () => setPaused(!settings.paused) });
 hud.setPaused(settings.paused);
 const help = createHelp(() => help.setOpen(false));
@@ -1804,6 +1816,11 @@ async function undo() {
     if (note?.industry) {
       settings.preset = note.industry.preset;
       ctx.industry?.fromJSON(note.industry.data);
+      save();
+    }
+    if (note?.scenePlaques) {
+      settings.preset = note.scenePlaques.preset;
+      savedScenePlaques = decodeScenePlaques(note.scenePlaques.records);
       save();
     }
     pov?.worldReplaced();
@@ -3116,6 +3133,8 @@ function tick(now, renderOnly = false) {
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
   inspectElement: (key) => elementInspector.show(key),
+  getScenePlaques: () => !mp.replica && mapKind.presets && settings.preset === 'preservationLab' ? (savedScenePlaques ?? preservationManifest().plaques) : null,
+  setScenePlaques: (records) => { savedScenePlaques = decodeScenePlaques(records); },
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
   setMode: startMode,
@@ -3157,7 +3176,7 @@ function bootReady(pending = null) {
       loadWatch.step('starting the match');
       const match = startMode(launch.mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
       await Promise.race([match, new Promise((r) => setTimeout(r, MATCH_WAIT_MS))]);
-    } else if (bootMap) startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // ?mode=, or Sandbox: its effect (Sandbox's none)
+    } else if (bootMap) await startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // authored first-person entrances finish before loading ends
     if (graphicsFailure || launch.startupError) return;
     mark('ready');
     loadWatch.done();

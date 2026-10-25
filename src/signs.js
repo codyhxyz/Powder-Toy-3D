@@ -102,7 +102,7 @@ export class Signs {
   get editing() { return this._edit !== null; }
 
   // cell: the grid cell the sign is on (a world cell with world: true); normal: the face's
-  add({ cell, normal, text = '', edit = true, world = false, elementKey = null }) {
+  add({ cell, normal, text = '', edit = true, world = false, elementKey = null, sceneKey = null }) {
     if (this.list.length >= MAX_SIGNS) {
       console.warn(`Signs: limit of ${MAX_SIGNS} reached`);
       return null;
@@ -119,6 +119,7 @@ export class Signs {
       normal: n,
       text: clean(text),
       elementKey: typeof elementKey === 'string' && itemByKey(elementKey)?.key === elementKey ? elementKey : null,
+      sceneKey: typeof sceneKey === 'string' && /^(element|story):[\w:-]{1,80}$/.test(sceneKey) ? sceneKey : null,
       anchor: new THREE.Vector3(),
       inside: true,    // the window holds its cell
       live: null,      // { id, T, P, transmittance } once the probe has run
@@ -198,6 +199,7 @@ export class Signs {
     return this.list.map((s) => ({
       cell: s.world.toArray(), normal: s.normal.toArray(), text: s.text,
       ...(s.elementKey ? { elementKey: s.elementKey } : {}),
+      ...(s.sceneKey ? { sceneKey: s.sceneKey } : {}),
     }));
   }
 
@@ -209,7 +211,7 @@ export class Signs {
       const v = (a) => (Array.isArray(a) ? new THREE.Vector3().fromArray(a) : new THREE.Vector3(a.x, a.y, a.z));
       for (const o of arr || []) {
         if (!o?.cell || !o?.normal || !clean(o.text)) continue;
-        if (!this.add({ cell: v(o.cell), normal: v(o.normal), text: o.text, elementKey: o.elementKey, edit: false, world: true })) break;
+        if (!this.add({ cell: v(o.cell), normal: v(o.normal), text: o.text, elementKey: o.elementKey, sceneKey: o.sceneKey, edit: false, world: true })) break;
       }
     } finally {
       this.onChange = notify;

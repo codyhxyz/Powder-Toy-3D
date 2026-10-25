@@ -35,7 +35,7 @@
     "check:world-native-preflight": "node --test tools/world-native-preflight-cpu-check.mjs",
     "check:fields": "node tools/field-deriver-cpu-check.mjs && node tools/world-field-cpu-check.mjs",
     "check:imports": "node tools/check-imports.mjs",
-    "check:lab": "node --test tools/lab-catalog-cpu-check.mjs tools/lab-studies-cpu-check.mjs src/lab/studies/*.test.js",
+    "check:lab": "node --test tools/lab-catalog-cpu-check.mjs tools/preservation-cpu-check.mjs tools/preservation-entry-cpu-check.mjs tools/scene-plaques-cpu-check.mjs",
     "check:gpu": "node tools/gpu-foundation-check.mjs",
     "check:budget": "node tools/budget-check.mjs",
     "check:async": "node tools/check-async-reads.mjs",

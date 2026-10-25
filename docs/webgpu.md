@@ -1774,6 +1774,11 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
 - D7 packed state and packed flags; with it, `moveSrc`'s 3 bits move into the flow word's unused f16 lane (one buffer,
   one binding and 4 B per cell per step less on the Whitewater path).
 - `shader-f16` paths for fields, light, GI, post and the volume's shading; subgroup reductions and ballot compaction.
+  *Tried 2026-10-25, not shipped (branch `perf/f16-march`, `halfMarchState`):* the world march stage's loop-carried
+  colour (col, trans, mediumLight, lightRef, paneEnv) stored as `vec3h`, all math f32. The stage spills 752 B a thread
+  (Lab, M5); 15 halves saved don't reach that. Lab: f32 world march 12.0 ms (Metal, trusted); the f16 run had
+  timestamps only (untrusted) and was not faster: GPU span 37.1 vs 34.8 ms, though unchanged passes rose with it.
+  f16 needs a much larger register cut (the callees' colour math) to show, or the march split further.
 - An Apple-only unrolled move variant, if the v1 form (D2) costs measurably on the Mac; it must pass I2 there.
 - Compute raymarching with tile classification, mesh depth as `tMax` and RGB transmittance.
 - A GPU brick pool for the world store (removes the readback gate on moves); incremental codec and world-model
