@@ -24,12 +24,13 @@
 // trace ran; misses inside the box count, the rays cost work), at the scene
 // target's real size, not the canvas's.
 
-import { costify, costPipeline, COST_COUNTERS, COST_KINDS, COST_COVERED_BIT, COST_MAX, COST_MARCH_MAX } from '../shaders/costView.js';
+import { costify, costPipeline, COST_COUNTERS, COST_KINDS, COST_COVERED_BIT, COST_MAX, COST_MARCH_MAX, COST_STORAGE_FORMAT, COST_STORAGE_ROWS } from '../shaders/costView.js';
+import { MARCH_STAGES } from '../shaders/world/march.js';
 import { halfToFloat } from '../gpu/readback.js';
 import { isMaterialView } from '../views.js';
 
 // GPUTextureUsage bits (no GPU globals at import: tools/check-imports.mjs)
-const USAGE = { COPY_SRC: 0x01, RENDER_ATTACHMENT: 0x10 };
+const USAGE = { COPY_SRC: 0x01, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };
 // The two pictures are the same when no more than this share of the covered
 // pixels differ by more than SAME_TOL in any channel (linear, premultiplied).
 // The code is identical but for counter increments, so they should match
@@ -69,14 +70,15 @@ export function decode(c0, c1, n) {
 }
 
 // mean, p50, p95, max, sum over the covered pixels, from a histogram (counts are 16-bit)
-export function stats(v, covered, count, cap) {
-  const hist = new Uint32Array(COST_MAX + 1);
-  let sum = 0, max = 0, saturated = 0;
+export function stats(v, covered, count, cap = Infinity) {
+  let max = 0;
+  for (let p = 0; p < v.length; p++) if (covered[p] && v[p] > max) max = v[p];
+  const hist = new Uint32Array(max + 1);
+  let sum = 0, saturated = 0;
   for (let p = 0; p < v.length; p++) {
     if (!covered[p]) continue;
     const x = v[p];
     hist[x]++; sum += x;
-    if (x > max) max = x;
     if (x >= cap) saturated++;
   }
   const pct = (q) => {
@@ -88,6 +90,24 @@ export function stats(v, covered, count, cap) {
   return { mean: count ? sum / count : 0, p50: pct(0.5), p95: pct(0.95), p99: pct(SCALE_PERCENTILE), max, sum, saturated };
 }
 
+// the storage sink's texture (w × 2h rgba32uint: the pixel's words in rows 2y and 2y + 1) as decode's two arrays
+export function storageWords(t, w, h) {
+  const c0 = new Uint32Array(4 * w * h), c1 = new Uint32Array(2 * w * h);
+  for (let y = 0; y < h; y++) {
+    c0.set(t.subarray(4 * w * COST_STORAGE_ROWS * y, 4 * w * (COST_STORAGE_ROWS * y + 1)), 4 * w * y);
+    const r1 = 4 * w * (COST_STORAGE_ROWS * y + 1);
+    for (let x = 0; x < w; x++) { c1[2 * (w * y + x)] = t[r1 + 4 * x]; c1[2 * (w * y + x) + 1] = t[r1 + 4 * x + 1]; }
+  }
+  return [c0, c1];
+}
+// two integer (or raw float) textures, word for word: pixels whose words differ
+export function compareWords(a, b, words) {
+  let differing = 0;
+  for (let p = 0, n = a.length / words; p < n; p++) {
+    for (let c = 0; c < words; c++) if (a[words * p + c] !== b[words * p + c]) { differing++; break; }
+  }
+  return differing;
+}
 // the live pipeline's colour against the twin's, texel by texel (rgba16float bits)
 export function compare(a, b, covered) {
   let maxDiff = 0, differing = 0, exact = 0;
@@ -155,29 +175,75 @@ export function attachCostView(app) {
   const colour = (t) => ({ view: t.createView(), clearValue: [0, 0, 0, 0], loadOp: 'clear', storeOp: 'store' });
   const depthOf = (t) => ({ view: t.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' });
 
-  // a live frame drawn just now (its draw options in vol.lastDraw)
+  // What the last frame drew: the world march (gfx/worldView.js lastRecorded: the material views
+  // on this branch) or the box volume (gfx/volume.js lastDraw: the curved view), whichever is newer.
+  const draws = () => (app.vol?.lastDraw?.n ?? 0) + (app.worldView?.lastRecorded?.n ?? 0);
+  const newest = () => {
+    const wv = app.worldView?.lastRecorded, box = app.vol?.lastDraw;
+    if (wv && (!box || (wv.at ?? 0) >= (box.at ?? 0))) return { world: true, rec: wv };
+    return box ? { world: false, rec: box } : null;
+  };
+  // a live frame drawn just now
   async function freshFrame() {
-    const vol = app.vol, before = vol.lastDraw?.n ?? 0;
-    if (app.test?.parked) { await app.test.renderOnce(); return vol.lastDraw; }
-    app.requestRender?.();
-    const until = performance.now() + FRAME_WAIT_MS;
-    while ((vol.lastDraw?.n ?? 0) === before) {
-      if (performance.now() > until) throw new Error('cost view: no frame drew the volume (is the view still building?)');
-      await new Promise((r) => requestAnimationFrame(r));
+    const before = draws();
+    if (app.test?.parked) await app.test.renderOnce();
+    else {
+      app.requestRender?.();
+      const until = performance.now() + FRAME_WAIT_MS;
+      while (draws() === before) {
+        if (performance.now() > until) throw new Error('cost view: no frame drew the view (is it still building?)');
+        await new Promise((r) => requestAnimationFrame(r));
+      }
     }
-    return vol.lastDraw;
+    const src = newest();
+    if (!src) throw new Error('cost view: no frame has drawn a lit view yet');
+    return src;
   }
+
+  // the result's shared tail: stats over the covered pixels, the costliest counter, its heatmap
+  function result(base, { vals, covered, count, w, h, stages = null, kind, caps }) {
+    const counters = {};
+    COST_COUNTERS.forEach((c, s) => { counters[c.key] = { label: c.label, where: c.where, ...stats(vals[s], covered, count, caps[s]) }; });
+    const warnings = COST_KINDS.filter((k) => counters[k].saturated).map((k) => `${k}: ${counters[k].saturated} pixel(s) reached the 16-bit ceiling (their counts are lower bounds)`);
+    if (stages) {
+      for (const [st, x] of Object.entries(stages)) {
+        for (const k of COST_KINDS) if (x.counters[k].saturated) warnings.push(`${st} ${k}: ${x.counters[k].saturated} pixel(s) reached the 16-bit ceiling (lower bounds)`);
+      }
+    }
+    const costliest = COST_KINDS.reduce((a, b) => (counters[b].sum > counters[a].sum ? b : a));
+    const shown = kind ?? costliest;
+    const scale = Math.max(1, counters[shown].p99);
+    const image = heatmap(vals[COST_KINDS.indexOf(shown)], covered, w, h, scale);
+    last = { vals, covered, w, h, counters };
+    return {
+      unit: 'work',   // counts of work per pixel; nothing here is a time
+      ...base,
+      size: [w, h], pixels: w * h, covered: count,
+      counters, ...(stages ? { stages } : {}), costliest, kind: shown,
+      legend: { kind: shown, label: counters[shown].label, min: 0, max: scale, scale: `linear to the covered pixels' p${Math.round(SCALE_PERCENTILE * 100)}`, colormap: 'inferno', uncovered: 'transparent' },
+      warnings,
+      image: image.toDataURL('image/png'),
+    };
+  }
+  const detailList = (d) => Object.keys(d ?? {}).filter((k) => d[k]).sort();
+  const untrustedWhy = (what, diffShare, maxDiff) => `the counted variant drew a different ${what} than the live pipeline (${(100 * diffShare).toFixed(3)} % of covered pixels differ, up to ${maxDiff}): its counts do not describe the real frame`;
 
   async function capture({ kind } = {}) {
     if (kind !== undefined && !COST_KINDS.includes(kind)) throw new Error(`cost view: no counter ${kind} (${COST_KINDS.join(', ')})`);
     await gpu.pipelines.settled();
-    let draw = await freshFrame();
-    if (!isMaterialView(draw.view)) throw new Error(`cost view: the view drawn (${draw.view}) is not a lit view; the counters live in the lit volume's tracer`);
+    const src = await freshFrame();
+    if (!isMaterialView(src.rec.view)) throw new Error(`cost view: the view drawn (${src.rec.view}) is not a lit view; the counters live in the lit tracer`);
+    return src.world ? captureWorld(src.rec, kind) : captureBox(src.rec, kind);
+  }
+
+  // ---- the box volume (gfx/volume.js): one pass, the counters in integer targets beside its colour ----
+  async function captureBox(draw, kind) {
     const twin = twinOf(draw.pipe);
     if (twin.state !== 'ready') {
       await twin.ready;   // (its build took frames: measure a frame drawn after it)
-      draw = await freshFrame();
-      if (twinOf(draw.pipe) !== twin) return capture({ kind });   // (the view changed meanwhile)
+      const again = await freshFrame();
+      if (again.world || twinOf(again.rec.pipe) !== twin) return capture({ kind });   // (the view changed meanwhile)
+      draw = again.rec;
     }
     const vol = app.vol;
     const { width: w, height: h } = app.post.sceneTarget;
@@ -195,35 +261,111 @@ export function attachCostView(app) {
     const reads = [t.colorLive, t.colorTwin, t.cost0, t.cost1].map((x) => gpu.readback.texture(x));
     gpu.flush('cost view');
     const [live, counted, c0, c1] = await Promise.all(reads);
-
-    const n = w * h;
-    const { vals, covered, count } = decode(c0, c1, n);
-    const counters = {};
-    COST_COUNTERS.forEach((c, s) => { counters[c.key] = { label: c.label, where: c.where, ...stats(vals[s], covered, count, s === 0 ? COST_MARCH_MAX : COST_MAX) }; });
+    const { vals, covered, count } = decode(c0, c1, w * h);
     const cmp = compare(live, counted, covered);
     const diffShare = count ? cmp.differing / count : (cmp.differing ? 1 : 0);
     const samePicture = diffShare <= SAME_SHARE;
-    const warnings = COST_KINDS.filter((k) => counters[k].saturated).map((k) => `${k}: ${counters[k].saturated} pixel(s) reached the 16-bit ceiling (their counts are lower bounds)`);
-    const costliest = COST_KINDS.reduce((a, b) => (counters[b].sum > counters[a].sum ? b : a));
-    const shown = kind ?? costliest;
-    const s = COST_KINDS.indexOf(shown);
-    const scale = Math.max(1, counters[shown].p99);
-    const image = heatmap(vals[s], covered, w, h, scale);
-    last = { vals, covered, w, h, counters };
-    const reason = samePicture ? null
-      : `the counted variant drew a different picture than the live pipeline (${(100 * diffShare).toFixed(3)} % of covered pixels differ, up to ${cmp.maxDiff}): its counts do not describe the real frame`;
-    return {
-      unit: 'work',   // counts of work per pixel; nothing here is a time
-      trusted: samePicture, reason,
+    return result({
+      trusted: samePicture, reason: samePicture ? null : untrustedWhy('picture', diffShare, cmp.maxDiff),
       samePicture, maxDiff: cmp.maxDiff, diffShare, exactShare: cmp.exactShare,
-      size: [w, h], pixels: n, covered: count,
-      view: draw.view, detail: Object.keys(draw.detail ?? {}).filter((k) => draw.detail[k]).sort(), curved: !!draw.warp?.k,
-      pipeline: draw.pipe.name,
-      counters, costliest, kind: shown,
-      legend: { kind: shown, label: counters[shown].label, min: 0, max: scale, scale: `linear to the covered pixels' p${Math.round(SCALE_PERCENTILE * 100)}`, colormap: 'inferno', uncovered: 'transparent' },
-      warnings,
-      image: image.toDataURL('image/png'),
+      path: 'box', pass: 'scene', passes: ['scene'],
+      view: draw.view, detail: detailList(draw.detail), curved: !!draw.warp?.k, pipeline: draw.pipe.name,
+    }, { vals, covered, count, w, h, kind, caps: COST_KINDS.map((_, s) => (s === 0 ? COST_MARCH_MAX : COST_MAX)) });
+  }
+
+  // ---- the world march (gfx/worldView.js): the split stages, or the whole march ----
+  // Each stage's twin writes its counters into a storage texture of its own, read back as it is:
+  // a stage's counts are the ones that stage made. The live chain and the counted chain each run
+  // into a G-buffer of their own; every stage output a target holds is compared (G0, G1: the march;
+  // O: the reflection; S, D: the picture), so no stage's counts stand for a different stage's work.
+  let world = null;   // { w, h, split, gbA, gbB, cost: { stage: texture }, colorLive, colorTwin, depth }
+  const worldTargets = (wv, w, h, split) => {
+    if (world && world.w === w && world.h === h && world.split === split && world.wv === wv) return world;
+    if (world) { world.gbA?.destroy(); world.gbB?.destroy(); for (const t of [...Object.values(world.cost), world.colorLive, world.colorTwin, world.depth]) t?.destroy(); }
+    const tex = (label, format, size = [w, h], usage = USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC) => gpu.createTexture({ label: `cost view ${label}`, size, format, usage });
+    const stages = split ? MARCH_STAGES : ['whole'];
+    world = {
+      w, h, split, wv,
+      cost: Object.fromEntries(stages.map((st) => [st, tex(`${st} counters`, COST_STORAGE_FORMAT, [w, COST_STORAGE_ROWS * h], USAGE.STORAGE_BINDING | USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC)])),
+      ...(split ? { gbA: wv.costGbuffer(w, h), gbB: wv.costGbuffer(w, h) }
+        : { colorLive: tex('live colour', 'rgba16float'), colorTwin: tex('counted colour', 'rgba16float'), depth: tex('depth', 'depth32float') }),
     };
+    world.costViews = Object.fromEntries(Object.entries(world.cost).map(([st, t]) => [st, t.createView()]));
+    return world;
+  };
+  async function captureWorld(rec, kind) {
+    const wv = app.worldView;
+    const stages = rec.split ? MARCH_STAGES : ['whole'];
+    const liveOf = (r) => (r.split ? r.pipe.parts : { whole: r.pipe });
+    let twinParts = Object.fromEntries(stages.map((st) => [st, wv.costTwin(liveOf(rec)[st], st)]));
+    if (Object.values(twinParts).some((t) => t.state !== 'ready')) {
+      await Promise.all(Object.values(twinParts).map((t) => t.ready));   // (their builds took frames: measure a frame drawn after them)
+      const again = await freshFrame();
+      if (!again.world || again.rec.pipe !== rec.pipe) return capture({ kind });   // (the view changed meanwhile)
+      rec = again.rec;
+      twinParts = Object.fromEntries(stages.map((st) => [st, wv.costTwin(liveOf(rec)[st], st)]));
+    }
+    const [w, h] = rec.size ?? [app.post.sceneTarget.width, app.post.sceneTarget.height];
+    const t = worldTargets(wv, w, h, rec.split);
+    // synchronously, before anything rewrites the frame state: the counters cleared, the live chain, the counted chain
+    const f = gpu.frame;
+    for (const v of Object.values(t.costViews)) f.render({ colorAttachments: [{ view: v, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] }, 'cost view counted clear').end();
+    const target = (c) => (rec.split ? null : { color: c.createView(), depth: t.depth.createView() });
+    const okLive = wv.costReplay(f, rec, { parts: liveOf(rec), pipe: rec.pipe, g: t.gbA, target: target(t.colorLive), name: 'cost view live' });
+    const okTwin = wv.costReplay(f, rec, { parts: twinParts, pipe: twinParts.whole, g: t.gbB, target: target(t.colorTwin), cost: t.costViews, name: 'cost view counted' });
+    if (!okLive || !okTwin) { gpu.flush('cost view'); throw new Error('cost view: the world march could not replay (its world copy is rebuilding); capture again'); }
+    // what each chain made: the picture (S, D; the whole march: its colour), the stages' outputs, the counters
+    const pairs = rec.split ? { S: 'S', D: 'D', G0: 'G0', G1: 'G1', O: 'O' } : { S: null };
+    const reads = {};
+    for (const k of Object.keys(pairs)) {
+      reads[k] = rec.split ? [t.gbA.tex[k], t.gbB.tex[k]] : [t.colorLive, t.colorTwin];
+      reads[k] = reads[k].map((x) => gpu.readback.texture(x));
+    }
+    const costReads = stages.map((st) => gpu.readback.texture(t.cost[st]));
+    gpu.flush('cost view');
+    const got = {};
+    for (const [k, [a, b]] of Object.entries(reads)) got[k] = [await a, await b];
+    const costTex = await Promise.all(costReads);
+
+    // each stage's counts, as that stage wrote them; the frame's per pixel is their sum
+    const n = w * h;
+    const per = stages.map((st, i) => ({ st, ...decode(...storageWords(costTex[i], w, h), n) }));
+    const frame = per[0];   // the march (or the whole march) covers every pixel the world does
+    const covered = frame.covered, count = frame.count;
+    const vals = COST_KINDS.map((_, s) => {
+      const v = new Uint32Array(n);
+      for (const x of per) { const src = x.vals[s]; for (let p = 0; p < n; p++) v[p] += src[p]; }
+      return v;
+    });
+    const stageStats = rec.split ? Object.fromEntries(per.map((x) => [x.st, {
+      pass: `world ${x.st}`, covered: x.count,
+      counters: Object.fromEntries(COST_COUNTERS.map((c, s) => [c.key, stats(x.vals[s], covered, count, s === 0 ? COST_MARCH_MAX : COST_MAX)])),
+    }])) : null;
+    // the comparisons: the picture with a tolerance (as the box's), every stage output word for word
+    const pic = compare(got.S[0], got.S[1], covered);
+    let picDiffering = pic.differing;
+    const outputs = {};
+    if (rec.split) {
+      const dDiff = compareWords(got.D[0], got.D[1], 1);
+      picDiffering = Math.max(picDiffering, dDiff);
+      outputs.D = dDiff;
+      for (const [k, words] of [['G0', 4], ['G1', 4], ['O', 4]]) outputs[k] = compareWords(got[k][0], got[k][1], words);
+    }
+    const diffShare = count ? picDiffering / count : (picDiffering ? 1 : 0);
+    const samePicture = diffShare <= SAME_SHARE;
+    const stageOutputsSame = Object.entries(outputs).filter(([k]) => k !== 'D').every(([, d]) => d === 0);
+    const trusted = samePicture && stageOutputsSame;
+    const reason = !samePicture ? untrustedWhy('picture', diffShare, pic.maxDiff)
+      : !stageOutputsSame ? `the counted stages wrote different G-buffer words than the live ones (${Object.entries(outputs).filter(([, d]) => d).map(([k, d]) => `${k}: ${d} px`).join(', ')}): their counts do not describe the real frame`
+        : null;
+    return result({
+      trusted, reason, samePicture, maxDiff: pic.maxDiff, diffShare, exactShare: pic.exactShare,
+      ...(rec.split ? { stageOutputsDiffering: outputs } : {}),
+      path: rec.split ? 'world split' : 'world whole',
+      pass: rec.split ? 'world march' : 'scene',
+      passes: rec.split ? MARCH_STAGES.map((st) => `world ${st}`) : ['scene'],
+      view: rec.view, detail: detailList(rec.detail), curved: false, pipeline: rec.pipe.name,
+    }, { vals, covered, count, w, h, stages: stageStats, kind, caps: COST_KINDS.map((_, s) => (s === 0 ? COST_MARCH_MAX : COST_MAX) * stages.length) });
   }
 
   // ---- the overlay: the same counters as a false-colour view, with a legend ----

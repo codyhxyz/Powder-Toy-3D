@@ -309,7 +309,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
       // the cost view (gfx/costView.js): what was drawn, and its counted twin of `pipe` drawn the same way
-      if (!twin) volume.lastDraw = { view, detail, meshDepth, marchNear, aerCopy, warp, pipe, n: (volume.lastDraw?.n ?? 0) + 1 };
+      if (!twin) volume.lastDraw = { view, detail, meshDepth, marchNear, aerCopy, warp, pipe, n: (volume.lastDraw?.n ?? 0) + 1, at: performance.now() };
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       (twin ?? pipe).draw(rp, {

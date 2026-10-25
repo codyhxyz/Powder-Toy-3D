@@ -20,6 +20,8 @@
 
 import { volumeFrag, VOLUME_LAYOUTS, LAYOUT_NAMES, VolumeParams, volumePipeline, REALISTIC_LEVELS, VOLUME_VIEWS } from './render.js';
 import { isMaterialView } from '../views.js';
+import { STAGE } from './common.js';
+import { worldMarchFrag, WORLD_MARCH_LAYOUTS, worldMarchLayoutNames, worldMarchPipeline, MarchParams, MARCH_STAGES, marchSplits } from './world/march.js';
 
 /**
  * The counters, in slot order. Each counts work, not time: the variant's speed
@@ -293,9 +295,22 @@ export const costPipeline = (base = volumePipeline()) => ({
   fragment: { ...base.fragment, targets: [...base.fragment.targets, ...COST_TARGETS] },
 });
 
-// tools/check-wgsl.mjs (and the deploy's operator gate): every lit view's levels, flat and curved.
-// warm: never (the menu's warm-up never builds the cost view).
-export const WGSL_CHECK = () => VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([k, d]) => [false, true].map((curved) => ({
+// the world march's twins (gfx/worldView.js costTwin): group 0 with the counters' storage texture
+const worldCostCheck = (view, level, d, stage) => {
+  const [frame, ...rest] = WORLD_MARCH_LAYOUTS(undefined, stage);
+  const binding = costBinding(frame);
+  return {
+    name: `world.${view}.${level}.${stage}.cost`, view, detail: d(), kind: 'render', warm: () => false,
+    code: (g) => costify(worldMarchFrag(g, { view, detail: d(), stage }), { sink: 'storage', binding, require: stage === 'whole' ? COST_KINDS : [] }),
+    layouts: () => [[...frame, { binding, visibility: STAGE.FRAGMENT, storageTexture: { access: 'write-only', format: COST_STORAGE_FORMAT, viewDimension: '2d' } }], ...rest],
+    layoutNames: [`${worldMarchLayoutNames(stage)[0]}_COST`, ...worldMarchLayoutNames(stage).slice(1)],
+    params: MarchParams, ...worldMarchPipeline(stage),
+  };
+};
+// tools/check-wgsl.mjs (and the deploy's operator gate): every lit view's levels, flat and curved;
+// the world march's, whole and split. warm: never (the menu's warm-up never builds the cost view).
+export const WGSL_CHECK = () => [...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([level, d]) =>
+  ['whole', ...(marchSplits(d()) ? MARCH_STAGES : [])].map((stage) => worldCostCheck(view, level, d, stage)))), ...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([k, d]) => [false, true].map((curved) => ({
   name: `volume.${view}.${k}${curved ? '.curved' : ''}.cost`,
   view, detail: d(), curved, warm: () => false,
   ...(curved ? { grids: ['64'] } : {}),
@@ -305,4 +320,4 @@ export const WGSL_CHECK = () => VOLUME_VIEWS.filter(isMaterialView).flatMap((vie
   layoutNames: LAYOUT_NAMES.volume,
   params: VolumeParams,
   ...costPipeline(),
-}))));
+}))))];

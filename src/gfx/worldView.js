@@ -39,8 +39,9 @@ import { RENDER_LAYOUT } from '../shaders/bindings.js';
 import { WorldCopy } from '../world/worldCopy.js';
 import { WorldFields } from './worldFields.js';
 import { worldCopyWGSL } from '../shaders/world/copy.js';
+import { costify, costBinding, COST_KINDS, COST_STORAGE_FORMAT } from '../shaders/costView.js';
 
-const TEX = { TEXTURE_BINDING: 0x04 };   // (GPUTextureUsage's bit, importable in Node)
+const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits, importable in Node)
 const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 const xyz = (o) => [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0];
 
@@ -79,6 +80,11 @@ export function createWorldView(gpu, sim, { volume }) {
   const stageL = Object.fromEntries(MARCH_STAGES.map((st) => [st,
     gpu.layout(worldMarchLayoutNames(st)[0], WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0])]));
   const compositeL = gpu.layout(COMPOSITE_LAYOUT_NAMES[0], COMPOSITE_LAYOUT);
+  // the cost view's twins (gfx/costView.js): each stage's group 0 and the counters' storage texture
+  const frameEntriesOf = (st) => WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0];
+  const costL = {};
+  const costLayout = (st) => (costL[st] ??= gpu.layout(`${worldMarchLayoutNames(st)[0]}_COST`, [...frameEntriesOf(st),
+    { binding: costBinding(frameEntriesOf(st)), visibility: GPUShaderStage.FRAGMENT, storageTexture: { access: 'write-only', format: COST_STORAGE_FORMAT, viewDimension: '2d' } }]));
   const fu = frameUniformsOf(gpu);
   const uniforms = gpu._worldFrameUniforms ??= gpu.uniforms(FrameUniformsStruct, 'FrameUniforms (world cells)');
   const last = { viewProj: new Matrix4(), model: new Matrix4() };
@@ -105,16 +111,18 @@ export function createWorldView(gpu, sim, { volume }) {
     const key = `g2|${entries.map((e) => idOf(e.resource.buffer ?? e.resource)).join(',')}`;
     return cached(key, () => gpu.bindGroup(L.group2, entries, label('group 2')));
   }
-  function frameGroup(depth, stage = 'whole') {
+  // (g: the G-buffer a stage binds, the frame's by default; cost: the cost view's counters, its twins' group 0)
+  function frameGroup(depth, stage = 'whole', g = gb, cost = null) {
     const plane = sim.decoPlane ?? { buffer: dummy.plane, offset: 0, size: dummy.plane.size };
     const extra = stage === 'whole' ? [] : stageTextures(stage);
-    const key = `g0|${stage}|${idOf(depth)}|${idOf(plane.buffer)}|${plane.offset}|${plane.size}|${extra.length ? idOf(gb) : ''}`;
-    return cached(key, () => gpu.bindGroup(stage === 'whole' ? L.frame : stageL[stage], [
+    const key = `g0|${stage}|${idOf(depth)}|${idOf(plane.buffer)}|${plane.offset}|${plane.size}|${extra.length ? idOf(g) : ''}|${cost ? idOf(cost) : ''}`;
+    return cached(key, () => gpu.bindGroup(cost ? costLayout(stage) : stage === 'whole' ? L.frame : stageL[stage], [
       { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } },
       { binding: 2, resource: depth.createView({}) },
       { binding: 3, resource: { buffer: plane.buffer, offset: plane.offset, size: plane.size } },
-      ...extra.map(([binding, k]) => ({ binding, resource: gb.views[k] })),
-    ], label(stage === 'whole' ? 'frame' : `${stage} frame`)));
+      ...extra.map(([binding, k]) => ({ binding, resource: g.views[k] })),
+      ...(cost ? [{ binding: costBinding(frameEntriesOf(stage)), resource: cost }] : []),
+    ], label(`${stage === 'whole' ? 'frame' : `${stage} frame`}${cost ? ' (cost)' : ''}`)));
   }
 
   // ---- the split march's G-buffer (shaders/world/march.js GBUF), the scene target's size ----
@@ -139,7 +147,26 @@ export function createWorldView(gpu, sim, { volume }) {
     return gb;
   }
   const CLEAR = { D: { r: GBUF_NO_DEPTH, g: 0, b: 0, a: 0 } };
-  const attach = (k) => ({ view: gb.views[k], loadOp: 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
+  const attach = (k, g = gb) => ({ view: g.views[k], loadOp: 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
+  // the split stages into G-buffer g (the frame's, or the cost view's own), each a pass of its own
+  function recordStages(frame, parts, g, depth, header, params, { names = (st) => `world ${st}`, cost = null } = {}) {
+    const copy = worldCopy.bindGroup, g2 = group2();
+    for (const st of MARCH_STAGES) {
+      const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k) => attach(k, g)) }, names(st));
+      try {
+        parts[st].draw(rp, { bind: [frameGroup(depth, st, g, cost?.[st] ?? null), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
+      } finally { rp.end(); }
+    }
+  }
+  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines }) => {
+    const depth = meshDepth ?? dummy.depth;
+    return {
+      meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
+      deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim),
+    };
+  };
+  let drawNo = 0;
+  const twins = new WeakMap();
   let compositePipe = null;
   let prepared = false;   // a prepass this frame, for the next draw to composite
   let compositeParams = null;
@@ -241,19 +268,10 @@ export function createWorldView(gpu, sim, { volume }) {
       if (!copy) return false;
       gbuffer(target.width, target.height);
       meshInv.multiplyMatrices(last.viewProj, last.model).invert();   // clip → world cells, the jittered camera's
-      const depth = meshDepth ?? dummy.depth;
       const header = { ...sim.readHeader(), origin: [0, 0, 0] };
-      const params = {
-        meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
-        deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim),
-      };
-      const g2 = group2();
-      for (const st of MARCH_STAGES) {
-        const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map(attach) }, `world ${st}`);
-        try {
-          set.parts[st].draw(rp, { bind: [frameGroup(depth, st), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
-        } finally { rp.end(); }
-      }
+      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines });
+      recordStages(frame, set.parts, gb, meshDepth ?? dummy.depth, header, params);
+      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
       compositeParams = params;
       prepared = true;
       return true;
@@ -317,12 +335,66 @@ export function createWorldView(gpu, sim, { volume }) {
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
         bind: [frameGroup(depth), copy, group2()], header: { ...sim.readHeader(), origin: [0, 0, 0] },
-        params: {
-          meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
-          deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim),
-        },
+        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines }),
         count: WORLD_MARCH_VERTICES,
       });
+      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, pipe, n: ++drawNo, at: performance.now() };
+      return true;
+    },
+
+    // ---- the cost view (gfx/costView.js, docs/profiler.md "Cost view") ----
+    /** What the last frame drew: { split, view, detail, meshDepth, marchNear, aerCopy, floorLines, size?, pipe, n }, or null. */
+    lastRecorded: null,
+    /**
+     * A live pipeline's counted twin (shaders/costView.js costify of its own WGSL text, a storage
+     * texture for the counters in its group 0), made on first use. stage: 'whole' or a split stage.
+     */
+    costTwin(pipe, stage = 'whole') {
+      let t = twins.get(pipe);
+      if (!t) {
+        const { code, params, vertex, fragment, primitive, depthStencil, multisample } = pipe.desc;
+        const binding = costBinding(frameEntriesOf(stage));
+        twins.set(pipe, t = gpu.renderPipeline({
+          name: `${pipe.name}.cost`, code: costify(code, { sink: 'storage', binding, require: stage === 'whole' ? COST_KINDS : [] }),
+          layouts: [costLayout(stage), L.copy, L.group2], params, vertex, fragment, primitive, depthStencil, ...(multisample ? { multisample } : {}),
+          build: 'now', optional: true,   // (a failure to build it is the cost view's, not the game's)
+        }));
+      }
+      return t;
+    },
+    /** A G-buffer of the cost view's own (every texture readable), the size of the scene target. */
+    costGbuffer(w, h) {
+      const storage = new Set(stageTextures('march').filter(([, , wr]) => wr).map(([, k]) => k));
+      const tex = {}, views = {};
+      for (const [k, format] of Object.entries(GBUF)) {
+        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: [w, h], format,
+          usage: TEX.TEXTURE_BINDING | TEX.COPY_SRC | (storage.has(k) ? TEX.STORAGE_BINDING : TEX.RENDER_ATTACHMENT) });
+        views[k] = tex[k].createView();
+      }
+      return { w, h, tex, views, destroy() { Object.values(tex).forEach((t) => t.destroy()); } };
+    },
+    /**
+     * Replays the last recorded draw (lastRecorded) on the frame state it left: the split stages
+     * into G-buffer g with `parts` (the live pipelines, or their twins with `cost`: a storage view per
+     * stage), or the whole march into `target` ({ color, depth } views) with `pipe`. Pass names
+     * start 'cost view …' (never timed: gfx/profileReport.js EXCLUDED_PASS). False if it can't.
+     */
+    costReplay(frame, rec, { parts, pipe, g, target, cost = null, name }) {
+      const copy = worldCopy.bindGroup;
+      if (disposed || !copy) return false;
+      meshInv.multiplyMatrices(last.viewProj, last.model).invert();
+      const header = { ...sim.readHeader(), origin: [0, 0, 0] };
+      const params = marchParams(rec);
+      const depth = rec.meshDepth ?? dummy.depth;
+      if (rec.split) {
+        recordStages(frame, parts, g, depth, header, params, { names: (st) => `${name} world ${st}`, cost });
+        return true;
+      }
+      const rp = frame.render({ colorAttachments: [{ view: target.color, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
+        depthStencilAttachment: { view: target.depth, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' } }, `${name} world march`);
+      try {
+        pipe.draw(rp, { bind: [frameGroup(depth, 'whole', gb, cost?.whole ?? null), copy, group2()], header, params, count: WORLD_MARCH_VERTICES });
+      } finally { rp.end(); }
       return true;
     },
     /** The pipelines made so far: { key, state, ms }. */

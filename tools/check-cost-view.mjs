@@ -112,6 +112,17 @@ if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
   b[4 * 2] = 0x3e00;   // 1.5 in one texel
   const diff = compare(a, b, d.covered);
   want(diff.maxDiff === 0.5 && diff.differing === 1, 'a changed texel is seen');
-  console.log('readback arithmetic: exact decode, covered-only stats, comparison sees a change');
+  // the storage sink's rows (shaders/costView.js costStore: the pixel's words in rows 2y and 2y + 1)
+  const { storageWords, compareWords } = await import('../src/gfx/costView.js');
+  const W = 2, H = 2, tex = new Uint32Array(4 * W * 2 * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = W * y + x;
+    tex.set([COST_COVERED_BIT | p, 1, 2, 3], 4 * (W * 2 * y + x));
+    tex.set([10 + p, (20 + p) << 16, 0, 0], 4 * (W * (2 * y + 1) + x));
+  }
+  const s = decode(...storageWords(tex, W, H), W * H);
+  want(s.count === 4 && s.vals[0][3] === 3 && s.vals[10][2] === 0 && s.vals[11][2] === 22 && s.vals[8][1] === 11, 'storage rows decode per pixel');
+  want(compareWords(new Uint32Array([1, 2, 3, 4]), new Uint32Array([1, 2, 3, 5]), 2) === 1, 'word comparison sees a change');
+  console.log('readback arithmetic: exact decode (targets and storage rows), covered-only stats, comparisons see a change');
 }
 if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
