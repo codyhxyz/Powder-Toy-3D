@@ -259,7 +259,7 @@ function costFindings(c, passes, context) {
 }
 
 const setupKeys = ['map', 'mode', 'view', 'detail', 'canvas', 'renderScale', 'pixelRatio', 'taa', 'upscale', 'adaptive', 'autoRes',
-  'pose', 'grid', 'world', 'gpuName', 'split', 'testMode', 'paused', 'pov'];
+  'pose', 'grid', 'world', 'gpuName', 'shaderFeatures', 'split', 'testMode', 'paused', 'pov'];
 
 /** Can reports `a` and `b` be compared? { comparable, differences: [{ key, a, b }], passes: [{ name, a, b, delta }] } */
 export function compareReports(a, b) {
@@ -285,6 +285,7 @@ const setupLine = (s) => [
   `map ${s.map ?? '?'}${s.mode ? `/${s.mode}` : ''}`, `view ${s.view ?? '?'}`, `detail ${s.detail ?? '?'}`,
   `canvas ${(s.canvas ?? []).join('×')} @${f(s.pixelRatio, 2)}x`, `scene ×${f(s.renderScale, 3)}`,
   `TAA ${s.taa ? 'on' : 'off'}`, `upscale ${f(s.upscale, 3)}${s.adaptive ? ' adaptive' : ''}`, `autoRes ${s.autoRes ? 'on' : 'off'}`,
+  ...(s.shaderFeatures ? [`shaders ${Object.entries(s.shaderFeatures).filter(([, on]) => on).map(([k]) => k).join('+') || 'core'}`] : []),
 ].join(' · ');
 
 /** The compact text report (what tools/profile.mjs prints, and report().text). */

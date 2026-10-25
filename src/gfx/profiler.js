@@ -237,6 +237,8 @@ export function createProfiler(gpu, { describe, onSample, onFrame, onChange = nu
     const canvas = d.canvas ?? [0, 0];
     return {
       gpuName, split: timing.split, supported: timing.supported,
+      // the optional WGSL features the shaders were generated with (gpu/features.js; ?gpufeatures=): an f16 A/B differs only here
+      shaderFeatures: gpu.shaderFeatures ? { ...gpu.shaderFeatures } : null,
       canvas: [...canvas], renderScale: d.renderScale ?? 1, pixelRatio: d.pixelRatio ?? 1,
       grid: d.sim?.g ? [d.sim.g.nx, d.sim.g.ny, d.sim.g.nz] : null, world: d.world ?? null,
       memory: { bytes: mem.bytes + canvas[0] * canvas[1] * CANVAS_BYTES + (d.bytes ?? 0), tracked: mem.bytes,

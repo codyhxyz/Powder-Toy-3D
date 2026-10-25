@@ -18,6 +18,8 @@ One action shows what is wrong with performance, in one run.
 5. after the timed frames, collects agent C's cost counters (`__app.prof.cost?.capture()`) and, with `--counters`, agent D's GPU counters (`tools/gpu-counters.mjs`);
 6. closes the browser, measures GPU utilization again to detect a shared GPU, prints the report, and writes `profile.json`, `profile.html` (a self-contained waterfall) and `cost.png` (C's heatmap) to `--out`. The default is `$TMPDIR/tpt-profile/<map>-<pose>`.
 
+`--gpufeatures core` (or a list such as `subgroups`) boots with only those optional shader features (gpu/features.js), so one feature can be A/B'd on one machine: `--gpufeatures subgroups` against the default is f16 off, everything else equal. The setup line names them (`shaders f16+subgroups`), and `--compare` counts them as a setup difference.
+
 `--compare old/profile.json` prints the per-pass deltas. It says "NOT comparable" with the reasons when the setups differ.
 
 ## Reading the report
