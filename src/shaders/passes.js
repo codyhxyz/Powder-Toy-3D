@@ -894,7 +894,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let mixed = hi != 0u && hi - 1u != u32(NE) - atomicLoad(&wgLiqLo);
     let bits = select(0u, BRICK_MEDIA, hasMedia) | select(0u, BRICK_SURF, hasSurf) | select(0u, BRICK_OPAQUE, hasOpaque)
              | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed)
-             | select(0u, BRICK_LIQUID_INTERIOR, wgAir[0].z < 0.499) | select(0u, BRICK_FILM, (film & WG_FILM_NEAR) != 0u);
+             | select(0u, BRICK_LIQUID_INTERIOR, wgAir[0].z < 0.499) | select(0u, BRICK_FILM, (film & WG_FILM_NEAR) != 0u)
+             | select(0u, BRICK_FILM_CELLS, (film & WG_FILM_OWN) != 0u);
     var info = brickInfoWord(0u, flags, 0u, false);
     if (atomicLoad(&wgOcc) != 0u || hasSurf || hasMedia) { info = brickInfoWord(bits, flags, atomicLoad(&wgGas), true); }
     let rec = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);

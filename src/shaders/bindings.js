@@ -112,8 +112,10 @@ ${FrameUniforms.wgsl}
 //   bit 17     BRICK_FILM: a film (shaders/gfx/film.js) in the brick, or dry
 //              floor beside liquid its lip may reach: the view's film test
 //              (filmHit) runs only in these bricks
+//   bit 18     BRICK_FILM_CELLS: a film's own cells in the brick (gfx/filmScan.js:
+//              the view takes its film code while any brick has one)
 // Matter bricks set bit 15; air-only bricks only bits 5-7; empty bricks are 0.
-export const BRICK_INFO = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16, AIR_SHIFT: 5, GAS_SHIFT: 8, MATTER: 1 << 15, LIQUID_INTERIOR: 1 << 16, FILM: 1 << 17 };
+export const BRICK_INFO = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16, AIR_SHIFT: 5, GAS_SHIFT: 8, MATTER: 1 << 15, LIQUID_INTERIOR: 1 << 16, FILM: 1 << 17, FILM_CELLS: 1 << 18 };
 export const AIR = { HOT: 1, PRESSURE: 2, FLOW: 4 };
 export const BRICK_GAS_DIV = 64;   // cells per brick: gas share = count / this
 // JS twins, for tools and the brick kernel's tests (bits: the BRICK_* sum, air: the AIR sum).
@@ -136,6 +138,7 @@ const BRICK_THIN: u32 = ${BRICK_INFO.THIN}u;
 const BRICK_MIXED: u32 = ${BRICK_INFO.MIXED}u;
 const BRICK_LIQUID_INTERIOR: u32 = ${BRICK_INFO.LIQUID_INTERIOR}u;
 const BRICK_FILM: u32 = ${BRICK_INFO.FILM}u;
+const BRICK_FILM_CELLS: u32 = ${BRICK_INFO.FILM_CELLS}u;
 const AIR_HOT: u32 = ${AIR.HOT}u;
 const AIR_PRESSURE: u32 = ${AIR.PRESSURE}u;
 const AIR_FLOW: u32 = ${AIR.FLOW}u;

@@ -746,7 +746,7 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-const realistic = (detail, curved = false, fixedReadFormat) => {
+const realistic = (detail, curved = false, fixedReadFormat, films = true) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
@@ -1269,6 +1269,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         phiStale = true;
       }
 
+${films ? `
       // a film on the floor, thinner than the fields show (gfx/film.js): only
       // from air, only nearer than what the fields found, and only in a brick
       // the brick pass found a film's cells in (BRICK_FILM: everywhere else
@@ -1278,7 +1279,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         let tF = filmHit(cell, ro, rd, tEnter, tEv, &fN, &filmLid, &filmH);
         if (tF < tEv) { tEv = tF; ev = EV_ENTER; evCh = CH_LIQUID; evN = fN; film = true; }
       }
-      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
+` : ''}      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
       // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
       // (grainEvent reads the cell's state only for a grain element's cell: its cand)
       var ga = vec4f(0.0);
@@ -1610,13 +1611,16 @@ function nativeVolumeReads(code) {
  * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat } = {}) => {
+// films: draw thin water films (gfx/film.js). The view compiles without them
+// until a grid holds one (gfx/volume.js films: their code costs every pixel
+// registers, film or not).
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat, films = true } = {}) => {
   readFormatWGSL(fixedReadFormat);
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
   const nativeIds = !debug && (fixedReadFormat === 2 || fixedReadFormat === 3);
   const parts = [
-    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
+    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}${films ? '' : ', no films'}`,
     lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, fixedReadFormat }),
     ...(nativeIds ? [volumeIdWGSL(fixedReadFormat)] : []),
     tracerWGSL(),
@@ -1636,7 +1640,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   // material views only; behind the rest is the page's painted gradient,
   // gfx/post.js), so they keep no haze, on every map alike. The data views'
   // colours are readings, not light.
-  if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, fixedReadFormat));
+  if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, fixedReadFormat, films));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
   // Keep the heavier artwork out of Realistic's active shader path/registers.

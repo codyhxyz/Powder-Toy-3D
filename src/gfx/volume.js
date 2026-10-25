@@ -47,6 +47,7 @@ import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING } from '../shad
 import { materialTextures } from './materialTextures.js';
 import { FLOOR_TEX } from './materials.js';
 import { materialCensus } from './materialCensus.js';
+import { filmScan } from './filmScan.js';
 import { createPacketShadow, packetShadowSource, packetShadowKey } from './packetShadow.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
@@ -100,7 +101,7 @@ export function volumeReadFormat(sim, gpu, header, physical = false) {
  *   `ready` waits for it; false, it builds when first wanted
  * @returns the volume (see the file header)
  */
-export function createVolume(gpu, sim, { shadows = true, sourceAppearance = false } = {}) {
+export function createVolume(gpu, sim, { shadows = true, sourceAppearance = false, onVariant = () => {} } = {}) {
   // The atlas dimensions are fixed for this world. Constant divisors avoid
   // repeating Metal's variable-integer-division expansion at every lookup.
   const g = volumeShaderGrid(sim.g, sim.world, sourceAppearance);
@@ -124,6 +125,9 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   const matTex = materialTextures(gpu);   // (loads in the background what the census asks for)
   // the elements in this grid, so their scanned textures load (gfx/materialCensus.js)
   const census = materialCensus(gpu, sim, (ids) => matTex.wantElements(ids));
+  // whether the grid holds thin water films: the material views compile
+  // without their code until it does (gfx/filmScan.js; pipeline below)
+  const films = filmScan(gpu, sim, derived, () => onVariant());
   const SCANNED_STYLE = 0;   // views.js materialStyle of the views that draw the scans (the realistic look)
   let floorWanted = false;   // the floor's photo has been asked for (recordCensus)
   const samplers = gpu._volumeSamplers ??= {
@@ -208,6 +212,31 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     name: 'pick', code: pickFrag(g), layouts: [L.TABLES, L.STATE_RO, L.PICK], params: PickParams, workgroupSize: [PICK_BATCH, 1, 1],
   });
   const pipes = new Map();
+  const pipeKey = (view, d, curved, format, withFilms) => `${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}${withFilms ? '|films' : ''}`;
+  // A view's pipeline with or without the film code (render.js volumeFrag films), made on first use.
+  // first: it starts ahead of the short builds (a view drawn now is a long pole of the frame waiting for it).
+  function variant(view, detail, build, curved, format, withFilms, first = build === 'now') {
+    const d = isMaterialView(view) ? drawable(detail) : {};
+    const key = pipeKey(view, d, curved, format, withFilms);
+    let p = pipes.get(key);
+    if (!p) {
+      const name = `${isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`}${withFilms ? '.films' : ''}`;
+      // (a prefetch stays behind the short builds: gpu/kernels.js BUILD_RANK)
+      pipes.set(key, p = gpu.renderPipeline({
+        name: `${curved ? `${name}.curved` : name}.format${format}`,
+        code: volumeFrag(g, { view, detail: d, curved, fixedReadFormat: format, films: withFilms }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
+        params: VolumeParams, ...volumePipeline(), build, first,
+      }));
+    } else if (build === 'now' && (p.state === 'idle' || p.state === 'pending')) p.build();   // (a queued prefetch moves up: BUILD_RANK)
+    return p;
+  }
+  // the films' variant landing redraws (the app draws on demand)
+  const woken = new WeakSet();
+  function wakeOn(p) {
+    if (woken.has(p)) return;
+    woken.add(p);
+    p.ready.then(() => { if (!disposed) onVariant(); }, () => {});
+  }
   // A software adapter (SwiftShader: the container, ?software=1) can't draw
   // some detail features (gfx/detail.js SOFTWARE_UNDRAWABLE): the view leaves
   // them out there, and says so once.
@@ -230,6 +259,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   const failPicks = (e) => { for (const p of pickQueue.splice(0)) p.reject(e); };
   const meshInv = new Matrix4();
   let disposed = false;
+  let filmsDrawn = false;   // (filmsDrawn below)
   // V2's flying packets in the map (gfx/packetShadow.js), made when a V2 box first records it; lastPackets:
   // whether the last map had them (a switch either way traces every tile)
   let packets = null;
@@ -258,6 +288,10 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * grid's version moves that key; a V2 packet flies in the dynamics pool and moves no grid version.
      */
     get packetShadowKey() { return packetShadowKey(sim, this.packetShadowState); },
+    /** Whether the grid holds thin water films (gfx/filmScan.js): the material views then draw their variant with the film code. */
+    get filmsWanted() { return films.wanted; },
+    /** The last draw's pipeline had the film code (tests wait on it). */
+    get filmsDrawn() { return filmsDrawn; },
     /** The shadow kernel's state: 'idle' (not wanted yet), 'pending', 'ready' or 'failed'. */
     get shadowState() { return shadowKernel.state; },
 
@@ -272,20 +306,14 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      */
     pipeline(view, detail = {}, build = 'now', curved = false, format = volumeReadFormat(sim, gpu)) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
-    const d = isMaterialView(view) ? drawable(detail) : {};
-      const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}`;
-      let p = pipes.get(key);
-      if (!p) {
-      const name = isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`;
-        // (a view drawn now is a long pole of the frame waiting for it: it starts ahead of the short
-        // builds, gpu/kernels.js BUILD_RANK.FIRST; a prefetch stays behind them)
-        pipes.set(key, p = gpu.renderPipeline({
-          name: `${curved ? `${name}.curved` : name}.format${format}`,
-          code: volumeFrag(g, { view, detail: d, curved, fixedReadFormat: format }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
-          params: VolumeParams, ...volumePipeline(), build, first: build === 'now',
-        }));
-      } else if (build === 'now' && (p.state === 'idle' || p.state === 'pending')) p.build();   // (a queued prefetch moves up: BUILD_RANK)
-      return p;
+      const plain = variant(view, detail, build, curved, format, false);
+      if (!isMaterialView(view) || !films.wanted) return plain;
+      // A grid with films: their variant, once it is built (in the background,
+      // the view without them drawn meanwhile: no hitch, the films show when it lands)
+      const withFilms = variant(view, detail, 'now', curved, format, true, false);
+      if (withFilms.state === 'ready') return withFilms;
+      wakeOn(withFilms);
+      return plain;
     },
     /** Queues a view's pipeline for idle time (B5); resolves with it when it is ready. */
     prefetch(view, detail = {}, curved = false) { const p = volume.pipeline(view, detail, 'idle', curved); return p.ready; },
@@ -294,7 +322,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     /** Whether a view's pipeline is built, without queueing one (the Shaders menu's kept previews: ui/shaders.js). */
     viewBuilt(view, detail = {}, curved = false, format = volumeReadFormat(sim, gpu)) {
       const d = isMaterialView(view) ? drawable(detail) : {};
-      return pipes.get(`${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}`)?.state === 'ready';
+      return pipes.get(pipeKey(view, d, curved, format, false))?.state === 'ready';
     },
 
     /**
@@ -319,6 +347,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       const state = sim.bindRO;
       const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
+      filmsDrawn = pipe.name?.includes('.films') ?? false;
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
@@ -398,6 +427,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @param {string} view the view drawn this frame
      */
     recordCensus(view) {
+      if (isMaterialView(view)) films.tick();
       if (materialStyleForView(view) !== SCANNED_STYLE) return;
       census.tick();
       // a small map's floor photo (a big map's floor lies under its ground)
@@ -465,6 +495,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       shadowX.destroy();
       packets?.dispose();
       census.dispose();
+      films.dispose();
       lightingCache.clear();
     },
   };
