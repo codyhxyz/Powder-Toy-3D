@@ -837,6 +837,10 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // got in), then faded with depth below it
   var lightRef = vec3f(1.0);
   var lightY = 0.0;
+  // lightRef holds that point while its sun visibility is still owed: the
+  // liquid's first segment reads it (sunShadowAt is inlined at each call, and
+  // this keeps the ways into liquid to one copy: docs/march-spill.md)
+  var lightRefAt = false;
   let liqDither = (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * LIQ_ID_DITHER;   // spatiotemporal, not white: no speckle on mixed liquids (noise.js)
   var bends = 0;
   // Mark terminal surfaces explicitly. On Metal, a post-loop hitK test
@@ -912,8 +916,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           // refracted in at the march's first step (liquidInterface(hp, n0, n0, true, lid, false, ...))
           ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
         }
-        lightRef = vec3f(1.0);
-        if (FU.shadows != 0u) { lightRef = sunShadowAt(select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x)); }   // inside: the map carries the liquid above
+        lightRef = select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x); lightRefAt = true;   // inside: the map carries the liquid above
         lightY = hp.y;
       }
     }
@@ -936,7 +939,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         if (inside) { liq = ifLid; }
       } else {`}
         liq = select(E_EMPTY, ifLid, inside);
-        if (ifEnter) { lightRef = mediumLight; lightY = ifP.y; }
+        if (ifEnter) { lightRef = mediumLight; lightRefAt = false; lightY = ifP.y; }
         lastB = vec3i(-1); ax = 1;
         gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
         phiStale = false;${curved ? `
@@ -1272,8 +1275,7 @@ ${richOptics ? `
         } else if (liq == E_EMPTY && phiA.x >= SURF_ISO) {
           liq = liquidIdAt(ro + rd * (tEnter + IFACE_PROBE), E_WATER);
           let p0 = ro + rd * tEnter;
-          lightRef = vec3f(1.0);
-          if (FU.shadows != 0u) { lightRef = sunShadowAt(p0); }   // inside: the map carries the liquid above
+          lightRef = p0; lightRefAt = true;   // inside: the map carries the liquid above
           lightY = p0.y;
           gSkyIn = skyInAt(probeAt(p0));
         }
@@ -1346,6 +1348,13 @@ ${richOptics ? `
         }
         if (SURFCH(lj) == CH_LIQUID) { liq = lj; }
         else if (SURFCH(id) == CH_LIQUID) { liq = id; }
+        if (lightRefAt) {
+          // (the one sunShadowAt of lightRef's points: the box wall, a quiet entry, a bend-less surface)
+          lightRefAt = false;
+          let p = lightRef;
+          lightRef = vec3f(1.0);
+          if (FU.shadows != 0u) { lightRef = sunShadowAt(p); }
+        }
         mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
         let own = SURFCH(id) == CH_LIQUID;
         // (painted liquid: gfx/deco.js; drops absorb along their real length: gfx/liquid.js thinBodySeg)
@@ -1389,8 +1398,7 @@ ${richOptics ? `
           if (film) { trans *= filmTint(lid, filmH, rd); ifFilmH = 0.0; }
           liq = select(E_EMPTY, lid, ev == EV_ENTER);
           if (ev == EV_ENTER) {
-            lightRef = vec3f(1.0);
-            if (FU.shadows != 0u) { lightRef = sunShadowAt(hp + n * IFACE_PROBE); }
+            lightRef = hp + n * IFACE_PROBE; lightRefAt = true;
             lightY = hp.y;
             gSkyIn = skyInAt(surfProbe(hp, n));
           }
