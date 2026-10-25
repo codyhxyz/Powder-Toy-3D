@@ -19,7 +19,7 @@
   --prof-name: 58px;
   --prof-num: 40px;
   --prof-gap: 6px;
-  --prof-bottom: 14px;       /* bottom left; the element menu is up top */
+  --prof-bottom: calc(14px + var(--spawn-bar-h, 0px));   /* bottom left, above the god view's element bar (ui/dock.js) */
   --prof-top-clear: 220px;   /* never taller than the space under the element card */
   --budget: 100%;
   --spark-budget: 100%;

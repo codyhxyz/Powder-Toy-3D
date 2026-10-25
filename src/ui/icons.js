@@ -30,6 +30,12 @@ export const ICON = {
   save: svg('<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4"/><rect x="8" y="13" width="8" height="5" rx="0.5"/>'),
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),
+  // the options bar's Flow (an airbrush nozzle's spray) and Paint mode (a pencil): ui/dock.js
+  // a gauge (Lucide's): its needle turns with the flow (ui/dock.js --flow-turn)
+  flow: svg('<path d="M3.3 19a10 10 0 1 1 17.4 0"/><path class="gauge-needle" d="M12 14V7.5"/><circle cx="12" cy="14" r="1.3" fill="currentColor" stroke="none"/>'),
+  paint: svg('<path d="M4.5 19.5l1-4L16 5l3 3L8.5 18.5z"/><path d="M14 7l3 3"/>'),
+  chevLeft: svg('<path d="M15 6l-6 6 6 6"/>'),
+  chevRight: svg('<path d="M9 6l6 6-6 6"/>'),
   reset: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/></svg>',
   sphere: svg('<circle cx="12" cy="12" r="7.5"/><path d="M4.5 12c2 2.2 13 2.2 15 0"/>'),
   cube: svg('<path d="M12 3.5l7.5 4.3v8.4L12 20.5l-7.5-4.3V7.8z"/><path d="M4.5 7.8L12 12l7.5-4.2M12 12v8.5"/>'),

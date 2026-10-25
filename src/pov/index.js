@@ -47,7 +47,7 @@ import { gridSpace } from './space.js';
 import { SMALL_MAP, kindOfGrid } from '../mapKind.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
-// key; F drops in too), walk around in it, pop back out to the god view's
+// key), walk around in it, pop back out to the god view's
 // free camera with V. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
 // the toolbelt (tools/index.js), plus the gunplay feedback that listens to
@@ -199,7 +199,6 @@ export function createPov(app) {
   let starting = false;                  // waiting for the drop point
   let locked = false;
   let deadSeen = false, deadTime = 0;
-  let firstEntry = true;
   const dropPoint = new THREE.Vector3();
   const saved = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), target: new THREE.Vector3(), fov: 40, near: 0.05 };
   const enteredAt = new THREE.Vector3();   // the drop point in world cells (exit, in a larger world)
@@ -523,14 +522,13 @@ export function createPov(app) {
 
   // Drop in. A call while a drop-in is under way waits for it (app.js startMode
   // starts a match once the player exists). opts.swoop: s of the flight down from
-  // the god view (a match: 0, Halo's cut straight to the eyes); opts.hint: the
-  // keys' hint on the first drop-in (a match shows its own card, game/hud.js);
+  // the god view (a match: 0, Halo's cut straight to the eyes);
   // opts.at: drop in with the feet here (grid cells) and keep the body as it
   // is, health, fuel and statuses (player.teleport): a Descent level change
   let dropping = null;
   function enter(opts) { return starting ? dropping : (dropping = dropIn(opts)); }
   async function dropIn(opts = {}) {
-    const { swoop = SWOOP_S, hint = true } = opts;
+    const { swoop = SWOOP_S } = opts;
     if (mode === 'on' || mode === 'entering' || starting) return;
     if (app.mp.replica && (!app.mp.isGuest || !app.mp.terrainReady || app.mp.metadata?.mode !== 'world' || app.mp.stale)) {
       hud.toast('Wait for a live World snapshot from the host before dropping in.'); return;
@@ -605,9 +603,7 @@ export function createPov(app) {
     camera.updateProjectionMatrix();
     mode = 'entering';
     document.body.classList.add('pov-on');
-    hud.dismissHint();
     povHud.show(true);
-    if (firstEntry && hint) { povHud.showHint(); firstEntry = false; }
     app.requestRender();
   }
 
@@ -1031,7 +1027,6 @@ export function createPov(app) {
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       mission: mission.engaged,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
-      grappleEnabled: canGrapple(),
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
       buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });

@@ -108,8 +108,17 @@ await test('visible Factory controls replace build hotkeys; Sandbox UI stays hid
   assert(!industry.state.powered);assert(!panel.hidden);assert(app.toolbar.visible);
   assert(!search(panel,e=>e.type==='checkbox'));
   assert(!key('KeyB').prevented);assert(!industry.building);
-  assert(key('KeyQ').stopped);assert(industry.building,'Q opens Factory Build');
-  assert(key('KeyQ').stopped);assert(!industry.building,'Q closes Factory Build');
+  assert(!key('KeyQ').stopped);assert(!industry.building,'god view Q is the camera\'s fly-down, not Build');
+  assert(key('KeyT').stopped);assert(industry.building,'god view T opens Factory Build');
+  assert(key('KeyT').stopped);assert(!industry.building,'god view T closes Factory Build');
+  app.pov.active=true;
+  assert(!key('KeyT').stopped);assert(!industry.building,'first-person T is not Build');
+  assert(key('KeyQ').stopped);assert(industry.building,'first-person Q opens Factory Build');
+  assert(key('KeyQ').stopped);assert(!industry.building,'first-person Q closes Factory Build');
+  app.pov.active=false;
+  app.mp={chatAvailable:true};
+  assert(!key('KeyT').stopped);assert(!industry.building,'playing together, T stays chat');
+  delete app.mp;
   industry.toggle();assert(industry.building);assert(app.toolbar.open);
   assert(!key('KeyB',false,{tagName:'SELECT'}).prevented);assert(industry.building);
   assert(!key('KeyR').prevented);assert.equal(industry.state.rotation,0);
@@ -167,7 +176,7 @@ await test('driving suspends construction input/ghost without losing build selec
   industry.toggle(); assert(industry.building);
   app.pov.vehicles={seated:{kind:'boat'}};
   assert(!industry.building); assert(!industry.state.building);
-  assert(key('KeyQ').stopped);assert(!industry.state.building,'Q while driving does not open Build');
+  assert(key('KeyT').stopped);assert(!industry.state.building,'the Build key while driving does not open Build');
   assert(!key('KeyB',true).prevented, 'driving does not intercept build shortcuts');
   const event={target:app.canvas,button:0,type:'pointerdown',preventDefault(){this.prevented=true;},stopImmediatePropagation(){}};
   listeners.get('pointerdown')(event); assert(!event.prevented);

@@ -293,8 +293,11 @@ export function createIndustry(app) {
   });
   const key = e => {
     if (app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
-    // Factory Q opens Build only. Sandbox keeps GMod's spawn menu: that is the intentional cheat.
-    if (e.code === 'KeyQ' && !e.repeat && factory() && active()) {
+    // Factory's Build opens on the spawn menu's key: Q in first person, T in the god view (where
+    // Q flies down, camera.js). Sandbox keeps GMod's spawn menu: that is the intentional cheat.
+    // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
+    const buildKey = app.pov?.active ? 'KeyQ' : app.mp?.chatAvailable ? null : 'KeyT';
+    if (e.code === buildKey && !e.repeat && factory() && active()) {
       e.preventDefault(); e.stopImmediatePropagation();
       if (driving()) return;
       const opening = !building;
@@ -492,7 +495,6 @@ export function createIndustry(app) {
     get hasMachines() { return devices.length > 0; },
     get pending() { return pending || !!physics.pending || !!gatePhysics.pending || !!controlParts.pending; },
     reset({ starters = false } = {}) {
-      if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.
       epoch++; physics.reset(); gatePhysics.reset(); controlParts.reset(); diagnostics.reset();
       devices = []; progression = null; paid.clear(); factoryRun = false; assisted = false;
       pending = false; building = false; dismantling = false; part = null; partThreshold = 200; inspectMode = false;

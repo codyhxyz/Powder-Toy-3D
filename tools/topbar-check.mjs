@@ -72,7 +72,6 @@ try {
       addEventListener('keydown', e => {
         if (e.code === 'Space') { e.preventDefault(); settings.paused = !settings.paused; hud.setPaused(settings.paused); }
       });
-      hud.dismissHint();
     });
     const bar = page.locator('.toolbar');
     assert.equal(await bar.locator('button').count(), 4, 'build (hidden), undo, shader and settings');

@@ -10,3 +10,4 @@ export { GpuTiming, MAX_TIMED_PASSES } from './timing.js';
 export { createPresenter, createBlit, blitWGSL, BLIT_LAYOUT } from './present.js';
 export { GraphicsFailure, shaderFailure, compilationInfo, deviceLostMessage, gpuErrorMessage } from './errors.js';
 export { glslMod, saturate, luma, fullscreenVert } from './wgsl.js';
+export { shaderFeatures, setShaderFeatures, featuresOf, wantedShaderFeatures, hoistDirectives, halfWGSL, subgroupsWGSL, appendWGSL, CORE_FEATURES, SHADER_FEATURE_NAMES } from './features.js';

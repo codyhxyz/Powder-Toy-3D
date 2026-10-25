@@ -5,11 +5,11 @@
 "I made this world, now I'm standing in it, and it can kill me." TPT's stickman in 3D.
 
 - **Drop in / pop out** (`V`, Garry's Mod's noclip: the god view is the noclip camera, the body is clipped).
-  From the god view, `V` drops a body onto the surface under the cursor (or the middle of the box); `F` does
-  too, for habit. The camera swoops from orbit into the eyes. `V` again swoops back out to the orbit pose you
-  left. The sim keeps running in both modes.
-- **Keys speak other games' language**: `V` god view or the body (Garry's Mod's noclip key; from the god
-  view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
+  From the god view, `V` drops a body onto the surface under the cursor (or the middle of the box).
+  The camera swoops from the god view into the eyes. `V` again swoops back out to the god-view
+  pose you left. The sim keeps running in both modes.
+- **Keys speak other games' language**: `V` god view or the body (Garry's Mod's noclip key; in the god
+  view `F` flies the camera to the cursor, Roblox Studio's focus), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
   `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
   held, the look slowed with the view, a scope's zoom multiplied in), `C` held crouches (PUBG's and Apex's key,
   Source's duck: below), `F` kicks (in a Halo match: Halo's melee), `G` throws a frag grenade in a Halo match

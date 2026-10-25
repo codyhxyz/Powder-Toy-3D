@@ -14,6 +14,7 @@
 // with `GPU shader failed: <name>.` and the compiler's messages (B9).
 
 import { shaderFailure, GraphicsFailure } from './errors.js';
+import { hoistDirectives } from './features.js';
 
 /** An explicitly optional shader failed without stopping the shared GPU. */
 export class OptionalShaderFailure extends Error {
@@ -163,6 +164,8 @@ export class PipelineCache {
   /** The module for this source text (cached separately by failure policy). */
   module(code, label, optional = false) {
     this.check();
+    // a snippet's `enable f16;` may sit mid-module (features.js)
+    code = hoistDirectives(code);
     const modules = optional ? this.optionalModules : this.modules;
     let m = modules.get(code);
     if (!m) {

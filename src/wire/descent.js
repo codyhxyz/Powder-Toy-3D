@@ -114,7 +114,7 @@ const descent = {
         return persistence.load(app, key, arrival);
       },
       enterAt: (spawn, transition) => persistence.enter(async () => {
-        await pov.enter({ at: descentSpawn(app, { spawn }), swoop: 0, hint: false });
+        await pov.enter({ at: descentSpawn(app, { spawn }), swoop: 0 });
         // Portals preserve facing relative to the native chart, not the old
         // world's heading (the Kolmi offshoot has a different arc tangent).
         if (motion) restoreMotion(pov.player, (yaw, pitch) => pov.setLook(yaw, pitch),
