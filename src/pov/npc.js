@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { createPlayer, PX } from './player.js';
-import { createFigure } from './figure.js';
+import { createFigure, litScan } from './figure.js';
 import { buildCrasher, CRASHER_COLORS } from './figureCrasher.js';
 import { attachModel } from './models.js';
 import { addTarget, bodyTarget, spotAround, PLAYER } from './targets.js';
@@ -73,6 +73,8 @@ const GUNNER_PALETTE = {
 };
 const GUNNER_EYE_GLOW = [4, 2.2, 0.2];
 const LOOK = { axeman: { palette: PALETTE, eyeGlow: EYE_GLOW }, gunner: { palette: GUNNER_PALETTE, eyeGlow: GUNNER_EYE_GLOW } };
+// a tool's scanned look (models.js SCANS) on any NPC, lit like the body: one lit material per scan material
+const scanMats = new Map();
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
 const AIMED_TOOLS = new Set(['GUN', 'SMG', 'SNIPER', 'ROCKET', 'LASER', 'BLOWTORCH', 'PHYSGUN']);
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
@@ -97,7 +99,8 @@ function buildWizard(held, hand, palette, eyeGlow, combatProfile = null, variant
     rig.elR.add(grip);
     Object.assign(hand, { grip, shoulder: rig.shR, elbow: rig.elR });
     for (const [key, model] of Object.entries(MODEL_OF)) {
-      const m = attachModel(grip, model, null, { arm: false });
+      // (Intentional: a scan is held at HELD_SCALE like the parts, the mitten's cartoon size, not its real one)
+      const m = attachModel(grip, model, null, { arm: false, onScan: (scan) => litScan(scan, { cache: scanMats }) });
       m.obj.position.copy(m.info.grip).negate(); // the handle, not the model's bounding-box centre, sits in the mitten
       m.obj.traverse((o) => {
         if (!o.isMesh || !o.material?.color) return;

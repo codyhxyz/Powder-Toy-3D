@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
-import { attachModel } from './models.js';
+import { attachModel, scanHeldScale, SCANS } from './models.js';
 import { holdFor, gesturePose, SHOULDER_DROP } from './holds.js';
-import { figureMaterial, figureUniforms } from './figure.js';
+import { figureMaterial, figureUniforms, litScan } from './figure.js';
 import { prepareMesh } from '../gfx/meshLight.js';
 import { liveFlame, fanFlame } from './tools/lamp.js';
 
@@ -57,6 +57,7 @@ export function createHeld({ scene }) {
   const u = figureUniforms();   // no glow, no stain (its share, w, is 0)
   const models = new Map();             // model key → its held model, built the first time it's held
   const mats = new Map();
+  const scanMats = new Map();           // a scan's glTF material → its lit one (figure.js litScan)
   let boundTo = null;
   let key = null, rec = null, weight = 0;
   let active = false, moved = false;
@@ -75,6 +76,7 @@ export function createHeld({ scene }) {
   function light(r) {
     if (!boundTo) return;
     for (const m of r.lit) m.material = lit(m.userData.albedo);
+    for (const scan of r.scans) litScan(scan, { u, cache: scanMats });
   }
 
   function build(k) {
@@ -82,7 +84,11 @@ export function createHeld({ scene }) {
     if (!hold) return null;
     const holder = new THREE.Group();
     holder.matrixAutoUpdate = false;
-    const model = attachModel(holder, k, null, { arm: false });
+    // a scanned look (models.js SCANS) is lit like the body once it is on, and held at its real size
+    const scans = [];
+    const model = attachModel(holder, k, null, { arm: false, onScan: (scan) => { scans.push(scan); if (boundTo) litScan(scan, { u, cache: scanMats }); } });
+    const realScale = scanHeldScale(k);
+    if (realScale) hold.scale = realScale;
     holder.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(model.obj);   // the model's own frame (the holder is at rest)
     const lit = [];
@@ -94,11 +100,13 @@ export function createHeld({ scene }) {
     });
     const { grip, unit } = model.info;
     const point = (p) => new THREE.Vector3(...p).multiplyScalar(unit).add(grip);   // PARTS units → the model's frame
+    // a scanned tool's second hand where the scan's handle is (models.js SCANS left), not the parts'
+    const leftAt = SCANS[k]?.left ? model.info.scan(SCANS[k].left) : hold.left ? point(hold.left.at) : null;
     const r = {
-      key: k, hold, holder, model, lit, box,
+      key: k, hold, holder, model, lit, box, scans,
       named: [],                         // its named parts (the hook's claw, the burrower's bit): shown and hidden as the viewmodel's are
       right: { ...hold.right, at: point(hold.right.at) },
-      left: hold.left ? { ...hold.left, at: point(hold.left.at) } : null,
+      left: hold.left ? { ...hold.left, at: leftAt } : null,
       pegs: hold.pegs?.map(point) ?? null,
       // standing on it (the pogo): its grip's height over its foot, and its pegs' (cells)
       gripHeight: (grip.y - box.min.y) * hold.scale,
@@ -301,6 +309,7 @@ export function createHeld({ scene }) {
     dispose() {
       for (const r of models.values()) { r?.flame?.dispose(); r?.model.dispose(); }
       for (const m of mats.values()) m.dispose();
+      for (const m of scanMats.values()) m.dispose();
       for (const c of extras.values()) c.userData.lit?.dispose();   // (geometry and the rest are the viewmodel's)
       group.removeFromParent();
     },
