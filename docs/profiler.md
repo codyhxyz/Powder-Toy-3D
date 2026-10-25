@@ -107,8 +107,8 @@ Twenty-four per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 | `hfTests` | the world's heightfield skip (`hfSkip`, W's maximum mipmap of the column tops): tests, one a brick the walk enters |
 | `hfSkips` | heightfield jumps (the ray above a region's padded top) |
 | `hfCells` | cells the heightfield jumps moved the walk (\|Δx\| + \|Δy\| + \|Δz\|) |
-| `hfSkip64` | heightfield jumps level 3 (64 × 64 columns) held |
-| `hfDrops` | heightfield jumps that ended where the ray came down to a region's top (else at its side) |
+| `coarseSteps` | the world's distance blocks (`farStep`, past `NEAR_CELLS`): far bricks with matter taken whole |
+| `coarsePixels` | pixels whose walk took at least one far brick (1 each) |
 
 The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
 `skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split). The

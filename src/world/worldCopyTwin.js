@@ -50,6 +50,7 @@ export function wcCellOwn(w, airT = PHYS.AMBIENT) {
   if (ch >= 0) own |= WC_OWN.SURF;
   if (ch >= 0 && ch !== CH_LIQUID) own |= WC_OWN.OPAQUE_SURF;
   if (LOOK[id].media >= 0) own |= WC_OWN.MEDIA;
+  if (ch < 0 && LOOK[id].media < 0) own |= WC_OWN.CRISP;
   if (!gasLike && r !== R.LIQUID && r !== R.GLASS) own |= WC_OWN.OPAQUE;
   if (ch === CH_LIQUID && ((w >>> 24) & 127) === WC_AUX_MAX && !(own & WC_OWN.OPAQUE)) own |= WC_OWN.LIQ_WHOLE;
   if (GAS.has(id)) low |= 1 << BRICK_INFO.GAS_SHIFT;

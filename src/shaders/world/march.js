@@ -55,7 +55,7 @@ import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
 import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
-import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT } from './copy.js';
+import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT, WC_OWN } from './copy.js';
 import { worldFieldsWGSL, FIELDS_BINDINGS } from './fields.js';
 
 /** The march's own values (group 3 binding 1): the box volume's (shaders/render.js VolumeParams) and physics' window. */
@@ -234,6 +234,82 @@ fn marchLod(p: vec3f) { gFieldLevel = fieldLevelFor(footprint(p)); fieldPickAt(p
 // maximum quadtree of Oh et al. 2006). Below every level's top the brick and cell walk takes over: the picture
 // is the walk's. Returns (where the walk resumes, the axis it crosses there: 0 or 2 a region's side, 1 its
 // top, the level that held); no jump: (t0, -1, 0).
+// ---- distance blocks: past NEAR_CELLS from the eye the walk crosses a brick at a time, as the old distance
+// view drew everything past its window as 1.2 m (4-cell) bricks (world/far.js, the far field), the mip-mapped
+// DDA of sparse voxel octree tracing (Laine & Karras 2010, "Efficient Sparse Voxel Octrees"). In a brick with
+// matter: a crisp cell the ray meets (W's own CRISP bit says to look) is hit at its face; smooth matter is
+// found on F's 4-cell level (FAR_FIELD_LEVEL), FAR_STEP cells a step and root-found as near (surfRoot); a
+// liquid surface, a medium or a thin liquid hands the brick back to the cell walk (refraction, gas, drops are
+// the walk's). Nothing within NEAR_CELLS changes. The switch is dithered per pixel across FAR_BAND of
+// NEAR_CELLS (spatiotemporal blue noise; TAA blends it), the dithered LOD transition of game engines (e.g.
+// Unreal Engine's "Dithered LOD Transition"), so no line shows.
+const NEAR_CELLS: f32 = 128.0;   // cells (about 38 m): full detail within it, the old physics window's reach
+const FAR_BAND: f32 = 0.25;      // the switch's band: NEAR_CELLS to NEAR_CELLS · (1 + FAR_BAND), dithered
+const FAR_NOISE_K: f32 = 7.0;    // the dither's blue-noise stream (stbn1's k: apart from the march's own)
+const FAR_FIELD_LEVEL: u32 = 2u; // F's level a far brick reads at least: 4-cell texels, the old view's bricks
+const FAR_STEP: f32 = 2.0;       // cells between a far brick's field samples: half a 4-cell texel
+const FAR_CRISP_STEPS: i32 = 10; // cells a ray can cross in a brick (3 · BS - 2)
+const MARCH_OWN_CRISP: u32 = ${WC_OWN.CRISP}u;
+const FAR_FINE: u32 = 0u;     // the cell walk takes the brick from t
+const FAR_PASS: u32 = 1u;     // nothing in the brick: the walk resumes past its face (axis ax)
+const FAR_CRISP: u32 = 2u;    // a crisp cell (cell, id) hit at t, across its face ax
+const FAR_SMOOTH: u32 = 3u;   // smooth surface of channel ch at t
+struct FarHit { kind: u32, t: f32, ax: i32, ch: i32, cell: vec3i, id: i32 }
+fn farAt() -> f32 { return NEAR_CELLS * (1.0 + FAR_BAND * stbn1(gFragCoord, f32(FU.frame), FAR_NOISE_K)); }
+fn farStep(bc: vec3i, flags: u32, ro: vec3f, rd: vec3f, t0: f32, ax0: i32) -> FarHit {
+  var o = FarHit(FAR_FINE, t0, ax0, -1, vec3i(0), E_EMPTY);
+  let bmin = vec3f(bc * BS);
+  let tb3 = (mix(bmin, bmin + f32(BS), step(vec3f(0.0), rd)) - ro) / rd;
+  let axo = argmin3(tb3);
+  let tb = tb3[axo];
+  let open = (flags & (BRICK_MEDIA | BRICK_THIN)) == 0u;   // (a medium or thin liquid: the walk's)
+  if (open && (flags & MARCH_OWN_CRISP) != 0u) {
+    // the first cell with anything in it along the ray: a crisp one is the hit, anything else is left to the field
+    let lo = bc * BS;
+    var c = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), lo, lo + BS - 1);
+    var istp: vec3i;
+    var tDelta: vec3f;
+    var tMax: vec3f;
+    ddaInit(ro, rd, c, &istp, &tDelta, &tMax);
+    var tc = t0;
+    var ax = ax0;
+    for (var k = 0; k < FAR_CRISP_STEPS; k++) {
+      if (any(c < lo) || any(c >= lo + BS)) { break; }
+      let id = wcId(wcCell(c));
+      if (id != E_EMPTY) {
+        if (isCrisp(id)) { o = FarHit(FAR_CRISP, tc, ax, -1, c, id); }
+        break;
+      }
+      tc = min(tMax.x, min(tMax.y, tMax.z));
+      ax = ddaStep(istp, tDelta, &c, &tMax);
+    }
+  }
+  if (open && o.kind == FAR_FINE) {
+    var ta = t0;
+    var fa = surfField(ro + rd * t0) - SURF_ISO;
+    if (all(fa < vec4f(0.0))) {   // (already inside at the face: the walk's, as it entered)
+      o = FarHit(FAR_PASS, tb, axo, -1, vec3i(0), E_EMPTY);
+      var tn = t0;
+      loop {
+        if (tn >= tb) { break; }
+        tn = min(tn + FAR_STEP, tb);
+        let fb = surfField(ro + rd * tn) - SURF_ISO;
+        if (any(fb >= vec4f(0.0))) {
+          // the first channel up: a liquid's surface is the walk's (it refracts); an opaque one is root-found here
+          var ch = -1;
+          for (var c = 1; c < 4; c++) { if (fb[c] >= 0.0 && ch < 0) { ch = c; } }
+          if (fb.x >= 0.0 || ch < 0) { o = FarHit(FAR_FINE, ta, ax0, -1, vec3i(0), E_EMPTY); }
+          else { o = FarHit(FAR_SMOOTH, surfRoot(ro, rd, ch, ta, tn, fa[ch], fb[ch]), -1, ch, vec3i(0), E_EMPTY); }
+          break;
+        }
+        ta = tn;
+        fa = fb;
+      }
+    }
+  }
+  return o;
+}
+
 const HF_LEVEL_TOP: u32 = 3u;   // the coarsest level tried first (64 × 64 columns)
 const HF_MIN_JUMP: f32 = 1e-3;  // cells: a shorter jump is the walk's (a ray at a region's top or side by rounding)
 fn hfSkip(ro: vec3f, rd: vec3f, t0: f32, tCut: f32) -> vec3f {
@@ -294,8 +370,42 @@ const HF_STEP_WGSL = (grains) => `      let hs = hfSkip(ro, rd, tEnter, tCut);
         continue;
       }
 `;
+// Past the dithered switch (farAt), out of liquid, a brick with matter is taken whole (farStep): a hit
+// ends the walk through the tail's one shading site as any hit does; else the walk resumes past the brick
+// or, for what only the cell walk draws, in it. F's level there is at least the 4-cell one.
+const FAR_STEP_WGSL = (grains) => `    if (farBrick && flags != 0u${grains ? ' && !gPebInside' : ''}) {
+      farBrick = false;
+      let fh = farStep(bc, flags, ro, rd, tEnter, ax);
+      if (fh.kind == FAR_CRISP || fh.kind == FAR_SMOOTH) {
+        if (fh.t >= tCut) { cut = true; break; }
+        let hp = ro + rd * fh.t;
+        if (!anyHit) { anyHit = true; hitPos = hp; }
+        stop = true;
+        hitP = hp;
+        if (fh.kind == FAR_CRISP) {
+          var nh = vec3f(0.0);
+          nh[fh.ax] = -f32(istp[fh.ax]);
+          hitK = HIT_CRISP; hitN = nh; hitCell = fh.cell; hitId = fh.id; hitA = fetchA(fh.cell);
+        } else {
+          hitK = HIT_SMOOTH; hitN = vec3f(0.0); hitCh = fh.ch;
+        }
+        break;
+      }
+      if (fh.t > tEnter) {
+        tEnter = fh.t;
+        cell = vec3i(floor(ro + rd * (tEnter + DDA_START_NUDGE)));
+        if (fh.kind == FAR_PASS) { ax = fh.ax; } else { ax = 1; }
+        tMax = ddaNext(ro, rd, cell);
+        prevCrisp = E_EMPTY;
+        phiStale = true;
+        continue;
+      }
+    }
+`;
 const traceWorld = (detail, format) => rewrite(realisticTraceWGSL(detail, format), [
-  ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      marchLod(ro + rd * tEnter);\n'],
+  ['      bid = brickId(bc);\n', `      bid = brickId(bc);\n      marchLod(ro + rd * tEnter);\n      farBrick = liq == E_EMPTY && distance(ro + rd * tEnter, gEye) > farLimit;\n      if (farBrick) { gFieldLevel = max(gFieldLevel, FAR_FIELD_LEVEL); gFieldBlend = 0.0; fieldPickAt(ro + rd * tEnter); }\n`],
+  ['  var lastB = vec3i(-1);\n', '  var lastB = vec3i(-1);\n  var farBrick = false;          // the walk is at a far brick\'s first step (farStep)\n  let farLimit = farAt();        // this pixel\'s dithered switch to distance blocks\n'],
+  ['    if (flags == 0u) {\n      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);', `${FAR_STEP_WGSL(GRAINS_ANY(detail))}    if (flags == 0u) {\n      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);`],
   ['    if (any(bc != lastB)) {\n      lastB = bc;\n', `    if (any(bc != lastB)) {\n${HF_STEP_WGSL(GRAINS_ANY(detail))}      lastB = bc;\n`],
 ], 'the realistic tracer');
 
