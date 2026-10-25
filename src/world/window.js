@@ -232,6 +232,7 @@ export class WorldWindow {
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
     sim.fieldReset = sim.giReset = true;
     sim.stillFlow();
+    this.goal = null;
     this.loaded = true;
   }
 
@@ -258,6 +259,7 @@ export class WorldWindow {
     fillState();
     sim.dropHistory();
     sim.fieldReset = sim.giReset = true;
+    this.goal = null;
     this.loaded = true;
   }
 
@@ -295,7 +297,9 @@ export class WorldWindow {
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
-    if (!this.loaded || this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
+    if (!this.loaded) return null;
+    this.goal = this.goalFor(fx, fz);
+    if (this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
     this.far?.tick();   // (the world copy's changes and the far build's chunks: nothing of the window)
     if (this.capturing || this._moveWait || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
@@ -319,6 +323,24 @@ export class WorldWindow {
     this.shift(...move);
     return move;
   }
+
+  // Where the window comes to rest for the focus (world cells, x and z): update's moves, WIN_STEP a frame,
+  // all made at once. The picture's full detail (drawOrigin) is there at once, so a focus that jumps (a
+  // god view turned to look straight down) never leaves the screen to the far view while physics walks
+  // its window over (a walk of 160 cells took 18 frames, its first 8 drawing no full detail at all).
+  goalFor(fx, fz) {
+    const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS, goal = [o.x, o.y, o.z];
+    for (const [i, f, n] of [[0, fx, g.nx], [2, fz, g.nz]]) {
+      for (;;) {
+        const off = f - (goal[i] + n / 2), d = Math.sign(off) * WIN_STEP;
+        if (Math.abs(off) <= lim || goal[i] + d < 0 || goal[i] + d + n > this.size[i]) break;
+        goal[i] += d;
+      }
+    }
+    return goal;
+  }
+  /** The window's box the picture draws at full detail (world cells, its low corner): where it comes to rest (goalFor), else where it is. */
+  get drawOrigin() { const o = this.sim.origin; return this.goal ?? [o.x, o.y, o.z]; }
 
   // The fill of the move the focus nears, worked out now (world/copyFill.js stage), in a frame without a
   // move, so the move's own frame only writes it (commitStaged): within STAGE_LEAD cells of a move's

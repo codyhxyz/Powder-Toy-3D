@@ -4,6 +4,7 @@ import { createMultiplayer } from '../net/multiplayer.js';
 import { createRemotePlayers } from '../net/players.js';
 import { leash } from '../net/protocol.js';
 import { TEXEL_BYTES } from '../net/codec.js';
+import world from './world.js';
 
 export const offline = Object.freeze({
   isGuest: false, replica: false, joining: false, players: [], chatAvailable: false, panelOpen: false,
@@ -19,7 +20,8 @@ const mp = {
       const sim = app.sim, win = app.win, p = app.pov;
       if (!sim || !app.mapKind.streamed) return null; // retain the legacy box wire format and editing compatibility
       const focus = p?.active && p.player ? p.player.pos.clone().add(sim.origin).toArray()
-        : [app.controls.target.x / app.scale + app.anchor.x, 0, app.controls.target.z / app.scale + app.anchor.y];
+        : win ? world.godFocus(app).toSpliced(1, 0, 0)   // (the god view's window focus)
+          : [app.controls.target.x / app.scale + app.anchor.x, 0, app.controls.target.z / app.scale + app.anchor.y];
       if (!p?.active) focus[1] = win ? win.scene.ground(focus[0], focus[2], win.P) + 1 : sim.g.ny / 2;
       return { v: 1, id: `${session}:${sim.id}:${win?.epoch ?? 0}:${app.settings.preset}`, mode: win ? 'world' : 'box',
         scene: win?.scene.key ?? app.settings.preset, seed: (win?.P.seed ?? 0) >>> 0,
