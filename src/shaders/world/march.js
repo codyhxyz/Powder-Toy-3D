@@ -205,9 +205,10 @@ fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }
 fn brickFilm(f: u32) -> bool { return brickHas(f, BRICK_FILM); }   // (gfx/film.js filmHit; W's words don't set it yet: no thin films in the march)
-// (the box's occupancy masks and id bytes: the world copy reads the cell itself)
-fn occMaskOf(id: u32) -> vec2u { return vec2u(0xffffffffu); }
-fn occCellId(m: vec2u, id: u32, c: vec3i) -> i32 { return eid(wcA(c)); }
+// (the box's occupancy masks and id bytes: in the world copy, the brick's table entry, read once a brick as the
+// mask was, so a cell reads one pool word at most and nothing else of wcA's: eid(wcA(c)) exactly)
+fn occMaskOf(id: u32) -> vec2u { return vec2u(wcEntry(wcBrickOfKey(id)), 0u); }
+fn occCellId(m: vec2u, id: u32, c: vec3i) -> i32 { return wcShownId(wcCellIn(m.x, c), c); }
 fn liquidInterior(bc: vec3i) -> bool {
   for (var z = -1; z <= 1; z++) {
     for (var y = -1; y <= 1; y++) {
