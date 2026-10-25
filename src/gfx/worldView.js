@@ -30,7 +30,7 @@ import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
   worldMarchFrag, worldMarchPipeline, MarchParams, physParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
-  MARCH_STAGES, marchSplits, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, GBUF, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
+  MARCH_STAGES, marchSplits, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufViewDim, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
   COMPOSITE_NAME, COMPOSITE_LAYOUT_NAMES, stagePipeName,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
@@ -146,24 +146,26 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     const i = gbs.findIndex((b) => b.w === w && b.h === h);
     if (i >= 0) { gb = gbs[i]; gbs.splice(i, 1); gbs.unshift(gb); return gb; }
     if (gbs.length >= GBUF_KEPT) destroyGb(gbs.pop());
-    const storage = new Set(stageTextures('march').filter(([, , wr]) => wr).map(([, k]) => k));
     const tex = {}, views = {};
     for (const [k, format] of Object.entries(GBUF)) {
-      const usage = GPUTextureUsage.TEXTURE_BINDING | (storage.has(k) ? GPUTextureUsage.STORAGE_BINDING : GPUTextureUsage.RENDER_ATTACHMENT);
-      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: [w, h], format, usage });
-      views[k] = tex[k].createView();
+      const usage = GPUTextureUsage.TEXTURE_BINDING | (STORAGE_GBUF.has(k) ? GPUTextureUsage.STORAGE_BINDING : GPUTextureUsage.RENDER_ATTACHMENT);
+      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: [w, h, GBUF_LAYERS[k] ?? 1], format, usage });
+      views[k] = tex[k].createView({ dimension: gbufViewDim(k) });
     }
     gb = { w, h, tex, views };
     gbs.unshift(gb);
     return gb;
   }
   const CLEAR = { D: { r: GBUF_NO_DEPTH, g: 0, b: 0, a: 0 } };
-  const attach = (k, g = gb) => ({ view: g.views[k], loadOp: 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
+  const attach = (k, g = gb, load = false) => ({ view: g.views[k], loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
   // the split stages into G-buffer g (the frame's, or the cost view's own), each a pass of its own
   function recordStages(frame, parts, g, depth, header, params, { names = (st) => `world ${st}`, cost = null } = {}) {
     const copy = worldCopy.bindGroup, g2 = group2();
     for (const st of MARCH_STAGES) {
-      const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k) => attach(k, g)) }, names(st));
+      // (the event stage's gate: shaders/world/march.js EVENT_GATE_Z)
+      const gate = STAGE_GATE[st] === 'write' ? { view: g.views.Z, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
+        : STAGE_GATE[st] === 'test' ? { view: g.views.Z, depthReadOnly: true } : undefined;
+      const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k) => attach(k, g, STAGE_LOADS.has(st))), ...(gate ? { depthStencilAttachment: gate } : {}) }, names(st));
       try {
         parts[st].draw(rp, { bind: [frameGroup(depth, st, g, cost?.[st] ?? null), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
       } finally { rp.end(); }
@@ -462,12 +464,11 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     },
     /** A G-buffer of the cost view's own (every texture readable), the size of the scene target. */
     costGbuffer(w, h) {
-      const storage = new Set(stageTextures('march').filter(([, , wr]) => wr).map(([, k]) => k));
       const tex = {}, views = {};
       for (const [k, format] of Object.entries(GBUF)) {
-        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: [w, h], format,
-          usage: TEX.TEXTURE_BINDING | TEX.COPY_SRC | (storage.has(k) ? TEX.STORAGE_BINDING : TEX.RENDER_ATTACHMENT) });
-        views[k] = tex[k].createView();
+        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: [w, h, GBUF_LAYERS[k] ?? 1], format,
+          usage: TEX.TEXTURE_BINDING | TEX.COPY_SRC | (STORAGE_GBUF.has(k) ? TEX.STORAGE_BINDING : TEX.RENDER_ATTACHMENT) });
+        views[k] = tex[k].createView({ dimension: gbufViewDim(k) });
       }
       return { w, h, tex, views, destroy() { Object.values(tex).forEach((t) => t.destroy()); } };
     },

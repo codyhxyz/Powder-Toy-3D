@@ -144,3 +144,104 @@ hit the slot deadline on Island's look-down pose, which the later runs dropped).
   its trace in 180 s.
 
 Ran to 10 slots against the planned 6–8: the extra re-baseline was needed to show how far the ms drift.
+
+## The split into a lean march and an event stage (2026-10-25, branch `perf/march-split`, not merged)
+
+Base origin/main e7bbc239. Built, exact, measured. **It is not faster**, so it stays on the branch.
+
+### Design
+
+- **`world march` (the lean loop).** It is the same loop as before (shaders/render.js `realistic`, split
+  `'lean'`), with every rich event's body replaced by a stop: crystals, glass and source panes, a
+  liquid's quiet entry, a liquid surface met, a film, and any brick holding media. It still does the DDA,
+  the occupancy, crisp hits, the smooth-surface crossing tests, the empty-cell fast path and the floor.
+  It stops at the start of the iteration that meets a rich event, after the brick is entered and before
+  the event changes anything. Before a ray's first rich event nothing is gathered (col 0, trans 1, out
+  of liquid). So a lean pixel's G-buffer needs no G2 write: its G2 words go in G1 instead, flagged
+  `GB_LEAN`. The lean stage then has one storage texture, and the cost view still fits under the
+  device's 4.
+- **The record.** K is one `rgba32uint` texture with 3 layers, one binding. It holds 12 words: the
+  cell (packed), ax, phiStale, the kind, the iteration number, F's pick and its blend, tEnter, tMax,
+  and phiA. Every float is stored as its bits, and phiA is never resampled (the trap above). With 3
+  separate textures the event stage would hold 17 textures, past the 16 limit.
+- **The gate.** Z is a `depth16unorm` target. The lean march writes depth 0 where it stopped and leaves
+  the clear value 1 elsewhere. The event stage draws at depth 0.5 with the test `greater` and no depth
+  write, so the GPU's early depth test launches it on event pixels only. This acts as the compaction.
+  An earlier version used a per-draw stamp in K that every pixel read, and cost the same.
+- **`world event` (continuation).** This is the whole loop (split `'resume'`), restarted from the
+  record: the iteration, the DDA state, F's pick, phiA, and the brick read again. It traces the rest of
+  the ray itself, every later event included. A ray stopped at its start (the box wall into liquid, or
+  the eye inside liquid) is traced from its start. Bounded rounds of lean and event passes were ruled
+  out on the code: a ray through smoke has a media event in every cell, and up to `MAX_BENDS` surfaces
+  plus its panes. Each round would also move the loop's ~85 carried words through memory for every
+  pixel.
+- Reflect, shade and composite are as before. Shade reads G2 from G1 for `GB_LEAN` pixels. The
+  G-buffer grows from 100 to 150 B/pixel.
+
+### Spill (Metal's compiler spill events: exact)
+
+| stage | before | after |
+|---|---|---|
+| world march | 544 B | **112 B** (lean) |
+| world event | – | 544 B (560 B in the stamp version) |
+| world shade | 704 B | 704 B |
+| scene | 320 B | 320 B |
+
+The inlined size from `fs` (call graph over the generated WGSL) is about 101 k characters for the lean
+march, against about 455 k before. The lean march holds no `sunShadowAt` and 5 `surfSample`. The event
+stage is the old march plus the resume.
+
+### Time (Metal per-encoder ms, back to back, `tools/profile.mjs --no-cost`)
+
+| run | pose | world march | world event | march + event | world stages | Metal ms/frame |
+|---|---|---|---|---|---|---|
+| base e7bbc239 (trusted) | Lab default | 9.40 [8.59–10.86] | – | 9.40 | 11.93 | 25.59 |
+| split + gate (trusted) | Lab default | 2.04 [0.78–2.66] | 8.70 [0.00–13.33] | 10.74 | 12.70 | 21.22 |
+| base (untrusted: a screen saver held the GPU at 33%) | Lab default | 11.23 | – | 11.23 | – | 30.04 |
+| split + stamp (same screen saver) | Lab default | 2.89 [2.38–3.50] | 9.44 [4.48–12.48] | 12.33 | – | 26.12 |
+| base (trusted) | Island default | 3.40 [0.00–11.40] | – | 3.40 | 4.42 | 10.92 |
+| split + gate (trusted) | Island default | 2.31 [0.00–5.54] | 3.51 [0.00–8.52] | 5.82 | 7.29 | 14.85 |
+
+- **The event stage costs what the old march cost.** On Lab it takes 8.7–9.4 ms against the old march's
+  9.4–11.2. Lab's time is in the pixels that meet the glass tank and its water. Those pixels still run
+  the 544 B pipeline, through the same bodies, so they cost the same.
+- **The lean march is not much faster per step.** On Island its 112 B pipeline takes 2.3 ms, against
+  3.4 ms for the old 544 B one doing the whole ray. The spill was not what made the traversal slow.
+- The scene totals are within the drift above. The Metal frame total differs mostly in the scene pass
+  (8.05 vs 2.44 ms), which this change doesn't touch. The p10s of 0 ms are the encoders that read about
+  0 ms, as noted under "The three exact fixes". March plus event is about 1.3 ms (Lab) and 2.4 ms
+  (Island) **more** than the old march. No ms gain is claimed, and there is no fps gain.
+
+### What this says about the 576 B "ceiling"
+
+The stub run's 60 fps came from **removing the heavy bodies' work** on the pixels that meet them
+(sunShadowAt with its cloud density and caustics, liquidDetail, mediaSegment, the panes' lighting). It
+did not come from lowering the register pressure on the other pixels. An exact split keeps that work,
+so it can't reach that ceiling. The lever is the cost of those bodies themselves: fewer `sunShadowAt`
+evaluations per event pixel (one per segment, not per face), cheaper shadow taps inside liquid and
+glass, and `liquidDetail` and `mediaSegment` at lower sample counts where a pixel's footprint allows.
+Each has to be measured as a picture change, not as exact.
+
+### Exactness
+
+Same-pose `test.render()` frames, TAA off, view clocks reset, 960×600, the base build (its own
+worktree) against the split, back to back:
+
+- Lab looking down: byte-identical.
+- Lab default (glass tank, water, oil, ice, lava): 6 of 576,000 pixels differ, by at most 1/255. They
+  sit on the sand pile and the snow block, smooth opaque surfaces the lean march draws alone. Cause:
+  float noise. The same WGSL compiled in a module a quarter the size (the lean march), and a shade
+  stage whose prologue changed, get different fused multiply-adds from Metal. Every pixel that meets
+  water or glass matches.
+- Island: not captured. The slot budget went on the timing runs.
+
+The event stage's loop text was compared with the old march stage's: it is identical apart from the
+resume block and `var i` moved outside the loop. Also checked: naga on every stage (optics and lean),
+`check-wgsl --file world/march --no-build` (Tint, binding budgets: event 3/4 storage textures, lean
+1/4), `check-wgsl-operators`, `check-cost-view` (6 split marches, 4 stages), `world-march-cpu-check`,
+`check-crystal-transmission`, `check-opaque-surface`, `v2/foam-render-check`,
+`v2/liquid-interior-check`, `field-deriver-cpu-check`.
+
+Cost: 12 headless slots, about 165 s of GPU occupancy. 4 profiles of 9–13 s; 4 shot runs of 4–21 s
+(one failed on a first-load Vite reload); 2 `check-wgsl` runs, one of which was the full suite by
+mistake (21 s, hit the deadline).
