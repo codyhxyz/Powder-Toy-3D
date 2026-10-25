@@ -26,7 +26,7 @@ try {
     a.test.park();
     const f = a.win.far;
     f.queue = f.queue.slice(-49);
-    while (f.queue.length) { f.sceneChunks(1); await a.gpu.fence(); }
+    while (f.queue.length) { f.chunks(1); await a.gpu.fence(); }
     await f.viewPipe.build();
     const { farFrag, FarViewParams, farViewPipeline } = await import('/src/shaders/far.js');
     const code = farFrag(a.sim.g, f.L).replace(
