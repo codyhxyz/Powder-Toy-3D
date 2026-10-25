@@ -63,14 +63,14 @@ const DEPS_FRAMES = 2;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--capture] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
-  const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, capture: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
+  const flags = { '--capture': 'capture', '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
   const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup', 'gpu-state'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
@@ -93,6 +93,9 @@ export function parseArgs(argv) {
   }
   // --gpu-state: the GPU performance state the Metal trace asks for (tools/gpu-counters.mjs PERF_STATES); the report says what it got
   if (o.gpuState !== null && !['min', 'med', 'max'].includes(o.gpuState)) throw new Error('--gpu-state: min, med or max');
+  // --capture: a Metal GPU capture after the poses, replayed one pass at a time (tools/gpu-capture.mjs). Its capture
+  // layer and xctrace in one GPU process were not tried together: the capture run records no Metal trace
+  if (o.capture) o.counters = false;
   if (!Number.isSafeInteger(o.frames) || o.frames < 10 || o.frames > 240) throw new Error('--frames must be 10–240 (the median and spread need 10; the profiler keeps 240)');
   if (!Number.isSafeInteger(o.warmup) || o.warmup < 0 || o.warmup > 240) throw new Error('--warmup must be 0–240');
   if (!(o.dpr > 0 && o.dpr <= 3)) throw new Error('--dpr must be in (0, 3]');
@@ -301,8 +304,9 @@ async function main() {
     slot.busyBefore = await gpuBusyPct();
     // the GPU counters need our pass labels to reach Metal (tools/gpu-counters.mjs COUNTER_CHROME_ARGS)
     // (and --chrome-arg's switches, merged in: chromeArgs)
-    slot.chromeArgs = chromeArgs(countersMod?.COUNTER_CHROME_ARGS ?? [], o.chromeArgs);
-    browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: slot.chromeArgs });   // (waits for the slot; the slot starts inside it)
+    const captureMod = o.capture ? await import('./gpu-capture.mjs') : null;
+    slot.chromeArgs = chromeArgs([...(countersMod?.COUNTER_CHROME_ARGS ?? []), ...(captureMod?.CAPTURE_CHROME_ARGS ?? [])], o.chromeArgs);
+    browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: slot.chromeArgs, ...(captureMod ? { env: { ...process.env, ...captureMod.CAPTURE_ENV } } : {}) });   // (waits for the slot; the slot starts inside it)
     const t0 = Date.now();
     const page = await newTestPage(browser, { mode: 'visual', viewport: o.viewport, deviceScaleFactor: o.dpr });
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -388,6 +392,15 @@ async function main() {
       }
     }
     log('captured');
+    // --capture: Dawn's queue for a frame or two while the pump still renders (the replay runs after the browser closes)
+    if (o.capture && runs.length) {
+      try {
+        const { findGpuProcess } = await import('./gpu-counters.mjs');
+        const { captureFrames } = await import('./gpu-capture.mjs');
+        slot.capture = await captureFrames({ pid: findGpuProcess({ parentPid: process.pid }), out: o.out, timeoutMs: Math.max(1000, Math.min(8000, deadline - Date.now())) });
+        log(`GPU capture saved (${(slot.capture.bytes / 1e6).toFixed(0)} MB, ${slot.capture.count} command buffers of queue ${slot.capture.boundary.id})`);
+      } catch (e) { slot.captureError = String(e?.message ?? e); log(slot.captureError); }
+    }
     // the GPU counters: end the recording now, but parse the trace (10-60 s of CPU) only after the browser
     // has closed, so the GPU slot isn't held during it (tools/gpu-counters.mjs)
     if (counters) { countersDone = counters.stop(); countersDone.catch(() => {}); counters = null; }
@@ -406,6 +419,15 @@ async function main() {
   }
   // the GPU right after our browser closed: busy means someone else (the player) was on it
   slot.busyAfter = await gpuBusyPct();
+  // --capture: the replay is GPU work outside the browser slot: under an exclusive claim (tools/gpu-log.mjs)
+  if (slot.capture?.trace) {
+    try {
+      execFileSync(process.execPath, [join(HERE, 'gpu-log.mjs'), 'claim', `profile --capture replay (${o.map})`, '--exclusive', '--',
+        process.execPath, join(HERE, 'gpu-capture.mjs'), '--analyze', slot.capture.trace, '--out', o.out], { stdio: ['ignore', 'inherit', 'inherit'], timeout: 300000 });
+      slot.captureAnalysis = JSON.parse(readFileSync(join(o.out, 'capture.json'), 'utf8'));
+      slot.captureText = (await import('./gpu-capture.mjs')).captureText(slot.captureAnalysis);
+    } catch (e) { slot.captureError = `replay: ${String(e?.message ?? e).slice(0, 400)}`; }
+  }
   let gpuCounters = null;
   if (countersDone) {
     console.error('[profile] parsing the GPU counter trace (after the browser closed)');
@@ -416,7 +438,7 @@ async function main() {
   const others = slot.busyAfter >= SHARED_BUSY_PCT ? (await import('./gpu-log.mjs')).gpuBlockers({ exclusive: true }) : [];
   const shared = slot.busyAfter >= SHARED_BUSY_PCT ? `GPU ${slot.busyAfter}% busy right after the capture (${others.length
     ? `registered: ${others.join('; ')}` : 'nothing registered in tools/gpu-log.mjs: the player, or a session that did not claim'})` : null;
-  if (shared || gpuCounters) {
+  if (shared || gpuCounters || slot.capture || slot.captureError) {
     // (the report printed inside the slot lacked these: the final one, in full)
     console.log(`\n---- final report (${[shared && 'the GPU was shared', gpuCounters && 'Metal encoder times and GPU counters'].filter(Boolean).join(', ')}) ----`);
     emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLines });
@@ -513,6 +535,9 @@ function emit(o, runs, { url, info, slot, shared, gpuCounters, errors, consoleLi
     if (!k?.targets) continue;
     text += knockoutText(i, k);
   }
+  if (slot.captureError) text += `\n\nGPU capture: ${slot.captureError}`;
+  else if (slot.capture) text += `\n\nGPU capture: ${slot.capture.trace} (${(slot.capture.bytes / 1e6).toFixed(0)} MB, ${slot.capture.count} command buffers)${slot.captureAnalysis ? '' : ' · replay pending'}`;
+  if (slot.captureText) text += `\n${slot.captureText}`;
   if (reports.length > 1) {
     text += '\n\nposes (Metal ms when present, else timestamps):';
     reports.forEach((r, i) => { const top = r.passes.slice(0, 3).map((p) => `${p.name} ${(p.ms ?? p.perFrame ?? 0).toFixed(2)}`).join(', ');
