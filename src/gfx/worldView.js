@@ -39,7 +39,7 @@ import { RENDER_LAYOUT } from '../shaders/bindings.js';
 import { WorldCopy } from '../world/worldCopy.js';
 import { WorldFields } from './worldFields.js';
 import { worldCopyWGSL } from '../shaders/world/copy.js';
-import { costify, costBinding, COST_KINDS, COST_STORAGE_FORMAT } from '../shaders/costView.js';
+import { costify, costBinding, costLayoutEntry } from '../shaders/costView.js';
 
 const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits, importable in Node)
 const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
@@ -84,7 +84,7 @@ export function createWorldView(gpu, sim, { volume }) {
   const frameEntriesOf = (st) => WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0];
   const costL = {};
   const costLayout = (st) => (costL[st] ??= gpu.layout(`${worldMarchLayoutNames(st)[0]}_COST`, [...frameEntriesOf(st),
-    { binding: costBinding(frameEntriesOf(st)), visibility: GPUShaderStage.FRAGMENT, storageTexture: { access: 'write-only', format: COST_STORAGE_FORMAT, viewDimension: '2d' } }]));
+    costLayoutEntry(costBinding(frameEntriesOf(st)))]));
   const fu = frameUniformsOf(gpu);
   const uniforms = gpu._worldFrameUniforms ??= gpu.uniforms(FrameUniformsStruct, 'FrameUniforms (world cells)');
   const last = { viewProj: new Matrix4(), model: new Matrix4() };
@@ -355,7 +355,7 @@ export function createWorldView(gpu, sim, { volume }) {
         const { code, params, vertex, fragment, primitive, depthStencil, multisample } = pipe.desc;
         const binding = costBinding(frameEntriesOf(stage));
         twins.set(pipe, t = gpu.renderPipeline({
-          name: `${pipe.name}.cost`, code: costify(code, { sink: 'storage', binding, require: stage === 'whole' ? COST_KINDS : [] }),
+          name: `${pipe.name}.cost`, code: costify(code, { binding, require: stage === 'whole' ? undefined : [] }),
           layouts: [costLayout(stage), L.copy, L.group2], params, vertex, fragment, primitive, depthStencil, ...(multisample ? { multisample } : {}),
           build: 'now', optional: true,   // (a failure to build it is the cost view's, not the game's)
         }));

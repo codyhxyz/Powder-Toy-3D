@@ -24,7 +24,7 @@
 // trace ran; misses inside the box count, the rays cost work), at the scene
 // target's real size, not the canvas's.
 
-import { costify, costPipeline, COST_COUNTERS, COST_KINDS, COST_COVERED_BIT, COST_MAX, COST_MARCH_MAX, COST_STORAGE_FORMAT, COST_STORAGE_ROWS } from '../shaders/costView.js';
+import { COST_COUNTERS, COST_KINDS, COST_COVERED_BIT, COST_MAX, COST_MARCH_MAX, COST_STORAGE_FORMAT, COST_STORAGE_ROWS, COST_WORDS } from '../shaders/costView.js';
 import { MARCH_STAGES } from '../shaders/world/march.js';
 import { halfToFloat } from '../gpu/readback.js';
 import { isMaterialView } from '../views.js';
@@ -53,16 +53,16 @@ function inferno(x) {
 }
 const LUT = Array.from({ length: 256 }, (_, i) => inferno(i / 255));
 
-// the 12 counts of every pixel from the two integer targets (shaders/costView.js costWrite)
-export function decode(c0, c1, n) {
+// every pixel's counts from its COST_WORDS words (shaders/costView.js costStore: two 16-bit counts a word)
+export function decode(words, n) {
   const vals = COST_KINDS.map(() => new Uint16Array(n)), covered = new Uint8Array(n);
   let count = 0;
   for (let p = 0; p < n; p++) {
-    const w = [c0[4 * p], c0[4 * p + 1], c0[4 * p + 2], c0[4 * p + 3], c1[2 * p], c1[2 * p + 1]];
-    if (!(w[0] & COST_COVERED_BIT)) continue;
+    const o = COST_WORDS * p;
+    if (!(words[o] & COST_COVERED_BIT)) continue;
     covered[p] = 1; count++;
     for (let s = 0; s < COST_KINDS.length; s++) {
-      const word = w[s >> 1];
+      const word = words[o + (s >> 1)];
       vals[s][p] = s & 1 ? word >>> 16 : word & (s === 0 ? COST_MARCH_MAX : COST_MAX);
     }
   }
@@ -90,15 +90,16 @@ export function stats(v, covered, count, cap = Infinity) {
   return { mean: count ? sum / count : 0, p50: pct(0.5), p95: pct(0.95), p99: pct(SCALE_PERCENTILE), max, sum, saturated };
 }
 
-// the storage sink's texture (w × 2h rgba32uint: the pixel's words in rows 2y and 2y + 1) as decode's two arrays
+// the storage sink's texture (w × ROWS·h rgba32uint: the pixel's words four a row, rows ROWS·y …) as decode's words
 export function storageWords(t, w, h) {
-  const c0 = new Uint32Array(4 * w * h), c1 = new Uint32Array(2 * w * h);
+  const out = new Uint32Array(COST_WORDS * w * h);
   for (let y = 0; y < h; y++) {
-    c0.set(t.subarray(4 * w * COST_STORAGE_ROWS * y, 4 * w * (COST_STORAGE_ROWS * y + 1)), 4 * w * y);
-    const r1 = 4 * w * (COST_STORAGE_ROWS * y + 1);
-    for (let x = 0; x < w; x++) { c1[2 * (w * y + x)] = t[r1 + 4 * x]; c1[2 * (w * y + x) + 1] = t[r1 + 4 * x + 1]; }
+    for (let r = 0; r < COST_STORAGE_ROWS; r++) {
+      const row = 4 * w * (COST_STORAGE_ROWS * y + r);
+      for (let x = 0; x < w; x++) for (let c = 0; c < 4; c++) out[COST_WORDS * (w * y + x) + 4 * r + c] = t[row + 4 * x + c];
+    }
   }
-  return [c0, c1];
+  return out;
 }
 // two integer (or raw float) textures, word for word: pixels whose words differ
 export function compareWords(a, b, words) {
@@ -148,30 +149,22 @@ function heatmap(v, covered, w, h, scale) {
  */
 export function attachCostView(app) {
   const gpu = app.gpu;
-  const twins = new WeakMap();   // live pipeline → its counted twin
-  let targets = null;            // { w, h, colorLive, colorTwin, depth, cost0, cost1 }
+  let targets = null;            // { w, h, colorLive, colorTwin, depth, cost }
   let last = null;               // the last capture's decoded counts (the overlay redraws from them)
-
-  const twinOf = (pipe) => {
-    let t = twins.get(pipe);
-    if (!t) {
-      const { code, layouts, params, vertex, fragment, primitive, depthStencil, multisample } = pipe.desc;
-      twins.set(pipe, t = gpu.renderPipeline({
-        name: `${pipe.name}.cost`, code: costify(code), layouts, params,
-        ...costPipeline({ vertex, fragment, primitive, depthStencil, ...(multisample ? { multisample } : {}) }),
-        build: 'now', optional: true,   // (a failure to build it is the cost view's, not the game's)
-      }));
-    }
-    return t;
-  };
+  // the counters' storage texture: the scene's width, COST_STORAGE_ROWS times its height
+  const costTexture = (label, w, h) => gpu.createTexture({ label: `cost view ${label}`, size: [w, COST_STORAGE_ROWS * h], format: COST_STORAGE_FORMAT,
+    usage: USAGE.STORAGE_BINDING | USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC });
   const targetsFor = (w, h) => {
     if (targets && targets.w === w && targets.h === h) return targets;
-    if (targets) for (const k of ['colorLive', 'colorTwin', 'depth', 'cost0', 'cost1']) targets[k].destroy();
+    if (targets) for (const k of ['colorLive', 'colorTwin', 'depth', 'cost']) targets[k].destroy();
     const tex = (label, format) => gpu.createTexture({ label: `cost view ${label}`, size: [w, h], format, usage: USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC });
     targets = { w, h, colorLive: tex('live colour', 'rgba16float'), colorTwin: tex('counted colour', 'rgba16float'),
-      depth: tex('depth', 'depth32float'), cost0: tex('counters 0', 'rgba32uint'), cost1: tex('counters 1', 'rg32uint') };
+      depth: tex('depth', 'depth32float'), cost: costTexture('counters', w, h) };
+    targets.costView = targets.cost.createView();
     return targets;
   };
+  // the counters cleared (a pixel nothing covers keeps 0: no coverage bit)
+  const clearCounters = (f, view) => f.render({ colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] }, 'cost view counted clear').end();
   const colour = (t) => ({ view: t.createView(), clearValue: [0, 0, 0, 0], loadOp: 'clear', storeOp: 'store' });
   const depthOf = (t) => ({ view: t.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' });
 
@@ -236,32 +229,33 @@ export function attachCostView(app) {
     return src.world ? captureWorld(src.rec, kind) : captureBox(src.rec, kind);
   }
 
-  // ---- the box volume (gfx/volume.js): one pass, the counters in integer targets beside its colour ----
+  // ---- the box volume (gfx/volume.js): one pass, the counters in a storage texture beside its colour ----
   async function captureBox(draw, kind) {
-    const twin = twinOf(draw.pipe);
+    const vol = app.vol;
+    const twin = vol.costTwin(draw.pipe);
     if (twin.state !== 'ready') {
       await twin.ready;   // (its build took frames: measure a frame drawn after it)
       const again = await freshFrame();
-      if (again.world || twinOf(again.rec.pipe) !== twin) return capture({ kind });   // (the view changed meanwhile)
+      if (again.world || vol.costTwin(again.rec.pipe) !== twin) return capture({ kind });   // (the view changed meanwhile)
       draw = again.rec;
     }
-    const vol = app.vol;
     const { width: w, height: h } = app.post.sceneTarget;
     const t = targetsFor(w, h);
     const opts = { view: draw.view, detail: draw.detail, meshDepth: draw.meshDepth, marchNear: draw.marchNear, aerCopy: draw.aerCopy, warp: draw.warp };
     // synchronously, before anything rewrites the frame state: the live pipeline, then its twin
     const f = gpu.frame;
+    clearCounters(f, t.costView);
     let rp = f.render({ colorAttachments: [colour(t.colorLive)], depthStencilAttachment: depthOf(t) }, 'cost view live');
     const drewLive = vol.draw(rp, opts);
     rp.end();
-    rp = f.render({ colorAttachments: [colour(t.colorTwin), colour(t.cost0), colour(t.cost1)], depthStencilAttachment: depthOf(t) }, 'cost view counted');
-    const drewTwin = vol.draw(rp, { ...opts, pipe: twin });
+    rp = f.render({ colorAttachments: [colour(t.colorTwin)], depthStencilAttachment: depthOf(t) }, 'cost view counted');
+    const drewTwin = vol.draw(rp, { ...opts, pipe: twin, cost: t.costView });
     rp.end();
     if (!drewLive || !drewTwin) { gpu.flush('cost view'); throw new Error('cost view: the volume could not draw (its read format changed or its pipeline is rebuilding); capture again'); }
-    const reads = [t.colorLive, t.colorTwin, t.cost0, t.cost1].map((x) => gpu.readback.texture(x));
+    const reads = [t.colorLive, t.colorTwin, t.cost].map((x) => gpu.readback.texture(x));
     gpu.flush('cost view');
-    const [live, counted, c0, c1] = await Promise.all(reads);
-    const { vals, covered, count } = decode(c0, c1, w * h);
+    const [live, counted, costTex] = await Promise.all(reads);
+    const { vals, covered, count } = decode(storageWords(costTex, w, h), w * h);
     const cmp = compare(live, counted, covered);
     const diffShare = count ? cmp.differing / count : (cmp.differing ? 1 : 0);
     const samePicture = diffShare <= SAME_SHARE;
@@ -286,7 +280,7 @@ export function attachCostView(app) {
     const stages = split ? MARCH_STAGES : ['whole'];
     world = {
       w, h, split, wv,
-      cost: Object.fromEntries(stages.map((st) => [st, tex(`${st} counters`, COST_STORAGE_FORMAT, [w, COST_STORAGE_ROWS * h], USAGE.STORAGE_BINDING | USAGE.RENDER_ATTACHMENT | USAGE.COPY_SRC)])),
+      cost: Object.fromEntries(stages.map((st) => [st, costTexture(`${st} counters`, w, h)])),
       ...(split ? { gbA: wv.costGbuffer(w, h), gbB: wv.costGbuffer(w, h) }
         : { colorLive: tex('live colour', 'rgba16float'), colorTwin: tex('counted colour', 'rgba16float'), depth: tex('depth', 'depth32float') }),
     };
@@ -309,7 +303,7 @@ export function attachCostView(app) {
     const t = worldTargets(wv, w, h, rec.split);
     // synchronously, before anything rewrites the frame state: the counters cleared, the live chain, the counted chain
     const f = gpu.frame;
-    for (const v of Object.values(t.costViews)) f.render({ colorAttachments: [{ view: v, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] }, 'cost view counted clear').end();
+    for (const v of Object.values(t.costViews)) clearCounters(f, v);
     const target = (c) => (rec.split ? null : { color: c.createView(), depth: t.depth.createView() });
     const okLive = wv.costReplay(f, rec, { parts: liveOf(rec), pipe: rec.pipe, g: t.gbA, target: target(t.colorLive), name: 'cost view live' });
     const okTwin = wv.costReplay(f, rec, { parts: twinParts, pipe: twinParts.whole, g: t.gbB, target: target(t.colorTwin), cost: t.costViews, name: 'cost view counted' });
@@ -329,7 +323,7 @@ export function attachCostView(app) {
 
     // each stage's counts, as that stage wrote them; the frame's per pixel is their sum
     const n = w * h;
-    const per = stages.map((st, i) => ({ st, ...decode(...storageWords(costTex[i], w, h), n) }));
+    const per = stages.map((st, i) => ({ st, ...decode(storageWords(costTex[i], w, h), n) }));
     const frame = per[0];   // the march (or the whole march) covers every pixel the world does
     const covered = frame.covered, count = frame.count;
     const vals = COST_KINDS.map((_, s) => {
