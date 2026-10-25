@@ -14,7 +14,7 @@
 // big one's far view not drawing yet).
 //
 // The split march (shaders/world/march.js, "The split march"): prepass records its stages as passes
-// of their own ('world march', 'world reflect', 'world shade') into a G-buffer the size of the scene
+// of their own ('world beam', 'world march', 'world reflect', 'world shade') into a G-buffer the size of the scene
 // target; draw then composites their picture into the scene pass. A detail variant that doesn't
 // split (the grains), or a draw with no prepass before it, draws the whole march in the scene pass.
 //
@@ -30,7 +30,7 @@ import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
   worldMarchFrag, worldMarchPipeline, MarchParams, physParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
-  MARCH_STAGES, marchSplits, EVENT_COLOR_BYTES, stageCounted, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufViewDim, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
+  MARCH_STAGES, marchSplits, EVENT_COLOR_BYTES, stageCounted, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufViewDim, gbufSize, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
   COMPOSITE_NAME, COMPOSITE_LAYOUT_NAMES, stagePipeName,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
@@ -149,7 +149,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     const tex = {}, views = {};
     for (const [k, format] of Object.entries(GBUF)) {
       const usage = GPUTextureUsage.TEXTURE_BINDING | (STORAGE_GBUF.has(k) ? GPUTextureUsage.STORAGE_BINDING : GPUTextureUsage.RENDER_ATTACHMENT);
-      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: [w, h, GBUF_LAYERS[k] ?? 1], format, usage });
+      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: [...gbufSize(k, w, h), GBUF_LAYERS[k] ?? 1], format, usage });
       views[k] = tex[k].createView({ dimension: gbufViewDim(k) });
     }
     gb = { w, h, tex, views };
@@ -174,12 +174,13 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     }
   }
   // drawLo: the box's low corner when boxed (world/window.js drawOrigin), else physics' window's
-  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, boxed = false, drawLo = null }) => {
+  // size: the split stages' target (the beam stage's tiles), [w, h]
+  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, boxed = false, drawLo = null, size = null }) => {
     const depth = meshDepth ?? dummy.depth, phys = physParams(sim);
     return {
       meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
       deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...phys, boxed: boxed ? 1 : 0,
-      drawLo: drawLo ?? phys.physOrigin,
+      drawLo: drawLo ?? phys.physOrigin, sceneRes: size ?? [1, 1],
     };
   };
   let drawNo = 0;
@@ -363,7 +364,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       gbuffer(target.width, target.height);
       meshInv.multiplyMatrices(last.viewProj, last.model).invert();   // clip → world cells, the jittered camera's
       const header = { ...sim.readHeader(), origin: [0, 0, 0] };
-      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo });
+      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo, size: [target.width, target.height] });
       recordStages(frame, set.parts, gb, meshDepth ?? dummy.depth, header, params);
       view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
       compositeParams = params;
@@ -471,7 +472,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     costGbuffer(w, h) {
       const tex = {}, views = {};
       for (const [k, format] of Object.entries(GBUF)) {
-        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: [w, h, GBUF_LAYERS[k] ?? 1], format,
+        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: [...gbufSize(k, w, h), GBUF_LAYERS[k] ?? 1], format,
           usage: TEX.TEXTURE_BINDING | TEX.COPY_SRC | (STORAGE_GBUF.has(k) ? TEX.STORAGE_BINDING : TEX.RENDER_ATTACHMENT) });
         views[k] = tex[k].createView({ dimension: gbufViewDim(k) });
       }

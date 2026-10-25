@@ -62,6 +62,7 @@ import { reachWGSL } from './reach.js';
 import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
 import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT, WC_FIELD_CERT, WC_OWN } from './copy.js';
 import { worldFieldsWGSL, FIELDS_BINDINGS } from './fields.js';
+import { beamMarchWGSL, beamStartWGSL, BEAM_TILE } from './beam.js';
 
 /** The march's own values (group 3 binding 1): the box volume's (shaders/render.js VolumeParams) and physics' window. */
 export const MarchParams = uniformStruct('MarchParams', {
@@ -76,6 +77,7 @@ export const MarchParams = uniformStruct('MarchParams', {
   physRing: 'u32',      // ... rotated by its ring, in bricks (shaders/common.js ringOf; sim.g.ring, 0 unringed)
   boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside physics' window only (marchSpan) ...
   drawLo: 'vec3i',      // ... where it comes to rest (world/window.js drawOrigin; physOrigin but while it walks there), physSize
+  sceneRes: 'vec2f',    // the split stages' target in pixels (the beam stage's tiles' rays: shaders/world/beam.js)
 });
 /** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
 export const physParams = (sim) => {
@@ -292,7 +294,10 @@ const floorWorld = (code) => rewrite(code, [
 // brickSurfCert, which an empty brick's flags leave at once), and an empty brick is jumped, sampling
 // nothing, so its pick (gPickL, gPickA) is read only if the ray ends past it (the floor, the trip cap):
 // taken after the loop then, at the same point (its entry), before anything after the loop reads it.
+const BEAM_AT = "  // (one trip more than the march's steps";
 const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTraceWGSL(detail, format, optics, split), [
+  // the lean march's head start from the beam stage (shaders/world/beam.js): a ray in air, nothing met at its start
+  ...(split === 'lean' ? [[BEAM_AT, `  if (!ifPend & !anyHit & (liq == E_EMPTY)) { ax = beamStart(ro, rd, t0, bh.y, ax, &cell, &tMax, &tEnter); }\n${BEAM_AT}`]] : []),
   ['  var lastB = vec3i(-1);\n', '  var lastB = vec3i(-1);\n  var pickOwed = false;   // (the last brick entered was empty: its pick is taken after the loop, at pickT)\n  var pickT = 0.0;\n'],
   // F's pick, and its certificate (brickSurfCert), for a ray in air (and, with grains, not inside the
   // gravel's surface: gfx/grains.js re-reads gPebInside in the first empty cell the body passes)
@@ -398,6 +403,8 @@ struct MarchFrag {
 // über-shader. So the tracer is cut where it already funnels into one place, after the march loop
 // (its one shading call site), the way deferred renderers cut geometry from lighting (Deering et
 // al. 1988, "The triangle processor and normal vector shader"; Killzone 2's G-buffer, Valient 2007):
+//   'world beam'     a tile's cone through W's occupancy: how far every ray of the tile meets no matter,
+//                    the lean loop's head start (shaders/world/beam.js; Laine & Karras 2010's beam pass)
 //   'world march'    the lean loop: the ray through the world to the hit that ends it (crisp voxels,
 //                    opaque smooth surfaces, the floor), into the G-buffer; or, at the first rich
 //                    event (a liquid surface or segment, a crystal, a glass or source pane, a film,
@@ -417,6 +424,7 @@ struct MarchFrag {
 //   G2  event → reflect, shade          hitN and the bent ray (octahedral), F's level blends, gSkyIn
 //   R0  event → reflect                 the reflection's origin xyz and direction (octahedral)
 //   R1  event → reflect                 its env (f16 × 3), weight K (f16 × 3), wf
+//   T   beam → march                    a tile's safe distance (r32float, a texel a BEAM_TILE² tile)
 //   K   march → event                   the lean loop's state at its first rich event (rsStore), 3 layers
 //   O   reflect → shade          what the colour owes the reflection (rgba16float)
 //   S,D shade → scene pass       premultiplied colour (rgba16float), depth (r32float, -1: no hit)
@@ -466,9 +474,9 @@ fn evGateZ(b: u32) -> f32 {
 ${RICH_BODIES.map((b, i) => { const k = EVENT_KINDS.find((x) => x.takes.includes(b)); return k ? `  if (b == ${i + 1}u) { return ${KIND_Z[k.key]}; }` : ''; }).filter(Boolean).join('\n')}
   return 0.0;
 }`;
-export const MARCH_STAGES = ['march', ...EVENT_KINDS.map(kindStage), 'regate', 'event', 'reflect', 'shade'];
-/** Whether the cost view counts a stage's work (the re-gate traces nothing: it runs as it is in the counted chain). */
-export const stageCounted = (stage) => stage !== 'regate';
+export const MARCH_STAGES = ['beam', 'march', ...EVENT_KINDS.map(kindStage), 'regate', 'event', 'reflect', 'shade'];
+/** Whether the cost view counts a stage's work (the re-gate and the beam trace no pixel's ray: they run as they are in the counted chain). */
+export const stageCounted = (stage) => stage !== 'regate' && stage !== 'beam';
 /** Whether a detail variant draws through the split stages (not the grain variants: see above). */
 export const marchSplits = (detail = {}) => !GRAINS_ANY(detail);
 const SPLIT_AT = "  // ---- the pixel's traced reflection, marched once";
@@ -484,11 +492,15 @@ function splitTrace(detail, format, optics, split = null) {
 // G-buffer formats, their textures' bytes per pixel (the report's memory column)
 export const GBUF = {
   G0: 'rgba32uint', G1: 'rgba32uint', G2: 'rgba32uint', R0: 'rgba32uint', R1: 'rgba32uint', O: 'rgba16float', S: 'rgba16float', D: 'r32float',
-  K: 'rgba32uint', Z: 'depth16unorm', M: 'r8uint',
+  K: 'rgba32uint', Z: 'depth16unorm', M: 'r8uint', T: 'r32float',
 };
+/** The G-buffer textures a tile a texel, not a pixel (T: the beam stage's, BEAM_TILE pixels a side). */
+export const GBUF_TILE = { T: BEAM_TILE };
+/** A G-buffer texture's size for a w × h target. */
+export const gbufSize = (k, w, h) => (GBUF_TILE[k] ? [Math.ceil(w / GBUF_TILE[k]), Math.ceil(h / GBUF_TILE[k])] : [w, h]);
 /** The G-buffer's array textures, their layers (K: the event stage's record, one binding for its three texels). */
 export const GBUF_LAYERS = { K: 3 };
-export const GBUF_BYTES_PER_PIXEL = Object.entries(GBUF).reduce((n, [k, f]) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, depth16unorm: 2, r8uint: 1 })[f] * (GBUF_LAYERS[k] ?? 1), 0);
+export const GBUF_BYTES_PER_PIXEL = Object.entries(GBUF).reduce((n, [k, f]) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, depth16unorm: 2, r8uint: 1 })[f] * (GBUF_LAYERS[k] ?? 1) / (GBUF_TILE[k] ?? 1) ** 2, 0);
 // The event stage's gate (Z): the lean march writes depth 0 where it stopped at a rich event and leaves the
 // clear (1) elsewhere; the event stage draws at depth EVENT_GATE_Z, tested 'greater' without writing, so the
 // depth test before its fragment shader (early-z) launches it on those pixels only: the event pixels'
@@ -500,7 +512,8 @@ const GB_BASE = 4;
 // (the gated stages bind no storage texture: see "The event kernels")
 const KERNEL_EXTRA = [['gbK', 'K']];
 const STAGE_EXTRA = {
-  march: [['gbK', 'K', 'write']],
+  beam: [],
+  march: [['gbK', 'K', 'write'], ['gbT', 'T']],
   ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), KERNEL_EXTRA])),
   regate: [['gbM', 'M']],
   event: KERNEL_EXTRA,
@@ -592,7 +605,7 @@ const GB_ID_SHIFT: u32 = 9u;      // a crisp hit's id (8 bits) or a smooth one's
 const GB_OFF_SHIFT: u32 = 17u;    // a crisp hit's cell - floor(hitP) + 1, 2 bits an axis
 const GB_LEVEL_SHIFT: u32 = 23u;  // gFieldLevel (4 bits), then gPickL (4 bits)
 const GB_LEAN: u32 = 0x80000000u; // the lean march's hit: G1.xyz hold G2's words (normal, F's blends, gSkyIn), col 0, trans 1
-${stage === 'march' || stage === 'event' || isKindStage(stage) ? RESUME_WGSL(stage) : ''}// Octahedral unit vectors in a u32, 16 bits an axis (Cigolle et al. 2014, "A Survey of Efficient
+${stage === 'march' || stage === 'event' || isKindStage(stage) ? RESUME_WGSL(stage) : ''}${stage === 'march' ? `${beamStartWGSL}\n` : ''}// Octahedral unit vectors in a u32, 16 bits an axis (Cigolle et al. 2014, "A Survey of Efficient
 // Representations for Independent Unit Vectors"; JCGT 3(2)): about 1e-4 rad.
 fn gbSignNZ(v: vec2f) -> vec2f { return select(vec2f(-1.0), vec2f(1.0), v >= vec2f(0.0)); }
 fn gbOctEnc(n0: vec3f) -> u32 {
@@ -931,6 +944,11 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
   if (stage !== 'whole' && (!MARCH_STAGES.includes(stage) || !marchSplits(detail))) throw new Error(`worldMarchFrag: no split stage ${stage} for this detail`);
   // (the re-gate: its few lines, no tracer)
   if (stage === 'regate') return `// world regate (shaders/world/march.js "The event kernels")\n${gbDecls(stage)}\n${stageEntryWGSL.regate()}`;
+  // (the beam: W's occupancy and the march's camera, no tracer: shaders/world/beam.js)
+  if (stage === 'beam') {
+    return [`// world beam (shaders/world/beam.js)`, prelude(physGrid, { state: false }), frameBindings(), worldCopyWGSL(),
+      `${MarchParams.wgsl}\n@group(3) @binding(1) var<uniform> P: ${MarchParams.name};`, beamMarchWGSL].join('\n');
+  }
   const whole = stage === 'whole';
   const shading = [
     `// world ${whole ? 'march' : stage}: ${view}, detail ${Object.keys(detail).filter((k) => detail[k]).sort().join(' ') || 'off'}${optics ? '' : ', lean optics'}`,
@@ -998,7 +1016,7 @@ export const worldMarchPipeline = (stage = 'whole') => {
   return { vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets }, primitive, ...(gate ? { depthStencil: gate } : {}) };
 };
 /** The color targets each split stage renders into (GBUF keys, in location order). */
-export const STAGE_TARGETS = { march: ['G0', 'G1', 'M'], ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), ['G0', 'G1', 'G2', 'R0', 'R1', 'M']])),
+export const STAGE_TARGETS = { beam: ['T'], march: ['G0', 'G1', 'M'], ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), ['G0', 'G1', 'G2', 'R0', 'R1', 'M']])),
   regate: [], event: ['G0', 'G1', 'G2', 'R0', 'R1'], reflect: ['O'], shade: ['S', 'D'] };
 /** Colour bytes a pixel the widest gated stage writes (its targets'): the device limit the event kernels need. */
 export const EVENT_COLOR_BYTES = Math.max(...Object.values(STAGE_TARGETS).map((ks) => ks.reduce((n, k) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, r8uint: 1 })[GBUF[k]], 0)));

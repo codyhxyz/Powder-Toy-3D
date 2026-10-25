@@ -401,3 +401,32 @@ stubbed variants (local only, never merged) change the picture.
 
 Cost: 16 headless slots, about 230 s of GPU occupancy (5 variant runs lost to a slot held by another session or a
 cold compile past the deadline).
+
+## The beam pre-pass (Laine & Karras 2010, §6.2)
+
+A new first split stage, `world beam` (shaders/world/beam.js), walks one cone per 8×8-pixel tile through W's
+occupancy (64³, 16³ nodes and 4³ bricks) and writes how far every ray of the tile meets no brick with matter
+(T, r32float). The lean march starts each ray there, in the state its own walk would have reached: the empty
+node holding the point, entered where the ray enters it, landing cell and t as the jump into it leaves them.
+Recomputed every frame from the march's own jittered `P.meshInv`; it ignores the window, the mesh cut and the
+near clip, which only shorten a ray.
+
+CPU proof (`tools/beam-cpu-check.mjs`, the production WGSL in wgsl_reflect's interpreter): 20 k rays of
+random cameras (inside, above and beside a fixture world, TAA-jittered) never meet matter before their tile's
+distance (a 15 % overshoot as a negative control fails); 2 k head starts, grazing rays along brick faces
+included, reach the first matter in the walk's own cell, tEnter and tMax.
+
+Exactness (converged same-pose frames, TAA off, frozen, 960×600, base 5b46d837): Lab default (1/255 noise
+only, which two base runs also show) and landDown, Island landDown byte-identical; Island default and horizon
+differ only at the shrine's display and three tree bases, where two base runs differ from each other the same
+way. On GPU, a diagnostic build compared both walks at every pixel's first brick with matter: no pixel differed.
+(The unconverged capture, a fixed count of frames, showed tree-base differences that convergence removed.)
+
+Work (cost view, Lab default): main-loop trips 11.7 → 6.4 a pixel, empty-region jumps 7.2 → 1.9 (64³ 0.85 →
+0.23, 16³ 3.3 → 0.67, brick 3.1 → 0.99); cells stepped unchanged (5.4).
+
+Time (`tools/profile.mjs --no-cost --no-counters --frozen`, branch and base back to back, on battery): whole-
+frame GPU span Lab default 15.36 / 15.37 → 15.04 / 14.99 ms (two pairs, −0.35 ms), Island default 17.29 →
+16.98 ms, Island horizon 8.75 → 8.85 ms (noise). The beam pass costs 0.24 ms (Lab) and 0.39 ms (Island) of
+it. Less than the trips promised, as with the cheaper jumps before it: the empty jumps were ~250 operations
+each and cheap next to the surface trips and the shade, reflect and event stages.
