@@ -104,16 +104,15 @@ Twenty-four per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 | `skip16` | jumps over an empty 16³ node (the box: a cube of 3–15 bricks a side) |
 | `skip64` | jumps over an empty 64³ node (the box: a cube of 16 bricks a side or more) |
 | `skipCells` | cells the main march moved by its jumps (\|Δx\| + \|Δy\| + \|Δz\|) |
-| `lodEngaged` | the world's distance LOD (`marchCoarse`): bricks crossed on the field |
-| `lodRejectFootprint` | `marchCoarse` declined: a pixel covers fewer than `LOD_MIN_FP` cells |
-| `lodRejectBrick` | `marchCoarse` declined: a crisp cell, medium or thin liquid in the brick |
-| `lodSteps` | iterations of `marchCoarse`'s field walk |
-| `lodAdvanced` | `marchCoarse` results that moved the cell walk forward |
+| `hfTests` | the world's heightfield skip (`hfSkip`, W's maximum mipmap of the column tops): tests, one a brick the walk enters |
+| `hfSkips` | heightfield jumps (the ray above a region's padded top) |
+| `hfCells` | cells the heightfield jumps moved the walk (\|Δx\| + \|Δy\| + \|Δz\|) |
+| `hfSkip64` | heightfield jumps level 3 (64 × 64 columns) held |
+| `hfDrops` | heightfield jumps that ended where the ray came down to a region's top (else at its side) |
 
 The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
 `skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split). The
-LOD's own steps are not cell steps or jumps: the cell walk's counts are only the cell walk's. The
-reject counters test `marchCoarse`'s own gate; `costify` refuses a module whose gate text changed.
+heightfield's jumps are not cell steps or `brickSkips`: the cell walk's counts are only the cell walk's.
 The main march's jumps are marked (`gCostMainSkip`) so a reflection's `skipEmpty` isn't counted as one.
 
 A count that reaches 65535 (the march: 32767) stops there; `saturated` says how many pixels did, and a

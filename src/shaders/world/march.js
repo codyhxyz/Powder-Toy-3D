@@ -55,7 +55,7 @@ import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
 import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
-import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT, WC_OWN } from './copy.js';
+import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT } from './copy.js';
 import { worldFieldsWGSL, FIELDS_BINDINGS } from './fields.js';
 
 /** The march's own values (group 3 binding 1): the box volume's (shaders/render.js VolumeParams) and physics' window. */
@@ -227,39 +227,34 @@ fn brickDistAt(b: vec3i) -> i32 { return 0; }
 // ---- level of detail: F's clip level for the pixel's footprint at p (cells per pixel) ----
 fn marchLod(p: vec3f) { gFieldLevel = fieldLevelFor(footprint(p)); fieldPickAt(p); }
 
-// ---- distance LOD: past the distance where a pixel covers LOD_MIN_FP cells, a brick the ray enters
-// is crossed on F's field at the footprint's level, half a texel a step, instead of cell by cell: the
-// mip-mapped walk of sparse voxel octree tracing (Laine & Karras 2010, "Efficient Sparse Voxel
-// Octrees"; Crassin et al. 2011, cone tracing), with the surface itself still found by the cell walk.
-// Only a brick no crisp cell, medium or thin liquid is in (W's own CRISP bit, BRICK_MEDIA, BRICK_THIN):
-// the field draws everything else in it, so a step that finds the field below SURF_ISO everywhere has
-// crossed air, and the walk resumes a step short of the first sample at or past it. What a step can
-// pass over is narrower than half a pixel there (no visible line where it starts: the hit is the cell
-// walk's either way, at the same level F's blend gives). Near the camera nothing changes.
-// Returns (where the cell walk resumes, the axis of the brick face it left by; -1: inside the brick).
-const LOD_MIN_FP: f32 = 2.0;     // cells per pixel at which a brick is crossed on the field
-const LOD_STEP: f32 = 0.5;       // a step: this share of the texel of F's level there (Nyquist)
-const LOD_STEP_MIN: f32 = 1.0;   // cells: never finer than the cell walk
-const MARCH_OWN_CRISP: u32 = ${WC_OWN.CRISP}u;
-fn marchCoarse(bc: vec3i, flags: u32, ro: vec3f, rd: vec3f, t0: f32, tCut: f32) -> vec2f {
-  var r = vec2f(t0, -1.0);
-  let p0 = ro + rd * t0;
-  if (footprint(p0) >= LOD_MIN_FP && (flags & (BRICK_MEDIA | BRICK_THIN | MARCH_OWN_CRISP)) == 0u) {
-    let bmin = vec3f(bc * BS);
-    let tb3 = (mix(bmin, bmin + f32(BS), step(vec3f(0.0), rd)) - ro) / rd;
-    let ax = argmin3(tb3);
-    let tb = min(tb3[ax], tCut);
-    let h = max(LOD_STEP * fieldCellsAt(p0), LOD_STEP_MIN);
-    var t = t0;
-    var found = false;
-    loop {
-      if (t >= tb) { break; }
-      let s = surfField(ro + rd * t);
-      if (max(max(s.x, s.y), max(s.z, s.w)) >= SURF_ISO) { found = true; break; }
-      t += h;
+// ---- the heightfield skip: above W's maximum mipmap of the column tops (wcHfTop, levels 1-3: 4², 16², 64²
+// columns, each padded past every field's reach) every cell is air and nothing is drawn, so the walk jumps to
+// where the ray leaves the coarsest region it is above, or comes down to that region's top (Tevs, Ihrke &
+// Seidel 2008, "Maximum mipmaps for fast, accurate, and scalable dynamic height field rendering"; the
+// maximum quadtree of Oh et al. 2006). Below every level's top the brick and cell walk takes over: the picture
+// is the walk's. Returns (where the walk resumes, the axis it crosses there: 0 or 2 a region's side, 1 its
+// top, the level that held); no jump: (t0, -1, 0).
+const HF_LEVEL_TOP: u32 = 3u;   // the coarsest level tried first (64 × 64 columns)
+const HF_MIN_JUMP: f32 = 1e-3;  // cells: a shorter jump is the walk's (a ray at a region's top or side by rounding)
+fn hfSkip(ro: vec3f, rd: vec3f, t0: f32, tCut: f32) -> vec3f {
+  var r = vec3f(t0, -1.0, 0.0);
+  let p = ro + rd * t0;
+  for (var k = HF_LEVEL_TOP; k >= 1u; k--) {
+    let s = f32(1u << (2u * k));
+    let c = vec2i(floor(p.xz / s));
+    let top = f32(wcHfTop(k, c));
+    if (p.y >= top) {
+      let lo = vec2f(c) * s;
+      let txz = (select(lo, lo + s, rd.xz > vec2f(0.0)) - p.xz) / rd.xz;
+      var t = min(txz.x, txz.y);
+      var ax = select(2.0, 0.0, txz.x <= txz.y);
+      if (rd.y < 0.0) {
+        let ty = (top - p.y) / rd.y;
+        if (ty < t) { t = ty; ax = 1.0; }
+      }
+      r = select(vec3f(t0 + t, ax, f32(k)), vec3f(tCut, -1.0, f32(k)), t0 + t >= tCut);
+      break;
     }
-    // (found: resume a step short of it; else past the brick's face, or at the mesh cut short of it)
-    r = select(select(vec2f(tCut, -1.0), vec2f(tb, f32(ax)), tb3[ax] <= tCut), vec2f(max(t - h, t0), -1.0), found);
   }
   return r;
 }
@@ -286,29 +281,22 @@ const floorWorld = (code) => rewrite(code, [
   ['return mix(GROUND_ALB, FLOOR_LINE_ALB, line);', 'return mix(GROUND_ALB, FLOOR_LINE_ALB, line * f32(P.floorLines));'],
 ], 'gfx/surface.js floorAlb');
 // The tracer sets F's level at every brick it enters (and keys its bricks by coordinate).
-// At a brick's first step, past LOD_MIN_FP cells per pixel, it may be crossed on the field
-// (marchCoarse): the walk then resumes past its face, or a step short of the surface.
-const LOD_STEP_WGSL = (grains) => `    if (lodBrick && flags != 0u${grains ? ' && !gPebInside' : ''}) {
-      lodBrick = false;
-      let lod = marchCoarse(bc, flags, ro, rd, tEnter, tCut);
-      if (lod.x > tEnter) {
-        tEnter = lod.x;
+// At a brick's first step (the walk entering a brick, before its info is read), the heightfield skip
+// (hfSkip): a jump resumes the walk past the region's side or at its top, the brick's state read again there.
+const HF_STEP_WGSL = (grains) => `      let hs = hfSkip(ro, rd, tEnter, tCut);
+      if (hs.x > tEnter + HF_MIN_JUMP${grains ? ' && !gPebInside' : ''}) {
+        tEnter = hs.x;
         cell = vec3i(floor(ro + rd * (tEnter + DDA_START_NUDGE)));
-        if (lod.y >= 0.0) {
-          ax = i32(lod.y);
-          cell[ax] = select(bc[ax] * BS - 1, bc[ax] * BS + BS, istp[ax] > 0);   // (exactly past the face)
-        } else { ax = 1; }
+        if (hs.y >= 0.0) { ax = i32(hs.y); } else { ax = 1; }
         tMax = ddaNext(ro, rd, cell);
         prevCrisp = E_EMPTY;
         phiStale = true;
         continue;
       }
-    }
 `;
 const traceWorld = (detail, format) => rewrite(realisticTraceWGSL(detail, format), [
-  ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      marchLod(ro + rd * tEnter);\n      lodBrick = true;\n'],
-  ['  var lastB = vec3i(-1);\n', '  var lastB = vec3i(-1);\n  var lodBrick = false;   // the walk is at its brick\'s first step (marchCoarse)\n'],
-  ['    if (flags == 0u) {\n      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);', `${LOD_STEP_WGSL(GRAINS_ANY(detail))}    if (flags == 0u) {\n      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);`],
+  ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      marchLod(ro + rd * tEnter);\n'],
+  ['    if (any(bc != lastB)) {\n      lastB = bc;\n', `    if (any(bc != lastB)) {\n${HF_STEP_WGSL(GRAINS_ANY(detail))}      lastB = bc;\n`],
 ], 'the realistic tracer');
 
 // The full-screen triangle and the fragment entry: the pixel's ray from the eye through the far
