@@ -203,7 +203,7 @@ export class WorldGenerator {
   prepareNativeDiff() {
     const { sim, scene } = this;
     this.kernels.nativeDiff ??= sim.gpu.kernel({
-      name: `${scene.key} native leave`, code: sceneNativeDiffFrag(sim.g, this.code), build: 'idle', optional: true,
+      name: `${scene.key} native leave`, code: sceneNativeDiffFrag(sim.g, this.code), build: 'later', optional: true,   // (not 'idle': until it is built every move keeps and restores every leaving brick, ~12 ms of CPU a move: P3, 2026-10-24)
       layouts: [sim.L.TABLES, sim.L.STATE_RO, sim.gpu.layout(`leave ${JSON.stringify(this.res.has)}`, leaveLayout(this.res.has))],
       params: LeaveParams, workgroupSize: [BRICK, BRICK, BRICK],
     });

@@ -12,6 +12,14 @@
 // later, gpu.timing.last) they are matched back to those passes. Once every
 // SAMPLE_INTERVAL_MS the latest landed frame becomes a sample. A still scene
 // renders nothing (gfx/pacing.js): the profiler doesn't wake it, it reports idle.
+// Samples are taken as a frame's timestamps land (gpu.timing.addFrameListener),
+// not at the next frame's end: a parked test's renderOnce, which nothing
+// follows, is sampled too.
+//
+// Every landed frame also goes into `landed` (LANDED_KEPT): its passes, its CPU
+// phases, its wall and frame interval, and the compiles in flight when it ended.
+// report() / capture(n) build the agents' report from those frames
+// (gfx/profileReport.js, tools/profile.mjs, docs/profiler.md).
 //
 // Every frame also lands in a ring for the live frame-time graph: the time from
 // its start to the next frame's start (what a hitch looks like), its own CPU
@@ -29,12 +37,15 @@ export const HISTORY = 40;         // recent samples' GPU totals kept for the sp
 export const FRAMES = 180;         // recent frames kept for the frame-time graph (3 s at the 60 fps cap)
 const MS_PER_S = 1000;
 const CANVAS_BYTES = 4;            // per canvas pixel: RGBA8 (the presenter's)
+export const LANDED_KEPT = 240;    // landed frames kept for report() (4 s at the 60 fps cap)
+const CAPTURE_TIMEOUT_MS = 8000;   // capture(n) gives up when frames stop landing this long
 
 // Frame phases in display order; a pass belongs to the phase marked last (app.js frame()).
 export const PHASES = [
   { id: 'paint', label: 'Paint' },       // the brush
   { id: 'sim', label: 'Sim' },           // the steps: activity build (inertList, inert, quiet, drawn, move1, args), move, react, aeration
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
+  { id: 'blocks', label: 'Blocks' },     // the plain view's faces (instead of the derived passes)
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes
   { id: 'view', label: 'View' },         // raymarch, far field, overlays and three's meshes
@@ -72,7 +83,7 @@ function watchTimedPasses(timing) {
  *   when rendering went idle; onFrame: called as each frame's time is known
  *   (the frame ring, see `ring`).
  */
-export function createProfiler(gpu, { describe, onSample, onFrame }) {
+export function createProfiler(gpu, { describe, onSample, onFrame, onChange = null, context = null, buildReport = null }) {
   const timing = gpu.timing;
   const hook = watchTimedPasses(timing);
   const cpuFrame = new Float64Array(PHASES.length);   // ms per phase, this frame
@@ -87,7 +98,10 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
   };
   const pendPhases = new Float64Array(PHASES.length);  // the last frame's, until the next one starts
   let pendWork = 0, pending = false;
-  const frames = new Map();    // gpu frame (as gpu.timing.lastFrame will name it) → { passes: [{ name, phase }], wall, steps }
+  const frames = new Map();    // gpu frame (as gpu.timing.lastFrame will name it) → { passes: [{ name, phase }], wall, steps, cpu, interval, compiling, created }
+  const landed = [];           // landed frames, oldest first (LANDED_KEPT): { frame, passes, coverage, gpu, rec }
+  const waiters = new Set();   // capture(n)s waiting for frames
+  let lastRec = null;          // the last ended frame's record, until the next begins (its interval)
   let latest = null;           // the last sample
   let gpuName = '';
   let on = false;
@@ -105,7 +119,7 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
   const recordOf = (tag) => {
     let r = frames.get(tag);
     if (!r) {
-      frames.set(tag, r = { passes: [], wall: null, steps: 0 });
+      frames.set(tag, r = { passes: [], wall: null, steps: 0, cpu: null, interval: null, compiling: null, created: null, ended: false });
       if (frames.size > FRAMES_KEPT) frames.delete(frames.keys().next().value);
     }
     return r;
@@ -198,6 +212,52 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
     onSample(sample);
   }
 
+  // A frame's timestamps landed (gpu.timing's listener): keep it for report(),
+  // feed capture(n)s, and take the sample when one is due.
+  function onLanded(f) {
+    if (!on) return;
+    const rec = frames.get(f.frame) ?? null;
+    landed.push({ ...f, rec });
+    if (landed.length > LANDED_KEPT) landed.shift();
+    for (const w of waiters) w.feed();
+    const t = performance.now();
+    if (t - lastSample >= SAMPLE_INTERVAL_MS && cpuFrames && f.frame === timing.lastFrame && f.frame > sampledFrame && rec) {
+      lastSample = t;
+      sampledFrame = f.frame;
+      makeSample(f.frame, timing.last);
+    }
+  }
+  timing.addFrameListener?.(onLanded);
+
+  // The report's context: what was measured (describe's, plus the app's context()).
+  function reportContext() {
+    const d = describe() ?? {};
+    const mem = gpu.memory();
+    const top = Object.entries(mem.byLabel ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 12);
+    const canvas = d.canvas ?? [0, 0];
+    return {
+      gpuName, split: timing.split, supported: timing.supported,
+      canvas: [...canvas], renderScale: d.renderScale ?? 1, pixelRatio: d.pixelRatio ?? 1,
+      grid: d.sim?.g ? [d.sim.g.nx, d.sim.g.ny, d.sim.g.nz] : null, world: d.world ?? null,
+      memory: { bytes: mem.bytes + canvas[0] * canvas[1] * CANVAS_BYTES + (d.bytes ?? 0), tracked: mem.bytes,
+        buffers: mem.buffers, textures: mem.textures, top },
+      pipelines: compileState(),
+      framesSinceBoot: gpu.frameNo,
+      awake: maps.awake, drawn: maps.drawn,
+      ...(context?.() ?? {}),
+    };
+  }
+  // Compiles in flight now: the pipeline cache's builds (started, queued, idle) and every
+  // async create on the device (three's included: gpu.timing.pipelines).
+  function compileState() {
+    const c = gpu.pipelines;
+    return {
+      cachePending: (c?.pending?.size ?? 0) + (c?.queue?.length ?? 0) + (c?.idleQueue?.length ?? 0),
+      deviceCompiling: timing.pipelines?.compiling ?? 0,
+      created: timing.pipelines?.created ?? 0,
+    };
+  }
+
   // The last frame's time is known once the next one starts.
   function recordFrame(ms) {
     pending = false;
@@ -219,6 +279,48 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
     /** The recent frames' times (see the ring above). */
     get ring() { return ring; },
 
+    /** The recent landed frames (oldest first), for report(). */
+    get landed() { return landed; },
+
+    /**
+     * The agents' report (gfx/profileReport.js) over the last `frames` landed frames
+     * (all kept, by default), with what was measured (reportContext). The same data
+     * tools/profile.mjs prints; `.text` is that print.
+     */
+    report({ frames: n = landed.length, extra = {} } = {}) {
+      if (!buildReport) throw new Error('profiler: no report builder');
+      return buildReport({ frames: landed.slice(-Math.max(1, n)), phases: PHASES, context: { ...reportContext(), ...extra } });
+    },
+
+    /**
+     * Waits for the next `frames` frames to land, then reports on exactly those.
+     * Rejects if frames stop landing for CAPTURE_TIMEOUT_MS (a still scene draws
+     * nothing: keep it rendering, as tools/profile.mjs does).
+     */
+    capture({ frames: n = 60, extra = {} } = {}) {
+      if (!on) return Promise.reject(new Error('profiler is off: __app.prof.enable(true) first'));
+      if (!timing.supported) return Promise.reject(new Error('no timestamp-query on this device: GPU times unavailable'));
+      const before = compileState();
+      const from = landed.length ? landed[landed.length - 1].frame : -1;
+      return new Promise((resolve, reject) => {
+        let timer;
+        const arm = () => { clearTimeout(timer); timer = setTimeout(() => { waiters.delete(w); reject(new Error(`capture: frames stopped landing (${got().length}/${n} after ${CAPTURE_TIMEOUT_MS} ms without one)`)); }, CAPTURE_TIMEOUT_MS); };
+        const got = () => landed.filter((f) => f.frame > from);
+        const w = {
+          feed() {
+            arm();
+            const fs = got();
+            if (fs.length < n) return;
+            waiters.delete(w); clearTimeout(timer);
+            resolve(buildReport({ frames: fs.slice(0, n), phases: PHASES,
+              context: { ...reportContext(), compileBefore: before, ...extra } }));
+          },
+        };
+        waiters.add(w);
+        arm();
+      });
+    },
+
     enable(v) {
       v = Boolean(v);
       if (v === on) return;
@@ -227,6 +329,9 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
       timing.split = on;
       hook.watch = on ? watch : null;
       frames.clear();
+      landed.length = 0;
+      lastRec = null;
+      onChange?.(on);
       if (on) {
         if (!gpuName) {
           const i = gpu.adapterInfo ?? {};
@@ -252,6 +357,7 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
     beginFrame(now) {
       if (!on) return;
       if (pending) recordFrame(now - frameNow);
+      if (lastRec) { lastRec.interval = now - frameNow; lastRec = null; }
       frameNow = now;
       frameStart = performance.now();
       cpuFrame.fill(0);
@@ -292,17 +398,17 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
         cpuFrames++;
         // the gpu frame this tick ended (app.js calls gpu.endFrame before this)
         const rec = frames.get(gpu.frameNo);
-        if (rec) { rec.wall = t - frameStart; rec.steps = frameSteps; }
-      }
-      if (frameNow - lastSample >= SAMPLE_INTERVAL_MS && cpuFrames) {
-        if (!timing.supported) {
-          lastSample = frameNow;
-          makeSample(null, null);
-        } else if (timing.lastFrame > sampledFrame && frames.has(timing.lastFrame)) {
-          lastSample = frameNow;
-          sampledFrame = timing.lastFrame;
-          makeSample(sampledFrame, timing.last);
+        if (rec) {
+          rec.wall = t - frameStart; rec.steps = frameSteps; rec.cpu = Array.from(cpuFrame); rec.ended = true;
+          const c = compileState();
+          rec.compiling = c.cachePending + c.deviceCompiling; rec.created = c.created;
+          lastRec = rec;
         }
+      }
+      // (with timestamps, samples are taken as frames land: onLanded)
+      if (!timing.supported && performance.now() - lastSample >= SAMPLE_INTERVAL_MS && cpuFrames) {
+        lastSample = performance.now();
+        makeSample(null, null);
       }
       if (!worked && !idle && frameNow - lastWorked > IDLE_AFTER_MS) { idle = true; onSample(null); }
       prevWorked = worked;

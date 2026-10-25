@@ -1,5 +1,7 @@
 import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
 
+// Optional `traits` are semantic exceptions only (src/materialTraits.js).
+// Physical tags and storage policy are derived by consumers; never repeat numbers here.
 // Element definitions. This table is the single source of truth: it drives the
 // UI palette and the GPU's element tables (one storage buffer, read through
 // accessor functions: ELEMENT_FIELDS below).
@@ -427,13 +429,13 @@ const defs = [
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
     desc: 'Ash. What burnt wood leaves behind. Light, floats on water.' },
 
-  { key: 'WATER', abbr: 'WATR', name: 'Water', kind: K.LIQUID, render: R.LIQUID, color: '#2a78d4',
+  { key: 'WATER', traits: ['biological'], abbr: 'WATR', name: 'Water', kind: K.LIQUID, render: R.LIQUID, color: '#2a78d4',
     dens: 10, cond: 0.03, cap: 1.0, drag: 0.01, flow: 0.9, spawn: 0.35, acidProof: true,   // dilutes acid, isn't eaten
     // fresh water conducts, weakly: ~0.005-0.05 S/m from its dissolved ions
     // (USGS, Specific conductance; pure water 5.5·10⁻⁶), 10⁸ times less than steel
     elec: 0.05,
     sigma: WATER_SIGMA, desc: 'Water. Conducts electricity, weakly. Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
-  { key: 'OIL', abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
+  { key: 'OIL', traits: ['biological'], abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
     sigma: [0.4, 0.65, 1.8], desc: 'Oil. Flammable: catches fire at 220 °C. Lighter than water, so it floats on top.' },
@@ -452,10 +454,10 @@ const defs = [
   { key: 'STEAM', abbr: 'WTRV', name: 'Steam', kind: K.GAS, render: R.GAS, color: '#e6edf5',
     dens: 0.6, cond: 0.02, cap: 0.5, grav: -0.6, drag: 0.05, jitter: 0.15, temp: 110, rad: 0.03,
     spawn: 0.3, sigma: [0.16, 0.16, 0.16], desc: 'Steam. Produced from hot water. Rises and spreads. Below 100 °C it condenses: into cloud in open air, into water on a surface.' },
-  { key: 'SMOKE', abbr: 'SMKE', name: 'Smoke', kind: K.GAS, render: R.GAS, color: '#38383d',
+  { key: 'SMOKE', traits: ['decaying'], abbr: 'SMKE', name: 'Smoke', kind: K.GAS, render: R.GAS, color: '#38383d',
     dens: 0.85, cond: 0.0005, cap: 0.02, grav: -0.25, drag: 0.05, jitter: 0.12, life: 1, rad: 0.01,
     spawn: 0.3, sigma: [0.3, 0.3, 0.3], desc: 'Smoke, created by fire. Drifts upward and slowly fades away.' },
-  { key: 'FIRE', abbr: 'FIRE', name: 'Fire', kind: K.GAS, render: R.FIRE, color: '#ff8a2a',
+  { key: 'FIRE', traits: ['decaying'], abbr: 'FIRE', name: 'Fire', kind: K.GAS, render: R.FIRE, color: '#ff8a2a',
     dens: 0.5, cond: 0.04, cap: 0.3, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 1000, life: 1,
     rad: 0.01, spawn: 0.3, desc: 'Fire. Ignites flammable materials. Heats air. Hot, short-lived and rising.' },
 
@@ -464,7 +466,7 @@ const defs = [
   // maps, constructions and the console's DEFAULT_PT_WOOD (TPT's) keep working.
   { key: 'WOOD', abbr: 'WOOD', name: 'Tree', ...TIMBER, color: '#7a4a26',
     desc: 'Tree, the wood of trunks and branches under its bark. Flammable: burns slowly above 300 °C and leaves ash behind.' },
-  { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
+  { key: 'PLANT', traits: ['growing'], abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
   // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
@@ -476,7 +478,7 @@ const defs = [
     desc: 'Glass. Clear and acid-proof; photons pass through it. Shatters under pressure. Melts at 1400 °C.' },
   { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, dig: 'glass', render: R.GLASS, color: '#a9d8f2',
     cond: 0.04, cap: 0.5, temp: -20, sigma: [0.055, 0.031, 0.028], hard: 6, breakInto: 'SNOW', desc: 'Ice. Frozen water. Crushes into snow under pressure. Melts at 0 °C and chills whatever it touches.' },
-  { key: 'CLONE', abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
+  { key: 'CLONE', traits: ['replicating'], abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
     cond: 0.001, cap: 1.0, antimatterProof: true, desc: 'Clone. Duplicates the first element that touches it, forever.' },
   // New elements go at the end so existing ids (saved scenes, presets) stay stable.
   { key: 'ROCK', abbr: 'ROCK', name: 'Rock', kind: K.SOLID, render: R.OPAQUE, color: '#6a6560', var: 0.12,
@@ -497,7 +499,7 @@ const defs = [
   // when warm; droplets this small barely settle), holds the water and heat
   // capacity of the steam it condensed from, and mixes its heat into the air
   // around it as steam does (rad).
-  { key: 'CLOUD', abbr: 'CLOD', name: 'Cloud', kind: K.GAS, render: R.GAS, color: '#f2f5f9',
+  { key: 'CLOUD', traits: ['decaying', 'biological'], abbr: 'CLOD', name: 'Cloud', kind: K.GAS, render: R.GAS, color: '#f2f5f9',
     dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.01, rad: 0.03, spawn: 0.3,
     sigma: [0.16, 0.16, 0.16],
     desc: 'Cloud. Droplets of water in the air, what steam becomes as it cools. Floats when warm, rains where it is thick and thins away at its edges. Boils back to steam at 100 °C and snows below 0 °C.' },
@@ -606,7 +608,7 @@ const defs = [
     desc: 'Temperature sensor, creates a spark when there\'s a nearby particle with a greater temperature: it sparks the conductors it touches. Heat or cool it to set its temperature.' },
   // Powered clone: TPT's PCLN, Clone switched on by P and off by N (life:
   // SWITCH_ON while on). Clone's numbers: a game block, not a material.
-  { key: 'PCLN', abbr: 'PCLN', name: 'Powered clone', kind: K.SOLID, render: R.OPAQUE, color: '#3b3b0a', var: 0.05,
+  { key: 'PCLN', traits: ['replicating'], abbr: 'PCLN', name: 'Powered clone', kind: K.SOLID, render: R.OPAQUE, color: '#3b3b0a', var: 0.05,
     cond: 0.001, cap: 1.0,
     desc: 'Powered clone. When activated, duplicates the first element that touches it. A spark from P-type silicon turns it on, one from N-type off.' },
   // Radioactive (docs/particles.md; neutron data in rays.js NUCLEAR). Both
@@ -647,7 +649,7 @@ const defs = [
   // particle moving into VOID is drained (Simulation.cpp eval_move). With
   // Clone upstream, a stream runs forever without flooding. Insulating, like
   // Wall; acid can't eat it (TPT: VOID's Hardness 0).
-  { key: 'VOID', abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
+  { key: 'VOID', traits: ['matter-consuming'], abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
     cond: 0.001, cap: 1.0, acidProof: true, singProof: true, antimatterProof: true,
     desc: 'Void. Hole, will drain away any powder, liquid or gas that touches it. Pair it with clone for waterfalls that never flood.' },
   // Brick: fired clay brick, 1.9 g/cm³ (0.84 J/g·K: cap 0.38; k ≈ 0.7 W/m·K:
@@ -695,7 +697,7 @@ const defs = [
   // recombination in ~40 steps, ~0.15 s, a lightning channel's afterglow)
   // and recombines into plain air below ~5,000 K, where air's ionisation
   // collapses (Saha; arcs in air go out at 4,000–5,000 K).
-  { key: 'PLASMA', abbr: 'PLSM', name: 'Plasma', kind: K.GAS, render: R.FIRE, color: '#c7b4ff',
+  { key: 'PLASMA', traits: ['decaying'], abbr: 'PLSM', name: 'Plasma', kind: K.GAS, render: R.FIRE, color: '#c7b4ff',
     dens: 0.03, cond: 0.003, cap: 0.02, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 10000, rad: 0.02, life: 1,
     spawn: 0.3, cold: { T: 4700, into: 'EMPTY' },
     desc: 'Plasma, extremely hot: ionised air at 10,000 °C, the hottest thing there is. Glows, heats whatever it touches, and cools back into air in a blink.' },
@@ -776,7 +778,7 @@ const defs = [
   // Saltwater: saturated brine (BRINE above), c_p 3.3 J/(g·K), k 0.57 W/(m·K).
   // It sinks under fresh water, freezes at the eutectic, −21.1 °C, into ice
   // and salt, and boils at 108.7 °C into steam, leaving its salt behind.
-  { key: 'SALTWATER', abbr: 'SLTW', name: 'Saltwater', kind: K.LIQUID, render: R.LIQUID, color: '#3f8ccc',
+  { key: 'SALTWATER', traits: ['biological'], abbr: 'SLTW', name: 'Saltwater', kind: K.LIQUID, render: R.LIQUID, color: '#3f8ccc',
     dens: +(BRINE.rho * 10).toFixed(2), cond: condOf(BRINE.k), cap: capOf(BRINE.rho, BRINE.cp), drag: 0.012, flow: 0.85,
     spawn: 0.35, acidProof: true, conducts: true, elec: BRINE.elec, cold: BRINE_FREEZE, hot: BRINE_BOIL,
     sigma: WATER_SIGMA.map((x, i) => +(x + (SALT_SCATTER_GAIN - 1) * WATER_SCATTER[i]).toPrecision(3)),
@@ -812,7 +814,7 @@ const defs = [
   // Oxygen: 32.00 g/mol, 1.105× air (which is 21 % oxygen); c_p,m 29.4 J/(mol·K),
   // k 0.0266 W/(m·K), 0.20 cm²/s. It doesn't burn by itself, but fuel next to
   // it burns faster and hotter (react.js, physics.js O2_PER_AIR).
-  { key: 'OXYGEN', abbr: 'OXYG', name: 'Oxygen', kind: K.GAS, render: R.GAS, color: '#accbff',
+  { key: 'OXYGEN', traits: ['oxidizer'], abbr: 'OXYG', name: 'Oxygen', kind: K.GAS, render: R.GAS, color: '#accbff',
     dens: gasDensOf(32.0), cond: gasCondOf(0.0266), cap: gasCapOf(29.4), grav: buoyancy(gasDensOf(32.0)), drag: 0.05,
     jitter: jitterOf(0.2), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
     sigma: [0.015, 0.015, 0.015],
@@ -849,7 +851,7 @@ const defs = [
   // Its cloud lights at 380-440 °C (minimum ignition temperature, wheat
   // flour; Eckhoff 2003): ignite 400. Suspended in air it goes off as one
   // (react.js dust clouds, physics.js DUST_*).
-  { key: 'DUST', abbr: 'DUST', name: 'Dust', kind: K.POWDER, render: R.OPAQUE, color: '#efdcae', var: 0.12,
+  { key: 'DUST', traits: ['airborne-explosive'], abbr: 'DUST', name: 'Dust', kind: K.POWDER, render: R.OPAQUE, color: '#efdcae', var: 0.12,
     dens: 5.5, cond: 0.004, cap: 0.22, drag: 0.15, slide: 0.3, ignite: 400, burnRate: 0.0015, burnHeat: 2, flameT: 600,
     life: 1, spawn: 0.3,
     desc: 'Dust. Very light dust: fine flour. Flammable. A heap only smoulders, but blown into the air it explodes: a flame runs through the cloud and its blast stirs up more dust.' },
@@ -870,7 +872,7 @@ const defs = [
   // it, gaining its mass (life, in cells of water), and bursts when it is
   // full; starved, it evaporates and winks out. Denser than anything, it
   // sinks through every liquid. Nothing gets out: it conducts no heat.
-  { key: 'SINGULARITY', abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
+  { key: 'SINGULARITY', traits: ['matter-consuming', 'decaying', 'pressure-anomaly'], abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
     dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true, singProof: true, antimatterProof: true,   // it swallows acid instead
     desc: 'Singularity. A tiny black hole: creates huge amounts of negative pressure, so air and matter rush in. Swallows what it touches and grows; full, it bursts. Starved, it evaporates.' },
   // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
@@ -1018,7 +1020,7 @@ const defs = [
   // flows; Baskurt & Meiselman 2003); 3.6 J/(g·K) × 1.06 → cap 0.91 of
   // water's; ~0.5 W/(m·K), 0.85 of water's. It is ~80 % water: its freezing
   // point (-0.5 °C) and boiling point sit close to water's (BLOOD_MIX).
-  { key: 'BLOOD', abbr: 'BLOD', name: 'Blood', kind: K.LIQUID, render: R.LIQUID, color: '#8a0f12',
+  { key: 'BLOOD', traits: ['biological'], abbr: 'BLOD', name: 'Blood', kind: K.LIQUID, render: R.LIQUID, color: '#8a0f12',
     dens: 10.6, cond: 0.025, cap: 0.91, ...viscous(3.5), spawn: 0.35,
     cold: freezeOf(BLOOD_MIX.freezeT, BLOOD_MIX.water),
     hot: boilOf(BLOOD_MIX.boilT, BLOOD_MIX.water, [['ASH', BLOOD_MIX.solids / BLOOD_MIX.solidsRho]]),
@@ -1028,7 +1030,7 @@ const defs = [
   // (take 0.3). It sinks below water; Noita's floats (density 3, water's 4).
   // Its faint olive glow is game magic (gfx/materials.js TOXIC_GLOW_*); what it
   // does to bodies is the status effects' (nt-status).
-  { key: 'TOXIC', abbr: 'TOXC', name: 'Toxic sludge', kind: K.LIQUID, render: R.LIQUID, color: '#3fb52c',
+  { key: 'TOXIC', traits: ['biological'], abbr: 'TOXC', name: 'Toxic sludge', kind: K.LIQUID, render: R.LIQUID, color: '#3fb52c',
     dens: 12, cond: 0.03, cap: 0.85, ...viscous(300), spawn: 0.35,
     cold: { T: SLUDGE_MIX.freezeT, into: shares([['ICE', SLUDGE_MIX.water / ICE_RHO], ['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
       latent: latentOf(334, SLUDGE_MIX.water) },
@@ -1037,7 +1039,7 @@ const defs = [
   // Slime: Noita's pink-purple slime, taken as a hydrogel like PVA-borax
   // slime: mostly water (~1.05 g/cm³, cap and cond near water's) and about as
   // thick as honey, ~10 Pa·s at the shear rates of a pour.
-  { key: 'SLIME', abbr: 'SLIM', name: 'Slime', kind: K.LIQUID, render: R.LIQUID, color: '#b45cae',
+  { key: 'SLIME', traits: ['biological'], abbr: 'SLIM', name: 'Slime', kind: K.LIQUID, render: R.LIQUID, color: '#b45cae',
     dens: 10.5, cond: 0.028, cap: 0.95, ...viscous(1e4), spawn: 0.35,
     cold: freezeOf(0, GEL_WATER), hot: boilOf(100, GEL_WATER),
     sigma: [0.25, 0.7, 0.3], desc: 'Slime. Sticky pink goo, a little heavier than water. It oozes rather than flows.' },
@@ -1051,7 +1053,7 @@ const defs = [
   // quarter (burnHeat / burnRate), with no soot (ash: false). It burns low:
   // the water in it holds the flame cooler than ethanol's 1900 °C. It boils
   // at ~84 °C and freezes near -23 °C (WHISKEY_MIX).
-  { key: 'WHISKEY', abbr: 'WHSK', name: 'Whiskey', kind: K.LIQUID, render: R.LIQUID, color: '#c27a2c',
+  { key: 'WHISKEY', traits: ['biological'], abbr: 'WHSK', name: 'Whiskey', kind: K.LIQUID, render: R.LIQUID, color: '#c27a2c',
     dens: 9.48, cond: 0.022, cap: 0.89, ...viscous(2.8), flash: 26, ignite: 363, burnRate: 0.008, burnHeat: 1.3,
     flameT: 700, life: 1, spawn: 0.35, ash: false,
     cold: freezeOf(WHISKEY_MIX.freezeT, WHISKEY_MIX.water), hot: WHISKEY_BOIL,
@@ -1065,7 +1067,7 @@ const defs = [
   // Ignition Handbook 2003) and burns fast (sawdust's rate); damp moss must
   // first dry (above DAMP_DRY_T its water is gone; its latent heat isn't
   // modelled). Soft as plant (hard), and breaks into plant debris.
-  { key: 'MOSS', abbr: 'MOSS', name: 'Moss', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#4d7a2c', var: 0.22,
+  { key: 'MOSS', traits: ['growing'], abbr: 'MOSS', name: 'Moss', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#4d7a2c', var: 0.22,
     cond: 0.006, cap: 0.6, ignite: 250, burnRate: 0.006, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
     desc: 'Moss. Creeps slowly over damp rock wherever water is near, and stops when it has covered it. Burns once dry.' },
@@ -1078,7 +1080,7 @@ const defs = [
   // keeps, and the sim has no sunlight on cells. The glow is real but far
   // dimmer than drawn (gfx/materials.js FOXFIRE_BAND). It burns like
   // punk wood: lights at ~250 °C and smoulders.
-  { key: 'FUNGUS', abbr: 'FUNG', name: 'Fungus', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#b5e08a', var: 0.2,
+  { key: 'FUNGUS', traits: ['growing'], abbr: 'FUNG', name: 'Fungus', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#b5e08a', var: 0.2,
     cond: 0.008, cap: 0.6, ignite: 250, burnRate: 0.003, burnHeat: 2, flameT: 700, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
     desc: 'Fungus. Glows, like foxfire. It slowly rots damp wood, sawdust and plants into more of itself. Burns.' },
@@ -1090,27 +1092,27 @@ const defs = [
   // Teleportatium 4.21, Healthium 5.53) inside the span real solutions have,
   // an alcohol's 0.8 g/cm³ to a heavy syrup's 1.35. Their faint glow is game
   // magic (gfx/materials.js MAGIC_GLOW_LUM); colours as the wiki gives them.
-  { key: 'TELEPORTATIUM', abbr: 'TLPT', name: 'Teleportatium', kind: K.LIQUID, render: R.LIQUID, color: '#3cc6e8',
+  { key: 'TELEPORTATIUM', traits: ['potion', 'biological'], abbr: 'TLPT', name: 'Teleportatium', kind: K.LIQUID, render: R.LIQUID, color: '#3cc6e8',
     dens: 10.5, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.45, 0.06, 0.04], desc: 'Teleportatium. A glowing cyan potion from Noita. Whoever touches it is flung somewhere else.' },
-  { key: 'LEVITATIUM', abbr: 'LEVI', name: 'Levitatium', kind: K.LIQUID, render: R.LIQUID, color: '#a7ad7a',
+  { key: 'LEVITATIUM', traits: ['potion', 'biological'], abbr: 'LEVI', name: 'Levitatium', kind: K.LIQUID, render: R.LIQUID, color: '#a7ad7a',
     dens: 8, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.12, 0.08, 0.3], desc: 'Levitatium. A pale olive potion from Noita, as light as oil: it floats on water. It makes whoever is soaked in it float faster.' },
-  { key: 'HEALTHIUM', abbr: 'HLTH', name: 'Healthium', kind: K.LIQUID, render: R.LIQUID, color: '#c8f26a',
+  { key: 'HEALTHIUM', traits: ['potion', 'biological'], abbr: 'HLTH', name: 'Healthium', kind: K.LIQUID, render: R.LIQUID, color: '#c8f26a',
     dens: 13.5, cond: 0.03, cap: 1.0, ...viscous(10), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.25, 0.03, 0.5], desc: 'Healthium. A glowing lime potion from Noita that heals. Heavy and a little syrupy: it sinks under water.' },
-  { key: 'BERSERKIUM', abbr: 'BRSK', name: 'Berserkium', kind: K.LIQUID, render: R.LIQUID, color: '#ef5a26',
+  { key: 'BERSERKIUM', traits: ['potion', 'biological'], abbr: 'BRSK', name: 'Berserkium', kind: K.LIQUID, render: R.LIQUID, color: '#ef5a26',
     dens: 8.8, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.03, 0.35, 0.9], desc: 'Berserkium. A red-orange potion from Noita that drives whoever it touches berserk. Floats on water.' },
-  { key: 'POLYMORPHINE', abbr: 'PLYM', name: 'Polymorphine', kind: K.LIQUID, render: R.LIQUID, color: '#ee6fcf',
+  { key: 'POLYMORPHINE', traits: ['potion', 'biological'], abbr: 'PLYM', name: 'Polymorphine', kind: K.LIQUID, render: R.LIQUID, color: '#ee6fcf',
     dens: 10.4, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.04, 0.45, 0.12], desc: 'Polymorphine. A pink potion from Noita, and a dangerous one: it turns whoever it touches into something else.' },
-  { key: 'PHEROMONE', abbr: 'PHRM', name: 'Pheromone', kind: K.LIQUID, render: R.LIQUID, color: '#ff3d62',
+  { key: 'PHEROMONE', traits: ['potion', 'biological'], abbr: 'PHRM', name: 'Pheromone', kind: K.LIQUID, render: R.LIQUID, color: '#ff3d62',
     dens: 9.6, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.03, 0.6, 0.35], desc: 'Pheromone. A sparkling red potion from Noita. Creatures soaked in it become your friends.' },
@@ -1137,7 +1139,7 @@ const defs = [
   // holds ~10.5 kJ/g (food energy, ~250 kcal/100 g) × 1.05 g/cm³ ≈ 11 MJ/L,
   // dry wood's (0.6 × 18), so it burns at wood's pace; its water keeps the
   // flame cooler than wood's.
-  { key: 'COOKED_MEAT', abbr: 'CMET', name: 'Cooked meat', kind: K.POWDER, render: R.OPAQUE, color: '#8a5530', var: 0.15,
+  { key: 'COOKED_MEAT', traits: ['biological'], abbr: 'CMET', name: 'Cooked meat', kind: K.POWDER, render: R.OPAQUE, color: '#8a5530', var: 0.15,
     dens: 10.5, cond: 0.02, cap: 0.75, drag: 0.04, slide: 0.35, ignite: 320, burnRate: 0.0018, burnHeat: 3, flameT: 800,
     life: 1, spawn: 0.3, sound: 'thunk',
     desc: 'Cooked meat. In first person, walk into it to eat it: every chunk heals you. Past 320 °C it chars and burns to ash.' },
@@ -1211,7 +1213,7 @@ const digOf = (d) => (d.kind === K.POWDER ? 'sand' : d.kind === K.SOLID ? DIG_BY
 // A row of defs with every field filled in (the check scripts add test rows
 // the same way: tools/elements-core-check.mjs).
 export const elementRow = (d, id) => ({
-  id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
+  id, traits: [], var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   flash: d.ignite ?? 0, burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, acid: false, fizz: 0, ash: true, sound: null,
   cold: null, hot: null, crush: null, blast: null, conducts: false, mossBed: false, rots: false, singProof: false, antimatterProof: false,

@@ -48,7 +48,11 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 - `tools/browser.mjs` rejects budgets over 25 seconds. Its independent watchdog stops only the test's own process tree.
 - The launcher releases its slot if the player uses the GPU. It does not hold the slot while waiting for the player.
 - Never set `TPT_IGNORE_PLAYER` without explicit user approval.
-- If another test holds the slot, identify its owner and require compliance. Do not kill unrelated processes.
+- `node tools/gpu-log.mjs` is the shared GPU log: who is on the GPU now (session, worktree, what for, how long) and every recent run; `--since 6h` totals per session. Check it before a GPU run instead of guessing from pids.
+- Say why a run exists: `TPT_GPU_WHY="island cold-load timing" node tools/...` (or `launchBrowser({ why })`). Optional; without it the log shows the command.
+- Register GPU use the launcher can't see (a windowed or Claude-in-Chrome probe, a dev page left open with the game running): `node tools/gpu-log.mjs claim "why" -- <command>`, or `claim "why" --secs 120` then `release`.
+- Timing-critical work gets the GPU alone. Profiler and bench scripts (`profile`, `frame-profile`, `app-compile-probe`, `*-bench`) are exclusive automatically; elsewhere use `launchBrowser({ exclusive: true })`, `TPT_GPU_EXCLUSIVE=1` or `claim --exclusive`. An exclusive run refuses while any claim is live, and new claims and headless tests wait for it. Refusals name who is on the GPU.
+- If another test holds the slot, the refusal and `gpu-log` name its owner; require compliance. Do not kill unrelated processes.
 
 - Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher. The deploy enforces it: `tools/check-browser-launch.mjs` fails on any script in `tools/` or `scripts/` that launches a browser itself, except the legacy list in that file, which only shrinks.
 - Pick the cheapest mode that preserves the assertion:
@@ -63,6 +67,14 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 - Keep GPU-heavy suites short and run benchmarks without competing GPU tests. Existing cross-build benchmarks retain their explicit legacy frame pumps.
 - Direct browser URLs support `?test=manual|ui|preview|visual` and `&paused=1`. These flags are not persisted and normal gameplay is unchanged.
 - Existing worktrees and already-running scripts must adopt this revision before these defaults apply. See `docs/headless-testing-cost.md`; check with `node tools/headless-check.mjs --port YOUR_PORT`.
+
+## Profiler — all agents
+
+For any performance question, run the profiler. Don't write your own timing.
+
+- `node tools/profile.mjs --map <key> [--poses "default;landDown;sky;horizon"] [--target ms | --compare old/profile.json] [--view realistic] [--frames 30] [--out dir]`. One 25 s slot prints a ranked waterfall (GPU ms per pass with median and spread, CPU ms per phase, frame interval, compiles in flight, GPU memory, what bounds the frame) and writes JSON and HTML. On a Mac it also records Metal's per-encoder times (tools/gpu-counters.mjs), which become the trusted per-pass ms; `--no-counters` skips them. With several poses it fits ms per counter category (an estimate, or the reason it can't). With a target it says what must drop to reach it. In the browser, use `?profile=1` or `__app.prof.report()`.
+- Trust only a report that says `PROFILE (trusted)`. An UNTRUSTED report names its reasons (compiles, a shared GPU, missing timestamps, too few frames, pass times past the frame, passes with no trusted ms). A pass with no trusted ms shows `–` and says why. Never read its timestamp instead.
+- If the report lacks what you need, improve the profiler (a pass label, a counter, a report line) so every later agent gets it. Don't work around it. See `docs/profiler.md`.
 
 ## Same features in every world — all agents
 

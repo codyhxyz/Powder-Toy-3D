@@ -42,6 +42,7 @@ import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
+import { labStudiesPlaques } from './lab/studies/index.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -53,6 +54,7 @@ import { createMeshFrames } from './gfx/meshFrames.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
+import { createElementInspector } from './lab/inspector.js';
 import { createSettings } from './ui/settings.js';
 import { createShaderPicker } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
@@ -74,6 +76,8 @@ import { createViewSettings, bindViewInputWake, brushKey } from './gfx/viewInput
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
+import { buildReport as buildProfileReport, formatReport as formatProfileReport } from './gfx/profileReport.js';
+import { attachCostView } from './gfx/costView.js';
 import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
@@ -99,11 +103,10 @@ import { weatherSection } from './ui/weather.js';
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160],
   valley: ARENA_PRESETS.damValley.size };
-// Arena scenes (presets.js ARENA_PRESETS) are built for one grid each: picking
-// one switches the grid to it, and any other box scene switches back. Their
-// grids aren't in the Grid size row.
-const ARENA_GRID = { damValley: 'valley' };
-const ARENA_GRIDS = new Set(Object.values(ARENA_GRID));
+// Authored fixed-size presets switch to their grid; ordinary box scenes
+// switch back. Their grids aren't in the Grid size row.
+const FIXED_PRESET_GRID = { damValley: 'valley', labStudies: 'valley' };
+const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset
 const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
 // Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
@@ -262,11 +265,11 @@ const gridRefusal = (dims) => gpu.fitsReason({ nx: dims[0], ny: dims[1], nz: dim
 let worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 // the box size the Scene row goes back to from World
-let boxSize = settings.size in SIZES && !ARENA_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
+let boxSize = settings.size in SIZES && !FIXED_PRESET_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
 // a scene named in the URL is a box scene (World has its own), as in the Scene row
 if (params.get('preset') && !params.get('size') && settings.size in WORLDS) settings.size = boxSize;
 // an arena named in the URL brings its grid
-if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = ARENA_GRID[params.get('preset')];
+if (params.get('preset') in FIXED_PRESET_GRID && !params.get('size')) settings.size = FIXED_PRESET_GRID[params.get('preset')];
 // a map (maps.js): the start menu's pick (src/main.js), or ?map= — its scene at its own size
 const bootMap = mapByKey(params.get('map') ?? launch.map);
 if (bootMap) useMap(bootMap);
@@ -287,6 +290,11 @@ if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharac
 if (!GENDERS.includes(settings.gender)) settings.gender = genderOf(settings.character);
 Object.assign(settings, bodiesFor(settings.gender, settings.character));
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
+// ?profile=1: the profiler on, as Settings → Developer → Profiler (docs/profiler.md), not saved:
+// the next plain visit keeps the stored choice (save() writes that, until the toggle is used)
+const profileParam = params.get('profile') === '1';
+let storedProfiler = settings.profiler;
+if (profileParam) settings.profiler = true;
 // Physics V2 is the only engine (launch.js physicsEngine). Worlds/POV use explicit readiness while its
 // pipelines build. Multiplayer guests are deliberately render-only: a guest's owner holds the host's frames.
 const physicsMode = physicsEngine();
@@ -304,7 +312,7 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])),
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, k === 'profiler' && profileParam ? storedProfiler : settings[k]])),
       [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
   }, 300);
 }
@@ -653,7 +661,7 @@ function build(savedWorldSize = null) {
   rig.setMaxSpeed(mapKind.camSpeedMax);
   rig.reset(true);
   // an arena only fits its own grid: in another, the lab
-  if (mapKind.presets && settings.preset in ARENA_GRID && ARENA_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
+  if (mapKind.presets && settings.preset in FIXED_PRESET_GRID && FIXED_PRESET_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
   loadPreset(settings.preset, false);   // (once the simulation's pipelines are ready: whenSimReady)
 }
 
@@ -743,7 +751,7 @@ function setSize(size, savedWorldSize = null) {
   // a grid that is no longer the gamemode's map (or a mode the map doesn't have): Sandbox
   const resolved = resolveMode(mapOf(settings), selectedMode);
   if (resolved.key !== selectedMode || mapOf(settings)?.size !== size) startMode('sandbox');
-  if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
+  if (size in SIZES && !FIXED_PRESET_GRIDS.has(size)) boxSize = size;
   build(savedWorldSize);
   save();
   return true;
@@ -929,11 +937,19 @@ function loadPreset(name, undoable = true) {
     // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
     else if (name === 'island') wire('world').loadIsland(ctx)?.then((P) => { if (P && mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P); });
     else arenaLayout = buildPreset(name, sim);
-    if (!mapKind.presets || !(name in ARENA_GRID)) arenaLayout = null;
+    if (!mapKind.presets || !(name in ARENA_PRESETS)) arenaLayout = null;
     resetSimModes();
     ctx.industry?.reset({ starters: name === 'quarry' && mapKind.presets });
     post.reset();
     signs?.clear();
+    elementInspector.close();
+    // Intentional (user request, 2026-10-25): these are hand-built vibe studies,
+    // not the future generated collection. Regeneration restores their plaques.
+    if (name === 'labStudies' && mapKind.presets && signs) {
+      for (const p of labStudiesPlaques()) signs.add({
+        ...p, cell: new THREE.Vector3(...p.cell), normal: new THREE.Vector3(...p.normal), edit: false,
+      });
+    }
     resetSpawners(name);
     pov?.worldReplaced();
   });
@@ -1344,6 +1360,7 @@ let uiHover = false;
 let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
+const elementInspector = createElementInspector();
 const hud = createHud({ onTogglePause: () => setPaused(!settings.paused) });
 hud.setPaused(settings.paused);
 const help = createHelp(() => help.setOpen(false));
@@ -1635,7 +1652,7 @@ const settingsPanel = createSettings({
     // for working on the app itself (the frame loop applies it)
     { title: 'Developer', rows: [
       { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
-        onChange: (v) => { settings.profiler = v; save(); } },
+        onChange: (v) => { settings.profiler = storedProfiler = v; save(); } },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
@@ -2216,7 +2233,9 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- profiler (Settings → Developer)
 // gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
-const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = false; save(); applyProfiler(); } });
+const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = storedProfiler = false; save(); applyProfiler(); },
+  onCost: () => prof.cost?.show(),
+  fullReport: () => (prof.landed.length ? prof.report().text : null) });
 const prof = createProfiler(gpu, {
   describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
     // (the HUD's old line) steps/s as the simulation runs them, preview's draw rate apart; a big map's
@@ -2225,15 +2244,29 @@ const prof = createProfiler(gpu, {
     screenShare: autoRes.enabled ? post.renderScale * pixelRatio / DEVICE_RATIO : null }),
   onSample: profPanel.update,
   onFrame: profPanel.frame,
+  // prof.enable() from the console or a tool sticks: it is the setting (the frame loop applies the setting
+  // each tick, and used to switch a direct enable(true) straight back off before a frame was timed)
+  onChange: (on) => {
+    settings.profiler = on;
+    profPanel.show(on);
+    post.onPass = on ? postPass : null;
+  },
+  // what the report says was measured (gfx/profileReport.js): two reports compare only on equal setups
+  context: () => ({
+    ...currentMap(),
+    view: VIEWS.find((v) => v.id === renderView)?.key ?? String(renderView),
+    detail: detailKey(frameDetail) || 'none',
+    taa: !!post.settings.taa, upscale: post.settings.upscale, adaptive: !!post.settings.adaptive,
+    resolutionScale: post.settings.resolutionScale, autoRes: !!autoRes.enabled,
+    pose: { eye: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov, pov: !!pov?.active },
+    testMode: testMode ?? null, paused: !!settings.paused, pov: !!pov?.active,
+    sceneTarget: [Math.max(1, Math.round(canvas.width * post.renderScale)), Math.max(1, Math.round(canvas.height * post.renderScale))],
+  }),
+  buildReport: (input) => { const r = buildProfileReport(input); r.text = formatProfileReport(r); return r; },
 });
 // post's passes after the scene (the view's raymarch) are a phase of their own
 const postPass = (name) => { if (name === 'scene') prof.phase('post'); };
-function applyProfiler() {
-  const on = settings.profiler;
-  prof.enable(on);
-  profPanel.show(on);
-  post.onPass = on ? postPass : null;
-}
+function applyProfiler() { prof.enable(settings.profiler); }   // (onChange shows the panel and hooks post)
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
@@ -2983,6 +3016,7 @@ function tick(now, renderOnly = false) {
   get scoreboard() { return scoreboard; }, get prof() { return prof; }, actions,
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
+  inspectElement: (key) => elementInspector.show(key),
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
   setMode: startMode,
@@ -3219,6 +3253,7 @@ try {
       },
     } : null,
   };
+  attachCostView(window.__app);   // __app.prof.cost: per-pixel work counters (docs/profiler.md)
   gpuLoss.settle();
   loop = createFrameLoop(frame);
   loop.start();

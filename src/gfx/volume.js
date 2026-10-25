@@ -43,6 +43,7 @@ import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView, materialStyleForView } from '../views.js';
+import { costify, costBinding, costLayoutEntry } from '../shaders/costView.js';
 import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING } from '../shaders/bindings.js';
 import { materialTextures } from './materialTextures.js';
 import { FLOOR_TEX } from './materials.js';
@@ -203,6 +204,20 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     return group;
   }
 
+  // the cost view's twins (costTwin) and their group 0: the volume's frame group and the counters' storage texture
+  const twins = new WeakMap();
+  let costL = null;
+  const costLayout = () => (costL ??= gpu.layout('VOLUME_FRAME_COST', [...VOLUME_LAYOUTS()[0], costLayoutEntry(costBinding(VOLUME_LAYOUTS()[0]))]));
+  function costFrameGroup(depth, cost) {
+    const plane = sim.decoPlane ?? { buffer: dummy.buffer, offset: 0, size: dummy.buffer.size };
+    return gpu.bindGroup(costLayout(), [
+      { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: fu.uniforms.buffer } },
+      { binding: 2, resource: viewOf(depth, {}) },
+      { binding: 3, resource: { buffer: plane.buffer, offset: plane.offset, size: plane.size } },
+      { binding: costBinding(VOLUME_LAYOUTS()[0]), resource: cost },
+    ], `${label('volume frame')} (cost)`);
+  }
+
   // ---- pipelines ----
   const shadowKernel = gpu.kernel({
     name: 'shadow', code: shadowFrag(g), layouts: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW],
@@ -340,7 +355,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      *   drawn when src/deco.js decoShown(sim) says so (painted, display on)
      * @returns {boolean}
      */
-    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null } = {}) {
+    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null, pipe: twin = null, cost = null } = {}) {
       const curved = isCurved(warp);
       const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
       if ((header.format ?? 0) !== format) return false;
@@ -348,10 +363,12 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
       opticsDrawn = pipe.name?.includes('.optics') ?? false;
+      // the cost view (gfx/costView.js): what was drawn, and its counted twin of `pipe` drawn the same way
+      if (!twin) volume.lastDraw = { view, detail, meshDepth, marchNear, aerCopy, warp, pipe, n: (volume.lastDraw?.n ?? 0) + 1, at: performance.now() };
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
-      pipe.draw(rp, {
-        bind: [volumeFrameGroup(depth), state, lightingGroup(L.LIGHTING)], header,
+      (twin ?? pipe).draw(rp, {
+        bind: [cost ? costFrameGroup(depth, cost) : volumeFrameGroup(depth), state, lightingGroup(L.LIGHTING)], header,
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
           deco: decoShown(sim) && sim.decoPlane ? 1 : 0,
@@ -361,6 +378,23 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
         ...(indirect ? { indirect } : {}),
       });
       return true;
+    },
+
+    /**
+     * The cost view's counted twin of a live pipeline of this volume (gfx/costView.js): its own
+     * WGSL text with counter spans (shaders/costView.js costify), the counters' storage texture
+     * in group 0; drawn by draw({ pipe: twin, cost: view }). Made on first use.
+     */
+    costTwin(pipe) {
+      let t = twins.get(pipe);
+      if (!t) {
+        const { code, layouts: [, ...rest], params, vertex, fragment, primitive, depthStencil } = pipe.desc;
+        twins.set(pipe, t = gpu.renderPipeline({
+          name: `${pipe.name}.cost`, code: costify(code, { binding: costBinding(VOLUME_LAYOUTS()[0]) }), layouts: [costLayout(), ...rest],
+          params, vertex, fragment, primitive, depthStencil, build: 'now', optional: true,   // (its failure is the cost view's, not the game's)
+        }));
+      }
+      return t;
     },
 
     /**

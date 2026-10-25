@@ -15,6 +15,7 @@ const signs = {
       renderer: app.renderer, camera: app.camera, container: signLayer,
       getSim: () => app.sim, getVolume: () => app.volume,
       onChange: () => {},
+      onInspect: (key) => app.inspectElement(key),
     });
   },
   attach(app) { app.signs.clear(); app.signs.rebuild(); },

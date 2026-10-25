@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Every-element lab — concept options</title>
+<style>
+  :root{color-scheme:dark;--bg:#10171d;--panel:#19242d;--line:#405360;--ink:#edf2f4;--muted:#b6c7d0;--powder:#edc577;--liquid:#69c6ed;--gas:#a8d5af;--solid:#c4b4dd}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,sans-serif}
+  main{max-width:1240px;margin:auto;padding:36px 24px 64px}h1{font-size:clamp(30px,4vw,48px);line-height:1.12;margin:12px 0}
+  h2{margin:32px 0 12px;font-size:25px}h3{margin:0 0 10px;font-size:21px}p{margin:10px 0}a{color:var(--liquid)}
+  .eyebrow{color:var(--powder);text-transform:uppercase;letter-spacing:.13em;font-size:12px;font-weight:700}
+  .lede{font-size:20px;max-width:850px}.muted,small{color:var(--muted)}.callout{padding:16px 20px;border-left:4px solid var(--powder);background:var(--panel);margin:22px 0}
+  .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}
+  .recommended{border-color:var(--powder)}.badge{display:inline-block;padding:2px 9px;border:1px solid currentColor;border-radius:20px;font-size:12px;color:var(--powder);margin-bottom:10px}
+  svg{width:100%;height:auto;background:#101a21;border-radius:8px;margin:8px 0}svg text{fill:var(--ink);font:12px system-ui,sans-serif}
+  svg .wall{fill:#22333e;stroke:#526874;stroke-width:2}svg .walk{fill:#55616a}svg .powder{fill:var(--powder)}
+  svg .liquid{fill:var(--liquid)}svg .gas{fill:var(--gas)}svg .solid{fill:var(--solid)}svg .dash{fill:none;stroke:#b6c7d0;stroke-dasharray:5 4}
+  ul,ol{padding-left:22px}li{margin:8px 0}strong{font-weight:650}code{color:#ead6aa;overflow-wrap:anywhere}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13px}.legend span:before{content:"";display:inline-block;width:10px;height:10px;background:var(--color);margin-right:6px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:16px}.plate{border:2px solid #7895a5;background:#13202a;padding:22px;border-radius:8px}
+  .plate h3{font-size:28px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}.chips span{border:1px solid #728c9b;padding:3px 8px;border-radius:4px;font-size:13px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.flow b{background:#273946;padding:8px 12px;border-radius:4px}.flow i{font-style:normal;color:var(--powder)}
+  table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--powder)}
+  details{background:var(--panel);padding:14px 18px;border-radius:8px;margin:12px 0}summary{cursor:pointer;font-weight:650}
+  footer{margin-top:32px;border-top:1px solid var(--line);padding-top:16px;font-size:13px;color:var(--muted)}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}.two{grid-template-columns:1fr}}@media print{body{background:white;color:black}main{padding:10px}.card,.callout,details,.plate{background:#f4f4f4;color:black;break-inside:avoid}.muted,small,footer{color:#444}a,code{color:#145676}svg{print-color-adjust:exact}details>*{display:block}}
+</style>
+<main>
+  <div class="eyebrow">Design proposal · not an implemented map</div>
+  <h1>The every-element lab</h1>
+  <p class="lede">An indoor, walkable collection that builds itself from the element registry. Physical state chooses the wing; reusable hazard tags choose how each exhibit is stored.</p>
+  <p class="muted">Decision needed: choose the building layout and powder display. These drawings are schematic, not engine screenshots or tested containment designs.</p>
+  <div class="callout"><strong>Recommendation: A, the museum spine.</strong> Square viewing windows for the collection, catwalks over liquid vats, and a small sand hopper beside the powder samples. Hazardous specimens get visibly different modules without being moved out of their physical-state wing.</div>
+
+  <div class="legend" aria-label="Diagram color legend">
+    <span style="--color:var(--powder)">Powders</span><span style="--color:var(--liquid)">Liquids</span>
+    <span style="--color:var(--gas)">Gases</span><span style="--color:var(--solid)">Solids / devices</span>
+  </div>
+  <h2>Three building directions</h2>
+  <div class="grid">
+    <section class="card recommended">
+      <div class="badge">Recommended</div><h3>A · Museum spine</h3>
+      <svg viewBox="0 0 320 235" role="img" aria-labelledby="spine-title">
+        <title id="spine-title">Top-down plan: a main corridor connects four category wings, with room to extend each wing.</title>
+        <rect class="wall" x="14" y="24" width="126" height="78"/><rect class="wall" x="180" y="24" width="126" height="78"/>
+        <rect class="wall" x="14" y="135" width="126" height="78"/><rect class="wall" x="180" y="135" width="126" height="78"/>
+        <path class="walk" d="M20 108h280v20H20zM150 28h20v184h-20z"/>
+        <path class="powder" d="M25 80h32l-16-28zM67 80h32L83 52zM109 80h20V52h-20z"/>
+        <rect class="gas" x="191" y="48" width="26" height="33" opacity=".7"/><rect class="gas" x="230" y="48" width="26" height="33" opacity=".45"/><rect class="gas" x="269" y="48" width="26" height="33" opacity=".25"/>
+        <rect class="liquid" x="27" y="162" width="43" height="36"/><rect class="liquid" x="84" y="162" width="43" height="36"/>
+        <rect class="solid" x="195" y="165" width="27" height="27"/><rect class="solid" x="243" y="165" width="40" height="27"/>
+        <text x="26" y="42">POWDERS →</text><text x="191" y="42">GASES →</text>
+        <text x="26" y="152">LIQUID VATS →</text><text x="191" y="152">SOLIDS →</text>
+        <text x="29" y="122">ENTRY</text><text x="197" y="122">MAIN CORRIDOR</text>
+        <path class="dash" d="M14 14h126M180 14h126M14 224h126M180 224h126"/>
+      </svg>
+      <p><strong>Feel:</strong> a readable research museum. Long, roofed galleries with a sign outside every square window.</p>
+      <p><strong>Play:</strong> break a powder shelf, watch grains spill; step off a railed catwalk into a liquid vat.</p>
+      <p class="muted"><strong>Tradeoff:</strong> less theatrical than a giant central chamber, but easiest to extend without rebuilding the entrance.</p>
+    </section>
+    <section class="card">
+      <div class="badge">Most theatrical</div><h3>B · Reactor atrium</h3>
+      <svg viewBox="0 0 320 235" role="img" aria-labelledby="atrium-title">
+        <title id="atrium-title">Top-down plan: a circular central catwalk around liquid vats connects powder, gas, and solid galleries.</title>
+        <rect class="wall" x="12" y="15" width="296" height="206" rx="36"/>
+        <circle class="walk" cx="160" cy="121" r="76"/><circle fill="#101a21" cx="160" cy="121" r="56"/>
+        <circle class="liquid" cx="140" cy="116" r="17"/><circle class="liquid" cx="181" cy="116" r="17" opacity=".6"/>
+        <rect class="powder" x="34" y="64" width="28" height="85"/><path fill="#101a21" d="M34 102l14 15 14-15z"/>
+        <rect class="gas" x="257" y="64" width="28" height="85" opacity=".6"/>
+        <rect class="solid" x="107" y="27" width="31" height="20"/><rect class="solid" x="148" y="27" width="31" height="20"/><rect class="solid" x="189" y="27" width="31" height="20"/>
+        <text x="30" y="57">SILOS</text><text x="249" y="57">GASES</text>
+        <text x="123" y="150">LIQUID VATS</text><text x="107" y="209">ENTRY / CATWALK</text>
+      </svg>
+      <p><strong>Feel:</strong> a huge indoor machine room. Tall powder silos, stacked gas windows, vats below an upper walkway.</p>
+      <p><strong>Play:</strong> overlook many exhibits at once, then descend into individual galleries.</p>
+      <p class="muted"><strong>Tradeoff:</strong> visual density, roof/camera visibility and vertical navigation need more work. An expanding catalog needs additional atrium modules.</p>
+    </section>
+    <section class="card">
+      <div class="badge">Most experimental</div><h3>C · Containment blocks</h3>
+      <svg viewBox="0 0 320 235" role="img" aria-labelledby="blocks-title">
+        <title id="blocks-title">Top-down plan: a service corridor connects isolated exhibit chambers in category rows.</title>
+        <path class="walk" d="M16 106h288v23H16z"/>
+        <rect class="wall" x="20" y="24" width="82" height="75"/><rect class="wall" x="119" y="24" width="82" height="75"/><rect class="wall" x="218" y="24" width="82" height="75"/>
+        <rect class="wall" x="20" y="137" width="82" height="75"/><rect class="wall" x="119" y="137" width="82" height="75"/><rect class="wall" x="218" y="137" width="82" height="75"/>
+        <path class="powder" d="M37 83h48L61 48z"/><rect class="powder" x="136" y="55" width="47" height="28"/><text x="248" y="74" style="fill:var(--powder);font-size:28px">!</text>
+        <rect class="liquid" x="35" y="163" width="51" height="33"/><rect class="liquid" x="134" y="163" width="51" height="33"/>
+        <rect class="gas" x="233" y="153" width="51" height="43" opacity=".4"/>
+        <text x="30" y="42">POWDER ROW →</text><text x="29" y="121">SERVICE CORRIDOR / AIRLOCKS</text>
+        <text x="28" y="227">More category rows continue behind these.</text>
+      </svg>
+      <p><strong>Feel:</strong> a slightly alarming test facility. Each bay has an observation window, service hatch and its own hazard treatment.</p>
+      <p><strong>Play:</strong> isolate a spill or deliberately breach one chamber. A large sign stands in for an unavailable specimen.</p>
+      <p class="muted"><strong>Tradeoff:</strong> more walking and walls; fewer panoramic views. Doors and walls alone must not be advertised as neutron shielding.</p>
+    </section>
+  </div>
+
+  <h2>Make powders worth watching</h2>
+  <div class="grid">
+    <section class="card"><h3>1 · Square specimen window</h3><p>A shallow, glass-fronted cell, filled with grains. A retaining box keeps a square silhouette; an unsupported powder cube would slump.</p><p class="muted">Best for comparing all materials. Break the window to release the sample.</p></section>
+    <section class="card"><h3>2 · Hopper + catch tray</h3><p>A small upper hopper drains through a neck into a visible heap. Different grains make different piles.</p><p class="muted">Recommended companion to the static sample. A finite pour can settle; a perpetual one needs a real source and drain, not imaginary recirculation.</p></section>
+    <section class="card"><h3>3 · Destructive test bay</h3><p>A contained release or drop experiment shows how a material falls, scatters or reacts. Stable collection display remains separate.</p><p class="muted">Most interactive. Triggering and resetting are extra mechanics, so I would defer them until the collection works.</p></section>
+  </div>
+  <p><strong>Liquids:</strong> use broad, open-topped vats with a side window and a catwalk over the rim. Ordinary liquids are accessible; a dangerous or unstable liquid may require a closed vat. Jumping in is possible where open, not necessarily survivable.</p>
+  <p><strong>Gases:</strong> sealed square-window chambers with vertical room to rise or settle. Clear gases get honest labels, not an invented visible tint. Flow arrows or schematic graphics must be labeled as diagrams.</p>
+  <p><strong>Solids:</strong> blocks on plinths. Electronics sit on isolated demonstration benches; nearby batteries must not accidentally energize every sample.</p>
+
+  <h2>One catalog, not a second hand-maintained map</h2>
+  <div class="flow" aria-label="Proposed data flow"><b>Registry + reusable tags</b><i>→</i><b>Exhibit catalog</b><i>→</i><b>Category wings + storage modules</b><i>→</i><b>Geometry + plaques + directory</b></div>
+  <div class="two" style="margin-top:16px">
+    <section class="card">
+      <h3>What stays DRY</h3>
+      <ul>
+        <li><strong>Category:</strong> derive from <code>kind</code>, not the palette's hand-written lists. Gunpowder remains in Powders, with an explosive tag.</li>
+        <li><strong>Facts:</strong> read spawn temperature, phase changes, ignition, descriptions and other existing fields. Nuclear data remains authoritative in its existing module.</li>
+        <li><strong>New metadata:</strong> reusable hazards and storage needs belong to element definitions, not an element-name switch in the map. Explicitly review exceptional behavior that existing fields cannot describe.</li>
+        <li><strong>Placement:</strong> deterministic slots within category wings; append new material IDs in order. Compute a finite, aligned footprint at map creation, with an expansion path rather than a fixed specimen count. This is automatic catalog growth, not an infinite allocation.</li>
+        <li><strong>Unknown:</strong> an unsupported tag or unreviewed specimen gets a visible “not displayed” plaque and validation failure. It never silently inherits “safe in glass.”</li>
+      </ul>
+    </section>
+    <section class="card">
+      <h3>Separate three questions</h3>
+      <p><strong>What is it?</strong> Powder, liquid, gas, solid, or a non-matter effect.</p>
+      <p><strong>What can it do?</strong> Example vocabulary: flammable, oxidizer, corrosive, shock-sensitive, fissile, neutron-emitting, annihilating, matter-consuming, self-decaying, replicating.</p>
+      <p><strong>What does this exhibit need?</strong> Example requirements: a supported heap, sealed volume, temperature band, isolated wiring, limited sample quantity or no persistent specimen.</p>
+      <p class="muted">Tags can combine. A cold flammable liquid must satisfy both requirements. Storage conflicts or missing support produce a reasoned plaque-only exhibit.</p>
+      <p class="muted">Adding an element should require only its normal definition and metadata review. New containment behavior may need a new shared module, not a custom map edit per element.</p>
+      <p class="muted"><strong>Saved worlds need a policy:</strong> fresh generation picks up the current catalog. Updating an already edited lab must preserve player changes; catalog versioning and expansion cannot be assumed to happen safely without migration tests.</p>
+    </section>
+  </div>
+
+  <h2>Containment must match the game's actual rules</h2>
+  <table>
+    <thead><tr><th>Example</th><th>Proposed exhibit</th><th>Honesty constraint</th></tr></thead>
+    <tbody>
+      <tr><td>Sand / stone / ash</td><td>Windowed specimen bin and optional finite hopper.</td><td>Powders settle; they do not stay as floating cubes.</td></tr>
+      <tr><td>Liquid nitrogen / snow / dry ice</td><td>Insulated cold-storage module, a temperature gauge, and visible cooling machinery if cooling is implemented.</td><td>Insulation slows warming; it does not maintain a setpoint. A battery is not a refrigerator. Use a plaque until persistent storage is supported and tested.</td></tr>
+      <tr><td>Lava / steam</td><td>Heated vat or chamber with an isolated service area.</td><td>Do not freeze the simulation to keep an exhibit looking stable. Maintaining temperature needs an actual mechanism.</td></tr>
+      <tr><td>Acid / caustic gas</td><td>Acid-resistant container; sealed chamber for gas.</td><td>This game's glass is acid-proof, but still fragile. Chemical resistance is not blast resistance.</td></tr>
+      <tr><td>Gunpowder / nitroglycerin</td><td>Separated, quiet, non-igniting storage, appropriate to the actual trigger.</td><td>“Explosive” is not one containment recipe. Nitroglycerin is sensitive to movement/impact.</td></tr>
+      <tr><td>Uranium / plutonium</td><td>Distinct labeled nuclear exhibits; start conservatively with tiny specimens or plaques.</td><td>Criticality depends on quantity and surroundings. Water can make plutonium more reactive. A thicker wall does not automatically stop neutrons.</td></tr>
+      <tr><td>Antimatter / singularity</td><td>Special compatible containment only if proven; otherwise an empty station with an explanation.</td><td>Antimatter has specific compatible materials. A singularity consumes matter and changes with time even if its enclosure survives.</td></tr>
+      <tr><td>Fire / plasma / photons / neutrons</td><td>Explained effect exhibits; optional explicitly labeled source-driven demonstrations.</td><td>A continuously replaced effect is not a stable specimen. Photons/neutrons are not ordinary voxel materials.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Signs: quick read first, full facts nearby</h2>
+  <div class="two">
+    <div class="plate">
+      <div class="eyebrow">Illustrative plaque · exact layout not decided</div>
+      <h3>Liquid nitrogen <small>LN2</small></h3>
+      <div class="chips"><span>LIQUID</span><span>CRYOGENIC</span><span>TEMPERATURE-SENSITIVE</span></div>
+      <p><strong>Boils near −196 °C.</strong> Warms into ordinary air in this simulation.</p>
+      <p>Storage: needs sustained cooling. Insulation alone only delays boiling.</p>
+      <p class="muted">If cooling is unavailable: “No persistent sample — it warms and boils away.”</p>
+    </div>
+    <section class="card">
+      <h3>Shared facts, two levels</h3>
+      <p><strong>At a glance:</strong> name, abbreviation, state, hazard chips, specimen status and one useful behavior.</p>
+      <p><strong>On inspection:</strong> description; spawn and live temperature where meaningful; modeled freezing/melting/boiling or other transitions and products; ignition/trigger; density relative to water; thermal/electrical behavior; containment explanation.</p>
+      <p><strong>Do not invent missing facts.</strong> Show “not modeled” or “not applicable,” never a default 0 °C. A hot transition is not necessarily boiling: it can be decomposition.</p>
+      <p class="muted">Plaque-only stations still show the material's identity, all relevant tags and the specific reason no specimen is present.</p>
+    </section>
+  </div>
+
+  <details>
+    <summary>Code evidence and important implementation limits</summary>
+    <ul>
+      <li>Baseline: fetched <code>origin/main</code>, commit <code>2beac9a082b50e2370f818af332f5681753dd359</code>. No gameplay files changed for this proposal.</li>
+      <li><code>src/elements.js</code>: CPU inventory found <strong>95 matter entries</strong>: 41 solids, 23 powders, 19 liquids, 11 gases and air. Seven entries are absent from palette groups, including air and native terrain materials. Enumerating the palette would miss these and duplicate others.</li>
+      <li><code>src/elements.js</code> and <code>src/rays.js</code>: photons and neutrons are separate particle tools; Spark is also an action rather than a persistent material. Include them as effect exhibits, but do not turn every editor tool or weapon into a specimen.</li>
+      <li><code>src/world/scenes/labWorld.js</code>: existing deterministic room generator and glass tanks are useful precedent. It is intentionally unstable in places and does not supply this collection or a fully enclosed roof.</li>
+      <li><code>src/world/scenes/index.js</code>: world scenes are deterministic CPU/GPU functions. An exhibit catalog must feed both generation and the far view rather than drift into parallel hand-written lists.</li>
+      <li><code>src/signs.js</code>, <code>src/shaders/probe.js</code>: current signs have an 80-character limit and a 64-sign cap. Ninety-five full fact plaques cannot simply be stuffed into the existing sign tool. Generate a catalog of plaques but render/probe only nearby ones; preserve user-created signs.</li>
+      <li><code>src/ui/card.js</code>: existing cards already derive some facts, but do not cover all phase rules. Extract shared fact formatting for cards and exhibit inspection.</li>
+      <li><code>src/rays.js</code>: nuclear cross-sections and neutron emission are existing data. Reuse rather than maintain another list of radioactive materials.</li>
+      <li><code>src/v2/contact.js</code> and <code>src/shaders/v2/particles.js</code>: active material/particle behavior must be checked here. Historical documentation and legacy shader references alone are not current runtime proof.</li>
+      <li><code>src/mapKind.js</code>: a big map simulates a moving window, not the entire building at once. Label behavior honestly; do not imply every distant exhibit keeps running.</li>
+    </ul>
+  </details>
+  <details>
+    <summary>Prior art: what transfers, and what does not</summary>
+    <ul>
+      <li><a href="https://raw.githubusercontent.com/The-Powder-Toy/The-Powder-Toy/master/src/simulation/elements/GLAS.cpp">The Powder Toy: glass implementation</a> exposes category, physical properties, transitions and special update behavior in one definition. That property-driven approach transfers. Its glass passes neutrons and can shatter; it is not a universal safety window.</li>
+      <li><a href="https://raw.githubusercontent.com/The-Powder-Toy/The-Powder-Toy/master/src/simulation/elements/TSNS.cpp">TPT: temperature sensor</a> and <a href="https://raw.githubusercontent.com/The-Powder-Toy/The-Powder-Toy/master/src/simulation/elements/HSWC.cpp">heat switch</a> provide established sensing and switched thermal-conduction patterns. These support visible control machinery as a design vocabulary. They do not establish a refrigerator in this project.</li>
+      <li><a href="https://powdertoy.co.uk/Browse/View.html?ID=2634656">EnganK: Temp control methods, save 2634656</a>, linked in <a href="https://powdertoy.co.uk/Discussions/Thread/View.html?Thread=25843">the creator's heating/cooling discussion</a>, is attributable temperature-control prior art. The save's internals were not downloaded or simulated; no circuit compatibility or performance claim follows.</li>
+    </ul>
+    <p class="muted">The building layouts and storage-module composition above are proposals adapted to this codebase, not reproductions of a verified universal material museum.</p>
+  </details>
+  <details>
+    <summary>Proposed first implementation slice and checks</summary>
+    <ol>
+      <li>Agree on a layout and powder display. Keep the existing Lab and Lab Complex as separate maps.</li>
+      <li>Review every material's reusable metadata and create a catalog entry for every material plus the named effect exhibits. No silent exclusions.</li>
+      <li>Build one representative indoor section: ordinary powder, ordinary liquid, gas, cold material, hot material, explosive, nuclear material and a plaque-only exotic. This tests the shared recipes, not a hard-coded showcase list.</li>
+      <li>Expand the same generator to the complete catalog. Generate signs, directory and rooms from that one catalog.</li>
+      <li>CPU checks: exact-once coverage, hidden entries, stable addresses, category assignment, combined/unknown tags, unsupported containment, fact accuracy and growth beyond the initial capacity.</li>
+      <li>Containment checks: track identity, sample quantity, temperature/pressure and escape into neighboring bays. State the tested duration; finite tests do not prove indefinite stability.</li>
+      <li>Gameplay checks: enclosed roof, doors and catwalk clearance, accessible vats, readable nearby plaques and correct generation/far-view behavior. Follow the repository's 25-second total GPU-slot limit.</li>
+    </ol>
+  </details>
+  <footer>
+    Choose: <strong>A / B / C</strong> for the building, and <strong>1 / 2 / 3</strong> for powders.
+    Suggested answer: “A, with square specimen windows and small finite hoppers.”<br>
+    Design only. Containment recipes, cooling machinery and performance have not been implemented or GPU-tested.
+  </footer>
+</main>
+</html>

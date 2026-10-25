@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { signProbeFrag, MAX_SIGNS, SignParams, SIGN_LAYOUT } from './shaders/probe.js';
-import { ELEMENTS } from './elements.js';
+import { ELEMENTS, itemByKey } from './elements.js';
 import './signs.css';
 
 // Text signs pinned to voxel faces, like The Powder Toy's signs but in 3D.
@@ -33,13 +33,14 @@ const fmt = {
 let nextId = 1;
 
 export class Signs {
-  constructor({ renderer, camera, container, getSim, getVolume, onChange = () => {} }) {
+  constructor({ renderer, camera, container, getSim, getVolume, onChange = () => {}, onInspect = () => {} }) {
     this.renderer = renderer;
     this.camera = camera;
     this.container = container;
     this.getSim = getSim;
     this.getVolume = getVolume;
     this.onChange = onChange;
+    this.onInspect = onInspect;
     this.list = [];
     this.visible = true;
     this.probeInterval = PROBE_MS;
@@ -97,7 +98,7 @@ export class Signs {
   get editing() { return this._edit !== null; }
 
   // cell: the grid cell the sign is on (a world cell with world: true); normal: the face's
-  add({ cell, normal, text = '', edit = true, world = false }) {
+  add({ cell, normal, text = '', edit = true, world = false, elementKey = null }) {
     if (this.list.length >= MAX_SIGNS) {
       console.warn(`Signs: limit of ${MAX_SIGNS} reached`);
       return null;
@@ -113,6 +114,7 @@ export class Signs {
       cell: new THREE.Vector3(),     // ...that cell in the grid, and the anchor (_locate keeps both)
       normal: n,
       text: clean(text),
+      elementKey: typeof elementKey === 'string' && itemByKey(elementKey)?.key === elementKey ? elementKey : null,
       anchor: new THREE.Vector3(),
       inside: true,    // the window holds its cell
       live: null,      // { id, T, P, transmittance } once the probe has run
@@ -126,7 +128,7 @@ export class Signs {
     this._renderText(sign);
     this._place(sign, this._frameInfo());
     this.onChange(this.list);
-    if (edit) this.edit(sign);
+    if (edit && !sign.elementKey) this.edit(sign);
     return sign;
   }
 
@@ -189,7 +191,10 @@ export class Signs {
 
   // (cells are world cells)
   toJSON() {
-    return this.list.map((s) => ({ cell: s.world.toArray(), normal: s.normal.toArray(), text: s.text }));
+    return this.list.map((s) => ({
+      cell: s.world.toArray(), normal: s.normal.toArray(), text: s.text,
+      ...(s.elementKey ? { elementKey: s.elementKey } : {}),
+    }));
   }
 
   fromJSON(arr) {
@@ -200,7 +205,7 @@ export class Signs {
       const v = (a) => (Array.isArray(a) ? new THREE.Vector3().fromArray(a) : new THREE.Vector3(a.x, a.y, a.z));
       for (const o of arr || []) {
         if (!o?.cell || !o?.normal || !clean(o.text)) continue;
-        if (!this.add({ cell: v(o.cell), normal: v(o.normal), text: o.text, edit: false, world: true })) break;
+        if (!this.add({ cell: v(o.cell), normal: v(o.normal), text: o.text, elementKey: o.elementKey, edit: false, world: true })) break;
       }
     } finally {
       this.onChange = notify;
@@ -398,7 +403,11 @@ export class Signs {
     const stem = el('div', 'tpt-sign-stem');
     const plate = el('div', 'tpt-sign-plate');
     plate.tabIndex = 0;
-    plate.setAttribute('role', 'note');
+    plate.setAttribute('role', sign.elementKey ? 'button' : 'note');
+    if (sign.elementKey) {
+      root.classList.add('is-specimen');
+      plate.title = `Inspect ${itemByKey(sign.elementKey).name}. In first person, Q frees the mouse.`;
+    }
     const text = el('span', 'tpt-sign-text');
     const edit = el('span', 'tpt-sign-edit');
     const input = el('input');
@@ -444,12 +453,19 @@ export class Signs {
     plate.addEventListener('contextmenu', (e) => e.preventDefault());
     plate.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (e.button === 0 && sign !== this._edit && !del.contains(e.target)) this.edit(sign);
+      if (e.button === 0 && sign !== this._edit && !del.contains(e.target)) {
+        if (sign.elementKey) this.onInspect(sign.elementKey);
+        else this.edit(sign);
+      }
     });
     plate.addEventListener('keydown', (e) => {
       if (e.target !== plate) return;
       if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); this.remove(sign); }
-      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); this.edit(sign); }
+      else if (e.key === 'Enter' || (e.key === ' ' && sign.elementKey)) {
+        e.preventDefault(); e.stopPropagation();
+        if (sign.elementKey) this.onInspect(sign.elementKey);
+        else this.edit(sign);
+      }
       else if (e.key === 'Escape') { e.stopPropagation(); plate.blur(); }
     });
     del.addEventListener('mousedown', (e) => e.preventDefault());
