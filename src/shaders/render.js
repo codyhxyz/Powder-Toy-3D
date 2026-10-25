@@ -156,9 +156,9 @@ export const VolumeParams = uniformStruct('VolumeParams', {
 // What every view's module defines beside the material library: the
 // tracer's events, soft blobs and the filmic curve the materials call back
 // (gfx/surface.js shows their stand-ins), its constants, and its params.
-const tracerWGSL = () => /* wgsl */ `
-${VolumeParams.wgsl}
-@group(3) @binding(1) var<uniform> P: VolumeParams;
+const tracerWGSL = (params = VolumeParams) => /* wgsl */ `
+${params.wgsl}
+@group(3) @binding(1) var<uniform> P: ${params.name};
 
 // A ray stops once its transmittance is below this: nothing behind can show.
 const RAY_MIN_TRANS: f32 = 0.01;
@@ -1512,6 +1512,12 @@ ${richOptics ? `
   return o;
 }`;
 };
+
+// The seamless world's march (shaders/world/march.js) pastes the realistic tracer and its
+// common part as they are, over the world copy's readers: params is its own struct (VolumeParams'
+// fields and more), declared as P.
+export const tracerCommonWGSL = (params) => tracerWGSL(params);
+export const realisticTraceWGSL = (detail, fixedReadFormat, optics = true) => realistic(detail, false, fixedReadFormat, optics);
 
 /**
  * The box's vertex entry `vs`: the 14-vertex triangle strip of the cube

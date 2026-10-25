@@ -125,7 +125,7 @@ try {
     const r = await p.evaluate(async ([N, DIFF]) => {
       const a = window.__app, f = a.win.far, gpu = a.gpu;
       f.queue = f.queue.slice(-N);
-      while (f.queue.length) { f.sceneChunks(1); await gpu.fence(); }
+      while (f.queue.length) { f.chunks(1); await gpu.fence(); }
       await f.viewPipe.build();
       a.post.settings.taa = false;
       const t = performance.now();

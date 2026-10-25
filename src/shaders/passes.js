@@ -1169,7 +1169,7 @@ ${brickMain}
   let q = bc + P.shift;
   let inside = brickInGrid(q);
   var qi = 0u;
-  if (inside) { qi = brickId(q); }
+  if (inside) { qi = heldBrick(q, i); }
   for (var k = 0u; k < P.words; k++) {
     var w = 0u;
     if (inside) { w = src[qi * P.words + k]; }
@@ -1212,7 +1212,8 @@ ${brickMain}
   let i = foldThread(wg, nwg, li);
   if (i >= NBRICKS) { return; }
   let bc = brickCoord(i);
-  let q = brickId(clamp(bc + P.shift, vec3i(0), vec3i(BX, BY, BZ) - 1));
+  let c = clamp(bc + P.shift, vec3i(0), vec3i(BX, BY, BZ) - 1);
+  let q = select(brickId(c), i, ringed() && all(c == bc + P.shift));
   textureStore(gi0, bc, band(0u, q, i));
   textureStore(gi1, bc, band(1u, q, i));
   textureStore(gi2, bc, band(2u, q, i));

@@ -137,8 +137,8 @@ discard, so a ray that crossed the box and hit nothing shows its cost too. (Twen
 don't fit beside the colour in the 32 bytes a sample may have, as the first twelve did.)
 
 The splits add up: `cellStepsOwn + cellStepsDilated + cellStepsInterior = cellSteps` and
-`skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split). The
-main march's jumps are marked (`gCostMainSkip`) so a reflection's `skipEmpty` isn't counted as one.
+`skipBrick + skip16 + skip64 = brickSkips` (not the curved view's `warpSkip`, which isn't split).
+The main march's jumps are marked (`gCostMainSkip`) so a reflection's `skipEmpty` isn't counted as one.
 
 A count that reaches 65535 (the march: 32767) stops there; `saturated` says how many pixels did, and a
 warning says their counts are lower bounds.
@@ -175,6 +175,33 @@ image over the canvas, with a legend, the stats, the trust line and a button per
 counter redraws from the same capture; "capture again" takes a new one).
 
 `node tools/cost-view-check.mjs --map lab|island --out dir` is one real-GPU capture (manual mode).
+
+### The world march (seamless world)
+
+The material views draw through the world march (`gfx/worldView.js`, `shaders/world/march.js`), split
+into three passes: `world march` → `world reflect` → `world shade`. The cost view counts each stage
+where it runs:
+
+- Each stage's counted twin is that stage's own WGSL (`pipe.desc.code`) plus counter spans. Its colour
+  targets are full (the march's G0 and G1 already use all 32 bytes a sample may have), so the counters go
+  to a write-only `rgba32uint` storage texture in group 0 (the next free binding), three times the scene
+  target's height: the pixel's twelve words four a row, in rows 3y to 3y + 2. The box volume uses the
+  same sink (its 24 counters no longer fit beside its colour in 32 bytes a sample). A stage writes its counts as its work ends:
+  after the march's trace, as the reflection is returned (`costPass` hands the value through), before
+  the shade's return.
+- The capture replays the frame's last draw (`worldView.lastRecorded`) twice on the state it left: the
+  live stages into one G-buffer of the cost view's own, the counted stages into another. It compares
+  the picture (S, D) with the box's tolerance and every other stage output a target holds (G0, G1: the
+  march; O: the reflection) word for word. Any difference makes the result untrusted, naming the output.
+- Each stage's counts are read back from that stage's texture. The result's `counters` are their
+  per-pixel sum, and `stages.march`, `stages.reflect` and `stages.shade` keep each stage's own (stats
+  over the same covered pixels, so the stage means add up to the total). `passes` names the three
+  timed passes; the report puts the counts beside their summed time.
+- The world's own readers are counted under the same names: cell reads are `wcCell` (the world copy),
+  field taps `fieldTexL` (past its empty-level return) and `fieldFetch8`, and the sun ray's steps are
+  `lcNext`'s iterations when `sunRayClear` asked for them (`gCostSun`), the near field's otherwise.
+- `tools/check-cost-view.mjs` proves the same for every lit view and level of the world march (whole and
+  each split stage), and that the three stages together count every counter.
 
 ### Why it can't lie
 

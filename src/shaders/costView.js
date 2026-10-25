@@ -2,8 +2,7 @@
 // counters, and nothing else changed.
 //
 // Honest by construction. The counted module is the live pipeline's own WGSL text (the box volume's,
-// shaders/render.js volumeFrag; on the seamless-world branch also the world march's, whose readers the
-// rules below name too: a rule whose function a module lacks inserts nothing)
+// shaders/render.js volumeFrag; the world march's whole module or split stages, shaders/world/march.js)
 // with spans inserted, each fenced `/*cost{*/ … /*}cost*/`. Nothing is removed or rewritten:
 // stripCost(costify(code)) === code, and verifyCost() also proves every span is one of the few kinds
 // below (a counter increment, the counters' declarations, the store that writes them). The tracer
@@ -20,6 +19,8 @@
 import { volumeFrag, VOLUME_LAYOUTS, LAYOUT_NAMES, VolumeParams, volumePipeline, REALISTIC_LEVELS, VOLUME_VIEWS } from './render.js';
 import { isMaterialView } from '../views.js';
 import { STAGE } from './common.js';
+import { worldMarchFrag, WORLD_MARCH_LAYOUTS, worldMarchLayoutNames, worldMarchPipeline, MarchParams, MARCH_STAGES, marchSplits } from './world/march.js';
+import { WC_OWN } from './world/copy.js';
 
 // A box skip's region is a cube of 2r + 1 bricks (gfx/core.js skipEmpty: brickDist's radius r); at
 // this many bricks a side (64 cells, the world's level-2 node) or more it is counted with the 64³ jumps.
@@ -105,16 +106,18 @@ const WALK_BUMP = `gCost[select(${SLOT.nearSteps}u, ${SLOT.shadowSteps}u, gCostW
 // the main march's jumps: marked around its skipEmpty call, sized inside it, measured after it
 const SKIP_MARK = 'gCostMainSkip = true; let costC0 = cell;';
 const SKIP_DONE = `gCostMainSkip = false; gCost[${SLOT.skipCells}] += u32(abs(cell.x - costC0.x) + abs(cell.y - costC0.y) + abs(cell.z - costC0.z));`;
+const SKIP_SIZE_WORLD = `if (gCostMainSkip) { gCost[select(select(${SLOT.skipBrick}u, ${SLOT.skip16}u, n == OCC_NODE_1), ${SLOT.skip64}u, n == OCC_NODE_2)] += 1u; }`;
 const SKIP_SIZE_BOX = `if (gCostMainSkip) { gCost[select(select(${SLOT.skipBrick}u, ${SLOT.skip16}u, r > 0), ${SLOT.skip64}u, 2 * r + 1 >= ${BOX_BIG_SKIP_BRICKS})] += 1u; }`;
 // a cell step's brick class: liquid interior, else own matter, else flagged only
 const CELL_CLASS = (dilated) => `gCost[select(select(${SLOT.cellStepsOwn}u, ${SLOT.cellStepsDilated}u, ${dilated}), ${SLOT.cellStepsInterior}u, (flags & BRICK_LIQUID_INTERIOR) != 0u)] += 1u;`;
+const CELL_CLASS_WORLD = CELL_CLASS(`(flags & ${WC_OWN.MATTER >>> 0}u) == 0u`);
 const CELL_CLASS_BOX = CELL_CLASS('all(occM == vec2u(0u))');
 // every span that isn't a plain bump, with the counters it counts
 const SPECIAL = new Map([
   [STORE, []], [STORE_AFTER, []], [PASS_OPEN, []], [PASS_CLOSE, []], [SUN_SET, []], [WALK_TAKE, []],
   [WALK_BUMP, ['nearSteps', 'shadowSteps']], [SKIP_MARK, []], [SKIP_DONE, ['skipCells']],
-  [SKIP_SIZE_BOX, ['skipBrick', 'skip16', 'skip64']],
-  [CELL_CLASS_BOX, ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior']],
+  [SKIP_SIZE_WORLD, ['skipBrick', 'skip16', 'skip64']], [SKIP_SIZE_BOX, ['skipBrick', 'skip16', 'skip64']],
+  [CELL_CLASS_WORLD, ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior']], [CELL_CLASS_BOX, ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior']],
 ]);
 const isPrelude = (s) => /^\n\/\/ ---- cost view counters/.test(s) && s === storagePrelude(+(/@binding\((\d+)\) var gCostTex/.exec(s)?.[1] ?? -1));
 const BUMP_RE = /^gCost\[(\d+)\] \+= (\d+)u;$/;
@@ -184,10 +187,12 @@ const RULES = [
   { k: 'brickSkips', after: 'traceView', stmt: 'warpSkip(&walk, bc, true);' },
   { k: 'skipCells', before: 'traceView', stmt: 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);', text: SKIP_MARK, counts: [] },
   { k: 'skipCells', after: 'traceView', stmt: 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);', text: SKIP_DONE },
+  { k: 'skipBrick', after: 'skipEmpty', stmt: 'if (!wcOccupied(2u, c)) { n = OCC_NODE_2; } else if (!wcOccupied(1u, c)) { n = OCC_NODE_1; }', text: SKIP_SIZE_WORLD, counts: ['skipBrick', 'skip16', 'skip64'] },
   { k: 'skipBrick', after: 'skipEmpty', stmt: 'let r = max(brickDistAt(bc), 0);', text: SKIP_SIZE_BOX, counts: ['skipBrick', 'skip16', 'skip64'] },
   // the main march's cell steps, and each one's brick class
   ...['cell[ax] += istp[ax];', 'ax = ddaStep(istp, tDelta, &cell, &tMax);', 'warpAdvance(&walk);'].flatMap((stmt) => [
     { k: 'cellSteps', after: 'traceView', stmt },
+    { k: 'cellStepsOwn', after: 'traceView', stmt, world: true, text: CELL_CLASS_WORLD, counts: ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior'] },
     { k: 'cellStepsOwn', after: 'traceView', stmt, world: false, text: CELL_CLASS_BOX, counts: ['cellStepsOwn', 'cellStepsDilated', 'cellStepsInterior'] },
   ]),
   // the box's sun ray walks itself; the world's asks traceNearSteps (lcNext steps it), flagged
@@ -313,9 +318,21 @@ export function verifyCost(normal, cost, { require = COST_KINDS } = {}) {
 }
 
 // tools/check-wgsl.mjs (and the deploy's operator gate): the counted twins of every lit view's
-// levels, flat and curved. warm: never.
+// levels: the world march's, whole and split, and the box volume's, flat and curved. warm: never.
 const withSink = (entries) => [...entries, costLayoutEntry(costBinding(entries))];
+const worldCostCheck = (view, level, d, stage) => {
+  const [frame, ...rest] = WORLD_MARCH_LAYOUTS(undefined, stage);
+  return {
+    name: `world.${view}.${level}.${stage}.cost`, view, detail: d(), kind: 'render', warm: () => false,
+    code: (g) => costify(worldMarchFrag(g, { view, detail: d(), stage }), { binding: costBinding(frame), require: stage === 'whole' ? undefined : [] }),
+    layouts: () => [withSink(frame), ...rest],
+    layoutNames: [`${worldMarchLayoutNames(stage)[0]}_COST`, ...worldMarchLayoutNames(stage).slice(1)],
+    params: MarchParams, ...worldMarchPipeline(stage),
+  };
+};
 export const WGSL_CHECK = () => [
+  ...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([level, d]) =>
+    ['whole', ...(marchSplits(d()) ? MARCH_STAGES : [])].map((stage) => worldCostCheck(view, level, d, stage)))),
   ...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([k, d]) => [false, true].map((curved) => {
     const [frame, ...rest] = VOLUME_LAYOUTS();
     return {

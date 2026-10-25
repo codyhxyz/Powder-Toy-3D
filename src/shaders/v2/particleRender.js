@@ -24,19 +24,21 @@ import { particleViewsWGSL } from './particleViews.js';
 import { cloudDeckGLSL } from '../gfx/clouds.js';
 import { VIEWS } from '../../views.js';
 import { SH_Y0, SH_Y1, GI_OFFSET_CELLS, SHADOW_TINT_ID_SCALE, SHADOW_PAD } from '../gfx/lighting.js';
+import { lightLookupWGSL } from '../world/lightLookup.js';
 
 export const PARTICLE_BYTES = 48;
 export const PARTICLE_WORDS = 12;
 // deco: draw each particle's decoration (src/deco.js decoShown: painted, display on)
 // grid: the window's cells (xyz) and whether its coarse air is bound (w: group 2, the
 // Pressure view's paint and the pick's P); supers: its supertiles along x and z (the
-// brick numbering, shaders/common.js brickId), for the particle's brick's air
+// brick numbering, shaders/common.js brickId), for the particle's brick's air; z, w: its ring and bricks
 // lag: how far behind its record a particle is drawn, cells per m/s of its velocity (the seconds
 // behind over CELL_M: gfx/nativeParticles.js nativeParticleView, v2/host.js particleLagSeconds)
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
   inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f', sample: 'u32',
   viewport: 'vec2f', capacity: 'u32', deco: 'u32', grid: 'vec4u', supers: 'vec4u', lag: 'f32',
-  // light: 1 when the volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT)
+  // light: 1 when the volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT),
+  // PARTICLE_WORLD_LIGHT when L's world light is (its probe bands at 2-5, LC at 9, lcBuf at 10)
   light: 'u32',
 });
 const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
@@ -49,8 +51,12 @@ export const NATIVE_PARTICLE_AIR_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE)
 // the sun's map (rgba32float, textureLoad), the GI probes' four bands, the media noise (the clouds' shadow), samplers
 const tex = (binding, sampleType, viewDimension) => ({ binding, visibility: STAGE.FRAGMENT, texture: { sampleType, viewDimension } });
 const smp = binding => ({ binding, visibility: STAGE.FRAGMENT, sampler: { type: 'filtering' } });
+// 9, 10: L's world light (docs/seamless-world.md: LC and lcBuf, shaders/world/light.js), on frames the world march draws
 export const NATIVE_PARTICLE_LIGHT_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE), tex(1, 'unfilterable-float', '2d'),
-  tex(2, 'float', '3d'), tex(3, 'float', '3d'), tex(4, 'float', '3d'), tex(5, 'float', '3d'), tex(6, 'float', '3d'), smp(7), smp(8)];
+  tex(2, 'float', '3d'), tex(3, 'float', '3d'), tex(4, 'float', '3d'), tex(5, 'float', '3d'), tex(6, 'float', '3d'), smp(7), smp(8),
+  { binding: 9, visibility: STAGE.FRAGMENT, buffer: { type: 'uniform' } }, ro(10, STAGE.FRAGMENT)];
+/** P.light's value with L's world light bound (the window's sun map and GI: 1; none: 0). */
+export const PARTICLE_WORLD_LIGHT = 2;
 export const NATIVE_PARTICLE_ARGS_LAYOUT = [ro(0, STAGE.COMPUTE),
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const nativeParticleArgsWGSL = () => `
@@ -90,7 +96,10 @@ fn particleAirAt(p: vec3f) -> vec4f {
   let s = b / PARTICLE_SUPER;
   let k = b - s * PARTICLE_SUPER;
   let st = s.x + i32(P.supers.x) * (s.z + i32(P.supers.y) * s.y);
-  let air = particleAir[u32(st * ${SUPER.x * SUPER.y * SUPER.z} + k.x + ${SUPER.x} * (k.z + ${SUPER.z} * k.y)) * 2u];
+  // (supers.z: the window's ring in bricks, shaders/common.js ringOf; supers.w its bricks, the ring's modulus)
+  var id = u32(st * ${SUPER.x * SUPER.y * SUPER.z} + k.x + ${SUPER.x} * (k.z + ${SUPER.z} * k.y));
+  if (P.supers.w != 0u) { id = (id + P.supers.z) % P.supers.w; }
+  let air = particleAir[id * 2u];
   return vec4f(air.xyz / V1_CELLS_PER_STEP_MS, air.w / LEGACY_PRESSURE_PA);
 }
 // Where the ray (grid cells) enters the box, 0 from inside (the data views' t0).
@@ -126,6 +135,11 @@ const particleLightWGSL = /* wgsl */ `
 @group(2) @binding(6) var tMediaNoise: texture_3d<f32>;
 @group(2) @binding(7) var linearClamp: sampler;
 @group(2) @binding(8) var linearRepeat: sampler;
+@group(2) @binding(9) var<uniform> LC: LightUniforms;
+@group(2) @binding(10) var<storage, read> lcBuf: array<vec4u>;
+fn lmLoad(i: u32) -> vec4u { return lcBuf[i]; }
+${lightLookupWGSL({ caustics: false })}
+const PARTICLE_WORLD: u32 = ${PARTICLE_WORLD_LIGHT}u;
 const PARTICLE_SIGMA = array<vec3f, ${ELEMENTS.length}>(${ELEMENTS.map(e => v(e.sigma ?? [0, 0, 0])).join(',')});
 const SHADOW_TINT_ID_SCALE: f32 = ${f(SHADOW_TINT_ID_SCALE)};
 const SHADOW_PAD: f32 = ${f(SHADOW_PAD)};
@@ -156,6 +170,8 @@ fn particleSun(hp: vec3f, n: vec3f) -> vec3f {
   if (P.light == 0u || FU.shadows == 0u || u32(FU.view) >= ${Math.max(...VIEWS.map(v => v.id)) + 1}u || PARTICLE_VIEW_SHADOWS[u32(FU.view)] == 0u) { return vec3f(1.0); }
   let cloud = cloudShadow(hp + P.origin);
   if (cloud <= CLOUD_SHADOW_SKIP) { return vec3f(0.0); }
+  // L's cascades at the world point (shaders/world/lightLookup.js lmSunMap: sunMapShadow's surface bias)
+  if (P.light == PARTICLE_WORLD) { LM = LC; return cloud * lmSunMap(hp + P.origin, n, false, 0.0); }
   let grid = vec3f(P.grid.xyz);
   var c = grid * 0.5;
   let R = 0.5 * length(grid) + SHADOW_PAD;
@@ -190,6 +206,12 @@ fn particleProbe(t: texture_3d<f32>, p: vec3f) -> vec4f {
 }
 fn particleGI(p: vec3f, n: vec3f) -> vec3f {
   let at = p + n * GI_OFFSET;
+  // L's probe cascades at the world point (lightLookup.js lmProbeAt: light.js probeAt), the open sky past them
+  if (P.light == PARTICLE_WORLD) {
+    LM = LC;
+    let g = lmProbeAt(at + P.origin, particleGI0, particleGI1, particleGI2, particleGI3, linearClamp, FU.skyUp, FU.ground);
+    return lmIrradiance(g, n) + FU.caveAmbient;
+  }
   let c0 = particleProbe(particleGI0, at).rgb; let cx = particleProbe(particleGI1, at).rgb;
   let cy = particleProbe(particleGI2, at).rgb; let cz = particleProbe(particleGI3, at).rgb;
   return max(SH_Y0 * c0 + SH_COS1 * SH_Y1 * (cx * n.x + cy * n.y + cz * n.z), vec3f(0.0)) + FU.caveAmbient;

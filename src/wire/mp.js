@@ -25,6 +25,25 @@ const mp = {
         scene: win?.scene.key ?? app.settings.preset, seed: (win?.P.seed ?? 0) >>> 0,
         origin: sim.origin.toArray(), size: win?.size ?? [sim.g.nx, sim.g.ny, sim.g.nz], focus, away: document.hidden };
     };
+    // A guest's world copy (docs/seamless-world.md, "W"): the whole map built here from the host's scene and
+    // seed (setGrid made the window from the metadata's: the generator, its trees and structures, all
+    // deterministic in them), then the streamed window's cells over it (noteWindowReplaced, each frame), so
+    // the world march and the far field draw what the host's do. What the host changed outside the window
+    // it streams (a save's bricks, edits left behind before the guest joined) can't be known here: the
+    // copy shows the generated world there until the window passes over it. Drawing only: no window load,
+    // no slab fill (attachWorldCopy), no physics; a replica's window never moves itself (wire/world.js).
+    // Once a window: a session that starts over on the same map (sessionChanged) keeps the copy it has, its
+    // cells already the host's through each frame's writeback.
+    const copied = new WeakSet();
+    const buildGuestCopy = (win) => {
+      if (copied.has(win) || !app.worldView) return;
+      copied.add(win);
+      return app.worldView.build(win).then((copy) => {
+        if (app.win !== win || !app.mp.replica || !copy?.bindGroup) return;
+        win.far?.useWorldCopy?.(copy);   // the far field from it (world/far.js); one joining later takes it then
+        app.wakeLoop();
+      }, (err) => { copied.delete(win); throw err; });
+    };
     const avatars = createRemotePlayers({ scene: app.scene, renderer: app.renderer, camera: app.camera,
       getSim: () => app.sim, getVolume: () => app.volume });
     app.mp = createMultiplayer({
@@ -39,21 +58,26 @@ const mp = {
         if (role === 'guest' && app.mapKind.streamed) app.win.epoch++; // cancel outstanding local generator work
       },
       commitFrame(meta, bytes) {
+        // the frame's cells, written next in the same recording (net/codec.js), replace the window behind
+        // V2's record of change (it never ticks here): the copy's next writeback compares every window brick
+        // (world/worldCopy.js noteWindowReplaced)
+        app.worldView?.worldCopy.noteWindowReplaced();
         // a box host's frame: the sea past the walls where its water reaches them (app.js boxSeaFrom)
         if (!meta) { if (bytes) app.boxSeaFrom((x, y, z) => bytes[app.sim.cellTexel(x, y, z) * TEXEL_BYTES]); return; }
         const old = app.sim.origin.clone();
-        const moved = old.x !== meta.origin[0] || old.z !== meta.origin[2];
         const replaced = map !== meta.id;
         app.sim.origin.fromArray(meta.origin);
         app.placeVolume();
         app.pov?.windowShifted(meta.origin[0] - old.x, meta.origin[2] - old.z);
-        // Backdrop only, after the paired unpack write. Never refill replica cells.
-        if (app.mapKind.streamed && (replaced || moved)) {
+        // A new map: its world copy, after the paired unpack write (the build's own writeback of the
+        // window then holds this frame). A move rebuilds nothing: the copy is the whole world, and the
+        // moved window's cells reach it through the frame's writeback. Never refill replica cells.
+        if (app.mapKind.streamed) app.win.loaded = true;
+        if (app.mapKind.streamed && replaced) {
           const win = app.win, token = ++backdrop;
-          win.loaded = true;
           queueMicrotask(() => win.whenReady().then(() => {
-            if (token === backdrop && app.win === win && app.mp.replica) win.far?.build();
-          }).catch(() => {}));
+            if (token === backdrop && app.win === win && app.mp.replica) return buildGuestCopy(win);
+          }).catch((err) => console.error('multiplayer: the world copy was not built', err)));
         }
         if (replaced) {
           forceCatchup = true; warp++; app.post.reset();

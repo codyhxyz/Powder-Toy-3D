@@ -45,14 +45,14 @@ const BOOT_FRAMES = 600;               // frames xctrace may see before the pose
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, allowBattery: false, selfTest: false, help: false };
-  const flags = { '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, shot: false, allowBattery: false, selfTest: false, help: false };
+  const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
   const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
@@ -140,7 +140,13 @@ function installInPage({ frames, warmup, autores, paused, deadline }) {
       }
       await step('pipelines.settled', a.gpu.settled());
       readyWaitMs = Math.round(performance.now() - t0);
-      if (!autores) a.autoRes.enabled = false;   // frozen at the scale it has (the report says so)
+      // frozen at the preset's own scale (resolutionScale 1), not wherever adaptation left it, so two runs (a branch,
+      // live) draw the same pixels: adaptation would hand a faster build more of them (the report says the scale)
+      if (!autores) {
+        a.autoRes.enabled = false;
+        a.autoRes.scale = 1;
+        if (a.post?.settings) a.post.settings.resolutionScale = 1;
+      }
       a.settings.paused = !!paused;
       if (!a.prof.on) a.prof.enable(true);
       timing.labelTag = '@-';   // Metal encoders outside a pose's timed frames (gfx/profileCauses.js UNTIMED_TAG)
@@ -269,7 +275,11 @@ async function main() {
     }
     // a pose that stalls ends the poses, not the run: the ones captured still report, and the stall is said
     for (let i = 0; i < o.poseSpecs.length; i++) {
-      try { runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]]))); }
+      try {
+        runs.push(await answered(page.evaluate(([i, spec]) => window.__profTool.pose(i, spec), [i, o.poseSpecs[i]])));
+        // --shot: each pose's frame as the player sees it after its capture (frame-<i>-<pose>.png: a picture pair per pose for an A/B)
+        if (o.shot) { mkdirSync(o.out, { recursive: true }); writeFileSync(join(o.out, `frame-${i}-${o.poseSpecs[i].name}.png`), await page.screenshot()); }
+      }
       catch (e) {
         if (!runs.length) throw e;
         slot.poseError = `pose ${i} (${o.poseSpecs[i].name}): ${e.message.split('\n')[0]}`;

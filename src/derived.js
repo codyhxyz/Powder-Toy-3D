@@ -309,8 +309,8 @@ export class Derived {
     });
     sim.changedAll = false;
     sim.actNoted = false;
-    this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, book] });
-    this._dispatch(dirtyArgs, [1, 1, 1], { bind: [tables, this.gpu.emptyGroup, book] });
+    this._dispatch(dirty, this._perBrick, { header: this.sim.header(), bind: [tables, this.gpu.emptyGroup, book] });
+    this._dispatch(dirtyArgs, [1, 1, 1], { header: this.sim.header(), bind: [tables, this.gpu.emptyGroup, book] });
   }
 
   /** Toggle before updateBricks: rebuild existing fields, never simulation state. */
@@ -353,16 +353,16 @@ export class Derived {
     const air = this._nativeBrickAir();   // (built from V2's start, drawn once V2 draws: format 2)
     if (air && header.format === 2) this._dispatch(air.kernel, fold(Math.ceil(sim.g.nbricks / 64)), { bind: [tables, state, air.group], header });
     this.occupancy.update();   // over the brick map's list (every brick at a shift: its own onShift)
-    this._dispatch(k.boxArgs, [1, 1, 1], { bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
+    this._dispatch(k.boxArgs, [1, 1, 1], { header: this.sim.header(), bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
     this.boxFull = false;
     for (let axis = 0; axis < DIST_PASSES; axis++) {
-      this._dispatch(k.brickDist, this._region(REGIONS.DIST + axis), { bind: [tables, empty, gr.dist[axis]], params: { axis, region: REGIONS.DIST + axis } });
+      this._dispatch(k.brickDist, this._region(REGIONS.DIST + axis), { header: this.sim.header(), bind: [tables, empty, gr.dist[axis]], params: { axis, region: REGIONS.DIST + axis } });
     }
     const { fromBrick, aToB, bToA, aToLight } = gr.light;
     for (let i = 0; i < LIGHT_BLUR_PASSES; i++) {
       const last = i === LIGHT_BLUR_PASSES - 1;
       const group = last ? aToLight : i === 0 ? fromBrick : i & 1 ? aToB : bToA;
-      this._dispatch(last ? k.blurLast : k.blur, this._region(REGIONS.LIGHT + i), { bind: [tables, empty, group], params: { axis: i % 3, region: REGIONS.LIGHT + i } });
+      this._dispatch(last ? k.blurLast : k.blur, this._region(REGIONS.LIGHT + i), { header: this.sim.header(), bind: [tables, empty, group], params: { axis: i % 3, region: REGIONS.LIGHT + i } });
     }
   }
 
@@ -674,7 +674,7 @@ export class Derived {
     const sg = this._shiftGroups;
     // the per-brick buffers: the ages (re-aging the bricks shifted in and the faces'), the brick map, its distances
     for (const [buffer, group, words, age] of [[this.age, sg.age, 1, 1], [this.brick, sg.brick, 4, 0], [this.brickDist, sg.brickDist, 1, 0]]) {
-      this._dispatch(p.brickShift, this._perBrick, { bind: [tables, empty, group], params: { shift: sb, words, age } });
+      this._dispatch(p.brickShift, this._perBrick, { header: this.sim.header(), bind: [tables, empty, group], params: { shift: sb, words, age } });
       f.copy(this.scratchB, 0, buffer, 0, n * words * 4);
     }
     // (brickDist's axes and the glow volume's scratch didn't move: the next frame rebuilds them over every brick;
@@ -682,7 +682,7 @@ export class Derived {
     this.boxFull = true;
     this.giSrcAll = true;
     // the EMA and the normalised blur (the blur reads it where it doesn't recompute it: shaders/fields.js COVER), cell by cell
-    this._dispatch(p.fieldShift, fold(Math.ceil(g.slots / 64)), { bind: [tables, empty, sg.ema], params: { shift: [dx, 0, dz] } });
+    this._dispatch(p.fieldShift, fold(Math.ceil(g.slots / 64)), { header: this.sim.header(), bind: [tables, empty, sg.ema], params: { shift: [dx, 0, dz] } });
     f.copy(this.tmpA, 0, this.ema, 0, EMA_PLANES * g.slots * 4);
     f.copy(this.tmpB, 0, this.blurred, 0, BLURRED_PLANES * g.slots * 4);
     // the final fields: the region that stays in the window, moved
@@ -701,7 +701,7 @@ export class Derived {
     }
     // the GI probes (unless they start over anyway)
     if (!sim.giReset) {
-      this._dispatch(p.giShift, this._perBrick, { bind: [tables, empty, sg.gi], params: { shift: sb } });
+      this._dispatch(p.giShift, this._perBrick, { header: this.sim.header(), bind: [tables, empty, sg.gi], params: { shift: sb } });
       f.copy(this.tmpB, 0, this.giHist, 0, GI_BANDS * n * 8);
     }
   }

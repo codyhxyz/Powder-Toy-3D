@@ -90,7 +90,7 @@ try {
     await page.evaluate(async kind => {
       const a = __app, f = a.win.far;
       f.queue = f.queue.slice(-49);
-      while (f.queue.length) { f.sceneChunks(1); await a.gpu.fence(); }
+      while (f.queue.length) { f.chunks(1); await a.gpu.fence(); }
       await f.buildView();
       const cam = kind === 'shore' ? [[20, 32, 113], [94, 19, 83]] : [[106, 37, 110], [49, 20, 48]];
       const point = v => new a.THREE.Vector3(...v).multiplyScalar(a.scale).add(a.volume.position);

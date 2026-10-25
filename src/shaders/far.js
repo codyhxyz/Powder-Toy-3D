@@ -1,4 +1,4 @@
-import { prelude, STATE_OPTS, LAYOUT, BRICK } from './common.js';
+import { prelude, LAYOUT, BRICK } from './common.js';
 import { lib, libLayouts } from './gfx/lib.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { surfaceGLSL } from './gfx/surface.js';
@@ -12,6 +12,7 @@ import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 import { WORLD_SCENES } from '../world/scenes/index.js';
 import { presentationWGSL } from '../gfx/presentationMath.js';
+import { reachWGSL } from './world/reach.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
@@ -106,8 +107,10 @@ ${body}
 }`;
 /** A region kernel's dispatch over world bricks [lo, lo + size) (size along x, y, z). */
 export const regionDispatch = (size) => fold(Math.ceil(size[0] * size[1] * size[2] / 64));
+export { regionMain as farRegionMain };
 
-// Counting a brick's cells into its texel (both summaries: the generator's and the window's).
+// Counting a brick's cells into its texel (every summary: the scene's, farSceneFrag, and the world copy's,
+// shaders/world/farFromCopy.js, which imports it as FAR_COUNT_GLSL with regionMain as farRegionMain).
 const countGLSL = /* wgsl */ `
 // what stops light in the far field, and what is a transparent liquid
 fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID; }
@@ -170,6 +173,7 @@ fn farPack(c: ptr<function, FarCount>) -> vec4u {
   return farPackTexel(f);
 }
 `;
+export { countGLSL as FAR_COUNT_GLSL };
 
 // ---------------------------------------------------------------- trees
 // A scene with trees (scene.trees, world/scenes/index.js: the island's) has the
@@ -522,43 +526,6 @@ fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
 }
 `;
 
-// Window → far grid: the window's own state, brick by brick, for the region
-// being drawn (world bricks; H.origin the window's). Below the world counts as
-// rock, above it as air; a cube reaching past the window's sides repeats them.
-// Group 2: the grid, written.
-export const FAR_WIN_LAYOUT = [store(0, FAR_FORMATS.grid)];
-export const farWinFrag = (g, L) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RO)}
-${farLayoutGLSL(L)}
-${countGLSL}
-@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
-${regionMain(/* wgsl */ `
-  let gb = b - H.origin / BS;   // the grid's brick
-  if (any(gb < vec3i(0)) || any(gb >= vec3i(BX, BY, BZ))) { return; }
-  var c: FarCount;
-  let o = gb * BS;
-  for (var dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++) {
-    for (var dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
-      let col = clamp(o.xz + vec2i(dx, dz), vec2i(0), vec2i(NX, NZ) - 1);
-      let own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
-      var above = E_EMPTY;
-      // top down through the cube [-lo, BS + lo)
-      for (var dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
-        let y = o.y + dy;
-        var a = vec4f(f32(E_EMPTY), AMBIENT, 0.0, 0.0);
-        if (y < 0) { a = vec4f(f32(E_ROCK), AMBIENT, 0.0, 0.0); }
-        else if (y < NY) { a = fetchA(vec3i(col.x, y, col.y)); }
-        let id = eid(a);
-        if (farOpaque(id)) { c.s += 1.0; }
-        else if (farLiquid(id)) { c.l += 1.0; }
-        if (own && dy >= 0 && dy < BS) { farCell(&c, materialWord(id, appearanceOf(id, a.w)), above, a.y); }
-        above = id;
-      }
-    }
-  }
-  textureStore(farOut, b, farPack(&c));`)}
-`;
-
 // ---------------------------------------------------------------- scenes
 // A world scene's far grid (world/scenes/index.js) is summarized from its
 // sceneCell, a chunk of FAR_SCENE.CHUNK² brick columns at a time
@@ -569,8 +536,8 @@ ${regionMain(/* wgsl */ `
 //     buffer with low-16 material word and high-16 temperature half,
 //     its transient scene cells; saved bricks retain their original raw A/B.
 //   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
-//     farWinFrag does from the window's state (below the world rock, above it
-//     air), and for a scene with trees joins the trees in reach (farTrees),
+//     the world copy's summary does from its cells (shaders/world/farFromCopy.js;
+//     below the world rock, above it air), and for a scene with trees joins the trees in reach (farTrees),
 //     leaving out the brick columns the window has already summarized: the
 //     window's state wins wherever it has been (the window mask, a bit per
 //     world brick column).
@@ -891,6 +858,12 @@ ${columnMain('  textureStore(farShadowOut, bc, vec4f(heights(bc), 0.0, 1.0));')}
 // Constants of the view (cells unless said otherwise).
 export const FAR_VIEW = {
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
+  OVERLAP: BRICK,          // the march's span past the window's near face before it is left out: one far brick, so
+                           // where the coarse ground stands off the fine one at the face, the far hit fills the pixel
+                           // the world march leaves (it draws nothing that comes in through the ground: march.js)
+  SEA_SLIVER: 2.0,         // cells under the flat sea a ray may leave the window and still have crossed the window's
+                           // water surface just past its face (that surface's top cell part filled, its field's iso):
+                           // the world march stops at the face, so the sea it crossed fills the pixel (farFrag)
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
   NORMAL_STEP: 2.0,        // the normal's difference step (half a brick)
@@ -954,15 +927,26 @@ export const FarViewParams = uniformStruct('FarViewParams', {
   warpK: 'f32',
   warpAnchor: 'vec2f',
   warpDir: 'vec2f',
+  // 1: the world march draws the window this frame (app.js worldLit: the window's GI probes aren't kept);
+  // 0: the box volume does (the rolling log), with the window's light
+  march: 'u32',
 });
 
-// The view (docs/webgpu.md G1): a full-screen triangle drawn behind a big
-// map's volume (world/far.js drawBehind), depth tested, frag_depth computed
-// but not written, so the volume draws over it wherever it has cells. Sky,
-// the open sea beyond the world and the far grid (its ground, its liquids),
-// marched past the window's box, which the volume draws. Everything here is in world cells: its header's origin is 0, so the
+// The view (docs/webgpu.md G1): a full-screen triangle drawn before a big
+// map's volume, in its own pass (world/far.js drawPass), depth tested and
+// written (frag_depth: the hit's clip depth, the volume's convention), so the
+// nearer surface always wins where the two meet and TAA has the far ground's
+// depth. Sky, the open sea beyond the world and the far grid (its ground, its
+// liquids), marched past the window's box (shaders/world/reach.js windowSpan,
+// the world march's own span), which the world march (or the rolling log's box
+// volume) draws, and FAR_OVERLAP_CELLS into it at its near face.
+// Everything here is in world cells: its header's origin is 0, so the
 // looks' worldPos() is the identity, and what reads the window (the GI probes'
-// sky share and light) takes p - winLo.
+// sky share and light) takes p - winLo. Those probes are the box volume's
+// only: on the world march's frames (P.march) the window's light isn't kept
+// (app.js worldLit), so the view reads the far field's own sky share
+// (farSkyOpen) and shades a ray that comes out of the window inside opaque
+// ground as that ground's surface.
 //
 // The rolling log (gfx/presentation.js): curved, the view is a variant of its
 // own (a template switch, as the volume's: docs/webgpu.md F2), whose rays are
@@ -973,7 +957,8 @@ export const farFrag = (g, L, { curved = false, sourceAppearance = false } = {})
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
 ${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
-${presentationWGSL}${curved ? `
+${presentationWGSL}
+${reachWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
 var<private> gFarWorld: vec4f;
@@ -997,9 +982,10 @@ ${occupancyGLSL('read')}
 ${farSkyGLSL}
 ${FarViewParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;
-// the air's sky share at window point q: the probes in the window, the far field's sky past it
+// the air's sky share at window point q: the probes in the window (the box volume's frames), the far
+// field's sky past it and on the world march's frames (P.march: the window's probes aren't kept then)
 fn farAirSky(q: vec3f) -> f32 {
-  if (all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
+  if (P.march == 0u && all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
   return farSkyOpen(q + vec3f(P.winLo));
 }
 ${farHazeFor('farAirSky')}
@@ -1010,7 +996,9 @@ fn farTraceMatter(p: vec3f) -> f32 { return farMatter(p); }
 
 const FAR_MAX_STEPS: i32 = ${L.size.reduce((n, side) => n + side / BRICK, 16)};
 const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
+const FAR_OVERLAP_CELLS: f32 = ${glf(FAR_VIEW.OVERLAP)};
 const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
+const FAR_SEA_SLIVER: f32 = ${glf(FAR_VIEW.SEA_SLIVER)};
 const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
@@ -1340,7 +1328,8 @@ struct FarOut {
   gFarRay = warpRay(ro, rd);` : ''}
   let inv = 1.0 / rd;
   let winLo = vec3f(P.winLo);
-  var tw = farSlab(ro, inv, winLo, winLo + vec3f(GRID));
+  // the window's stretch, left out (the world march's or the box volume's), as the world march spans it
+  var tw = windowSpan(ro, rd, winLo, winLo + vec3f(GRID)).xy;
   if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
   let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
   var t0 = max(tb.x, 0.0);
@@ -1353,7 +1342,9 @@ struct FarOut {
   t1 = select(gFarWorld.y, gFarWorld.w, gFarWorld.z < WARP_INF);` : ''}
   var cut = false;
   var tHit = NO_HIT;
-  if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, tw.x, tw.y, &cut); }
+  // (the overlap: a face ahead of the eye only, so nothing coarse is drawn just in front of it)
+  let w0 = ${curved ? 'tw.x' : 'select(tw.x, min(tw.x + FAR_OVERLAP_CELLS, tw.y), tw.x > 0.0)'};
+  if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, w0, tw.y, &cut); }
   // the open sea beyond the world (and a march that ran out of steps over it).
   // A world without one (sea 0: world/scenes) has an open plain beyond it at
   // floor, and inside it a ray that met nothing reaches the world's bottom
@@ -1379,13 +1370,21 @@ struct FarOut {
     let p = farPath(ro, rd, tHit);
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
     let v = farSample(p);
-    if (cut) {
+    // (the world march's frames: a ray that comes out of the window inside opaque coarse ground, where the
+    // fine ground lies lower or was dug, is shaded as that ground's surface: the window's probes aren't kept)
+    if (cut && !(P.march != 0u && v.r >= v.g)) {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
       // the sun, in the probes' light just inside the window (none in a cave).
       // In its water: that water's body past the wall, so the window's water
       // carries on past its side.
       if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
+      // (the world march's frames: it crossed the sea inside the window and leaves it just under it, past a
+      // window water surface a hair under the flat sea, where the march stopped at the face (a thin dark line
+      // along the window's far faces): that sea's surface, at the exit's depth, so the march's water stays in front)
+      else if (P.march != 0u && !plain && seaWin && tSea < tHit && level - p.y <= FAR_SEA_SLIVER) {
+        col = farLiquid(ps, farDirection(rd, tSea), E_WATER, farSunLit(ps, 0), -1.0);
+      }
       else { col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0); }
     } else {
       let sunVis = farSunLit(p, 0);
@@ -1426,12 +1425,12 @@ export const FAR_VIEW_LAYOUTS = () => {
   const [, state, lighting, params] = libLayouts('LIGHTING');
   return [FAR_VIEW_FRAME, state, lighting, params];
 };
-/** The view's render pipeline description: the scene target's formats, depth less-equal, never written (drawn behind the volume), opaque. */
+/** The view's render pipeline description: the scene target's formats, depth less-equal and written (its pass, before the volume's), opaque. */
 export const farViewPipeline = () => ({
   vertex: { entry: 'vs' },
   fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
   primitive: { topology: 'triangle-list' },
-  depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'less-equal' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
 });
 
 // ---------------------------------------------------------------- check-wgsl
@@ -1447,10 +1446,6 @@ export const SCENE_CELLS_LAYOUT_OF = SCENE_CELLS_LAYOUT;
 export const TREE_CAND_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(TREE_CAND_BINDING, 'storage')];
 export const TREE_THIN_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(TREE_CAND_BINDING), buf(TREE_CAND_BINDING + 1, 'storage')];
 export const WGSL_CHECK = () => [
-  {
-    name: 'farWin', kind: 'compute', grids: ['64', '128'], warm: false, code: (g) => farWinFrag(g, Lw),
-    layouts: CHECK_LAYOUTS(FAR_WIN_LAYOUT, 'STATE_RO'), params: RegionParams, dispatch: () => regionDispatch([4, Lw.bricks.n[1], 32]),
-  },
   ...[false, true].map((trees) => ({
     name: `farScene${trees ? ' trees' : ''}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => farSceneFrag(g, Lw, trees),
     layouts: CHECK_LAYOUTS(FAR_SCENE_LAYOUT(trees)), params: RegionParams, dispatch: () => regionDispatch([16, Lw.bricks.n[1], 16]),

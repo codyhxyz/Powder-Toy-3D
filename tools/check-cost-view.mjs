@@ -3,6 +3,8 @@
 //  1. Same code: for every lit view, detail level, flat/curved and read format, the cost module is
 //     the normal module plus counter spans only (shaders/costView.js verifyCost: stripping the spans
 //     gives the normal text byte for byte, and each span is a counter line), and every counter counts.
+//     The same for the world march (shaders/world/march.js) of every lit view and level: the whole
+//     march, and each split stage (march, reflect, shade), whose counters together count them all.
 //     Every cell step also counts its brick's class (cellSteps = cellStepsOwn + Dilated + Interior),
 //     and every main-march skipEmpty its length (skipCells).
 //  2. Off is off: the normal modules' hashes are the same before shaders/costView.js is imported,
@@ -14,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { volumeFrag, REALISTIC_LEVELS, VOLUME_VIEWS, VOLUME_LAYOUTS } from '../src/shaders/render.js';
 import { isMaterialView } from '../src/views.js';
 import { gridLayout } from '../src/sim.js';
+import { worldMarchFrag, MARCH_STAGES, marchSplits, WORLD_MARCH_LAYOUTS } from '../src/shaders/world/march.js';
 import { nagaExec } from './naga.mjs';
 
 const argv = process.argv.slice(2);
@@ -37,10 +40,22 @@ for (const view of VOLUME_VIEWS.filter(isMaterialView)) {
   }
 }
 
+// the world march: its modules are one per (view, detail, stage) for every map (physics' grid only
+// sizes the physics-indexed reads)
+const PHYS = gridLayout(128, 128, 128);
+for (const view of VOLUME_VIEWS.filter(isMaterialView)) {
+  for (const [level, d] of Object.entries(REALISTIC_LEVELS)) {
+    for (const stage of ['whole', ...(marchSplits(d()) ? MARCH_STAGES : [])]) {
+      variants.push({ name: `world.${view}.${level}.${stage}`, split: stage === 'whole' ? null : `${view}.${level}`,
+        stage, code: () => worldMarchFrag(PHYS, { view, detail: d(), stage }) });
+    }
+  }
+}
+
 // 2: hashes before the cost module exists in this process
 const before = new Map(variants.map((v) => [v.name, sha(v.code())]));
 const { costify, verifyCost, stripCost, costBinding, costRequired, COST_KINDS } = await import('../src/shaders/costView.js');
-const optsOf = () => ({ binding: costBinding(VOLUME_LAYOUTS()[0]) });
+const optsOf = (v) => ({ binding: costBinding(v.stage ? WORLD_MARCH_LAYOUTS(undefined, v.stage)[0] : VOLUME_LAYOUTS()[0]), ...(v.split ? { require: [] } : {}) });
 const splitCounts = new Map();   // a split's stages: the counters each counts
 
 let failed = 0;
@@ -75,7 +90,7 @@ for (const [name, set] of splitCounts) {
 for (const v of variants) if (sha(v.code()) !== before.get(v.name)) fail(`${v.name}: the normal module changed after counting`);
 
 if (argv.includes('--hashes')) console.log(JSON.stringify(Object.fromEntries(before), null, 1));
-console.log(`${variants.length} variants (${splitCounts.size} split marches): cost = normal + counter spans${NAGA ? `, ${naga.size} distinct cost modules valid under naga` : ''}, normal hashes unchanged`);
+console.log(`${variants.length} variants (box volume and world march, ${splitCounts.size} split marches): cost = normal + counter spans${NAGA ? `, ${naga.size} distinct cost modules valid under naga` : ''}, normal hashes unchanged`);
 if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
 
 // 4. The readback's arithmetic on synthetic texels: the decode keeps exact integers and coverage, the

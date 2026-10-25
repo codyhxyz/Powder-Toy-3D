@@ -6,7 +6,7 @@
 // ready wire has an overlay hook, and an empty pass that loads and stores the
 // scene target isn't free on a tiled GPU.
 // V1's photon layer (raysLayer.js) went with V1: the same particles and sprites, V2's owner.
-import { NativeParticles, boxParticleLight } from '../gfx/nativeParticles.js';
+import { NativeParticles, boxParticleLight, worldParticleLight } from '../gfx/nativeParticles.js';
 import { particleLagSeconds } from '../v2/host.js';
 
 function nativeLayer(app) {
@@ -46,8 +46,11 @@ const rays = {
   scene(app, rp) {
     const t = app.post.sceneTarget;
     // (the volume's light, as V1's flying cells take it: the Box's sun map and GI, from the GPU volume, app.vol, not
-    // the three Object3D app.volume, which holds only its matrix)
-    if (app.sim.compact && app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t, boxParticleLight(app.vol, app.derived, app.sim.gpu));
+    // the three Object3D app.volume, which holds only its matrix; on frames the world march draws, L's world light)
+    if (app.sim.compact && app.nativeParticles?.isReady) {
+      const light = app.worldLight ? worldParticleLight(app.worldLight, app.vol, app.sim.gpu) : boxParticleLight(app.vol, app.derived, app.sim.gpu);
+      app.nativeParticles.draw(rp, t, light);
+    }
   },
   // particles fly between frames: the loop keeps ticking while any may be
   // alive, unless paused (they fly only with the steps; a load wakes the layer

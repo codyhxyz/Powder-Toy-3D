@@ -280,8 +280,7 @@ export function attachCostView(app) {
     }, { vals, covered, count, w, h, kind, caps: COST_KINDS.map((_, s) => (s === 0 ? COST_MARCH_MAX : COST_MAX)) });
   }
 
-  // ---- the world march (gfx/worldView.js, the seamless-world branch): the split stages, or the whole march ----
-  // (absent on a build without it: app.worldView is undefined, newest() never picks this path)
+  // ---- the world march (gfx/worldView.js): the split stages, or the whole march ----
   // the split stages in their order (the record's pipelines: worldView builds them march, reflect, shade)
   const stagesOf = (rec) => (rec.split ? Object.keys(rec.pipe.parts) : ['whole']);
   // Each stage's twin writes its counters into a storage texture of its own, read back as it is:

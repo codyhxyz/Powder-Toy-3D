@@ -13,8 +13,8 @@ import {
   paintUpdateWGSL, PaintParams, PAINT_LAYOUT, paintDeclsWGSL, freshFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT,
   rectToAtlasFrag, RectParams,
 } from './shaders/passes.js';
-import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT } from './shaders/window.js';
-import { stateLayout } from './shaders/common.js';
+import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT, slabZeroFrag, SlabZeroParams, SLAB_ZERO_LAYOUT } from './shaders/window.js';
+import { stateLayout, ringOf } from './shaders/common.js';
 import { uniformStruct } from './gpu/params.js';
 import { fold } from './gpu/kernels.js';
 import { TOOLS, PROP_TOOL, isDecoTool } from './elements.js';
@@ -248,6 +248,12 @@ export class Simulation {
     // that is its whole world stays at 0; shift() moves it.
     this.origin = new Vec3();
     this.originUniform = { value: this.origin };   // (for the render setup until it reads the header)
+    // Ring addressing (shaders/common.js ringOf; world/physicsRegion.js): a ringed grid's slot space is
+    // rotated by its origin, so a world cell keeps its slot and a move rewrites only the slab it uncovers
+    // (_shiftRing). Set by the physics region's window before anything is written (setRinged); the JS
+    // mirrors (cellSlot, brickIdOf) read it through g.ring.
+    this.ringed = false;
+    Object.defineProperty(this.g, 'ring', { get: () => (this.ringed ? ringOf(this.g, this.origin) : 0), enumerable: false, configurable: true });
     // the derived passes (attachDerived), TPT's decoration layer (attachDeco: src/deco.js, U17)
     this.derived = null;
     this.deco = null;
@@ -310,6 +316,8 @@ export class Simulation {
       fresh: () => kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
       shift: () => kernel('shift', shiftFrag(g, dbg), [L.STATE_RW], ShiftParams),
       flowShift: () => kernel('flowShift', flowShiftFrag(g), [gpu.L.EMPTY, L.FLOW_SHIFT], ShiftParams),
+      // (a ringed grid's move: _shiftRing)
+      slabZero: () => kernel('slabZero', slabZeroFrag(g), [gpu.L.EMPTY, (this._slabZeroLayout ??= gpu.layout('SLAB_ZERO', SLAB_ZERO_LAYOUT))], SlabZeroParams),
     };
     // a window of a larger world moves; tools read the state back from their first call
     if (windowed) for (const k of ['shift', 'flowShift']) this.passOf(k);
@@ -439,7 +447,20 @@ export class Simulation {
    * default: an edit's).
    */
   header(src = this.cur, dst = src) {
-    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0, capture: this.compactOwner?.isReady ? (this.compact === this.compactOwner ? 2 : 1) : 0 };
+    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0, capture: this.compactOwner?.isReady ? (this.compact === this.compactOwner ? 2 : 1) : 0,
+      ring: this.g.ring, ringed: this.ringed ? 1 : 0 };
+  }
+  /**
+   * Lay the grid out by ring addressing (on) or not, before anything is written to it (the physics
+   * region's window does, at construction: world/window.js). At origin 0 the ring is 0, the layout the
+   * same either way; anywhere else every slot-ordered buffer would change meaning, so it refuses.
+   */
+  setRinged(on) {
+    on = !!on;
+    if (on === this.ringed) return;
+    if (ringOf(this.g, this.origin) !== 0) throw new Error('ring addressing is chosen while the window is at origin 0');
+    this.ringed = on;
+    if (on) { this.passOf('slabZero'); this._slabZeroLayout ??= this.gpu.layout('SLAB_ZERO', SLAB_ZERO_LAYOUT); }
   }
 
   // Writer/readback compatibility boundaries. Internal compact kernels bind
@@ -956,6 +977,13 @@ export class Simulation {
    */
   onShift(fn) { this._shiftListeners.push(fn); return () => { this._shiftListeners = this._shiftListeners.filter((x) => x !== fn); }; }
 
+  /**
+   * Called at the start of every window move, before anything moves (the world copy writes back what physics
+   * changed while the window is still where it changed it: world/worldCopy.js): fn(dx, dz).
+   * @param {(dx: number, dz: number) => void} fn
+   */
+  onBeforeShift(fn) { (this._beforeShift ??= []).push(fn); return () => { this._beforeShift = this._beforeShift.filter((x) => x !== fn); }; }
+
   // Move the window over the world (docs/scaling.md D11) by (dx, 0, dz) world
   // cells, whole supertiles: cell p takes the state of p + (dx, 0, dz), so the
   // content moves the other way and stays put in the world. Cells shifted in
@@ -965,10 +993,13 @@ export class Simulation {
   // only before the owner presents the window. The flow field moves with the
   // cells; the derived passes move their own (onShift). Undo snapshots keep the
   // window where they were taken (undo maps them across).
-  shift(dx, dz) {
+  // picture: false on a physics-only move (world/physicsRegion.js PHYSICS_ONLY_MOVE): the picture reads
+  // the world copy, so the derived passes' and occupancy's onShift are not run and nothing re-ages.
+  shift(dx, dz, { picture = true } = {}) {
     if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
       throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
     }
+    if (this.ringed) return this._shiftRing(dx, dz, { picture });
     const native = this.compactOwner?.isReady ? this.nativeIntegration : null;
     if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
     // Legacy shifting is a cache move, never permission to reimport the entire native grid.
@@ -978,6 +1009,7 @@ export class Simulation {
     // (exportLegacy with no projection current: BRIDGE.ALL) before anything reads it. Moving it cost
     // a second copy of V1's state (36 B a slot) and a whole-window copy of it every move.
     const v2 = this.compact?.isReady ? this.compact : null;
+    for (const fn of this._beforeShift ?? []) fn(dx, dz);
     native?.shift(dx, dz);
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
     if (v2) v2.legacyNative = undefined;
@@ -994,7 +1026,7 @@ export class Simulation {
     f.copy(this.flowTmp, 0, this.flow, 0, this.flow.size);
     this.origin.x += dx;
     this.origin.z += dz;
-    for (const fn of this._shiftListeners) fn(dx, dz, f);
+    if (picture) for (const fn of this._shiftListeners) fn(dx, dz, f);
     this.deco?.shift?.(dx, dz, f);   // the decoration moves with its cells (src/deco.js)
     if (!this.shiftKeepsHistory) {
       this.fieldReset = this.giReset = true;
@@ -1005,7 +1037,69 @@ export class Simulation {
     native?.shifted();
     // the derived passes shift their own history by whole bricks and re-age
     // only the slab and the edges (docs/webgpu.md E); without that, all of it
-    if (!this.derived?.shiftsBricks) this.changedAll = true;
+    if (picture && !this.derived?.shiftsBricks) this.changedAll = true;
+    if (!picture) this.changedAll = this.giReset = true;   // (the data views derive again whole: _shiftRing)
+    this.wake();
+  }
+
+  // A ringed grid's move (setRinged; shaders/common.js ringOf; world/physicsRegion.js): the same move as
+  // shift's, with nothing copied. A ringed world cell keeps its slot wherever the window is, so the cells,
+  // the flow, the requests and the decoration stay where they are, and the slab the move uncovers, which is
+  // the leaving slab's memory, is rewritten: V2's half before the origin moves (the leaving slab's dynamics,
+  // under the old ring) and after (the uncovered slab, under the new: v2/integration.js ringEnter), V1's
+  // shift with each kept cell taken from its own slot (heldSlot) while V1 still holds the cells, and the
+  // flow's and the decoration's slab zeroed. Clipmaps' toroidal update (Losasso & Hoppe 2004).
+  _shiftRing(dx, dz, { picture = true } = {}) {
+    const native = this.compactOwner?.isReady ? this.nativeIntegration : null;
+    if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
+    const v2 = this.compact?.isReady ? this.compact : null, g = this.g, f = this.gpu.frame, shift = [dx, 0, dz];
+    const width = Math.abs(dx || dz), axis = dx ? 0 : 2, dims = [g.nx, g.ny, g.nz];
+    const bricks = dims.map((n, a) => (a === axis ? width : n) / 4), lo = dims.map((n, a) => (a === axis && shift[a] > 0 ? n - width : 0));
+    const count = bricks[0] * bricks[1] * bricks[2] * 64, size = fold(Math.ceil(g.slots / 64));
+    // (before anything moves, under the old ring: the world copy's writeback of what physics changed, W's)
+    for (const fn of this._beforeShift ?? []) fn(dx, dz);
+    const leave = native?.ringLeave(dx, dz);
+    this.origin.x += dx;
+    this.origin.z += dz;
+    native?.ringEnter(leave);
+    if (v2) v2.legacyNative = undefined;
+    else {
+      this.pingPong(true);
+      this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
+      this.cur = 1 - this.cur;
+    }
+    const zero = this.passOf('slabZero'), groupOf = (buffer) => this.gpu.bindGroup(this._slabZeroLayout, [{ binding: 0, resource: { buffer } }], 'slab zero');
+    const zeroSlab = (group, base, words) => this._dispatch(zero, fold(Math.ceil(count / 64)), {
+      bind: [this.tables, this.gpu.emptyGroup, group], header: this.header(), params: { lo, bricks, count, base, words } });
+    const deco = this.deco;
+    if (zero.state === 'ready') {
+      zeroSlab((this._flowZeroGroup ??= groupOf(this.flow)), 0, 2);   // (the flow: vec2u a slot)
+      if (deco?.active) {
+        if (!deco.kernelsReady) { console.warn('deco: the window moved before the decoration\'s kernels were built; its paint is dropped'); deco.reset(); }
+        else zeroSlab(groupOf(deco.plane.buffer), deco.plane.offset / 4, 1);
+      }
+    } else {
+      // (its kernel still building: the whole-window moves, each kept word from its own slot under the ring)
+      this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      this._flowShiftGroup ??= this.gpu.bindGroup(this.L.FLOW_SHIFT, [
+        { binding: 0, resource: { buffer: this.flow } }, { binding: 1, resource: { buffer: this.flowTmp } }], 'flow shift');
+      this._dispatch(this.passOf('flowShift'), size, { bind: [this.tables, this.gpu.emptyGroup, this._flowShiftGroup], header: this.header(), params: { shift } });
+      f.copy(this.flowTmp, 0, this.flow, 0, this.flow.size);
+      deco?.shift?.(dx, dz, f);
+    }
+    if (picture) for (const fn of this._shiftListeners) fn(dx, dz, f);
+    if (!this.shiftKeepsHistory) {
+      this.fieldReset = this.giReset = true;
+      this.stillFlow();
+    }
+    this.version++;
+    this.wholeWrites++;
+    native?.shifted();
+    if (picture && !this.derived?.shiftsBricks) this.changedAll = true;
+    // A physics-only move doesn't carry the derived passes' history (the world march reads the world copy):
+    // the data views, which still draw from them (app.js: frames the march doesn't light), derive it again
+    // whole the next time they run, as coming back to the window's light does.
+    if (!picture) this.changedAll = this.giReset = true;
     this.wake();
   }
 

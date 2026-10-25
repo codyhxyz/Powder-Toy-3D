@@ -711,7 +711,8 @@ function cpuChecks(M, { check }) {
   const { Tables } = M.tableLayout();
   check(`the tables' buffer is the struct's size (${Tables.size} B)`, M.tablesBuffer().byteLength === Tables.size);
   check('a brick record packs into 16 bytes (vec3f emit + u32 info)', M.BrickInfo.size === 16);
-  check('the header is 32 bytes (vec3i origin, src, dst)', M.Header.size === 32 && M.Header.offsetOf('src') === 12 && M.Header.offsetOf('dst') === 16);
+  check('the header is 48 bytes (vec3i origin, src, dst, format, capture, the ring\'s two words)', M.Header.size === 48 && M.Header.offsetOf('src') === 12 && M.Header.offsetOf('dst') === 16
+    && M.Header.offsetOf('ring') === 28 && M.Header.offsetOf('ringed') === 32);
   const marks = M.marksLayout({ nx: 128, ny: 384, nz: 128 });
   check('the giant volcano window\'s marks fit (98,304 bricks)', marks.words === 2 * 3072 + 98304 + 1, JSON.stringify(marks));
 }

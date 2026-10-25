@@ -111,7 +111,7 @@ try {
     const o0 = [sim.origin.x, sim.origin.z];
     w.load([o0[0], 0, o0[1]]);
     f.queue = f.queue.slice(-FAR_CHUNKS);
-    while (f.queue.length) { f.sceneChunks(1); await a.gpu.fence(); }
+    while (f.queue.length) { f.chunks(1); await a.gpu.fence(); }
     window.__keep('far', await a.gpu.readback.texture(f.grid));
     window.__keep('win0', await window.__cells(sim));
     return { origin: o0, dims: [g.nx, g.ny, g.nz], far: f.L.bricks.n };
