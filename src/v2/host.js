@@ -146,50 +146,132 @@ export function tickCounter() {
   return since;
 }
 
-// The physics time governor: physics may take PHYSICS_BUDGET_MS of the GPU's time a 60 Hz frame
-// (its share of wall time). Each frame earns that share of its own time as credit and each tick
-// spends its measured GPU cost; a frame without the credit for a tick runs none, and game time
-// slows instead of the frame rate (The Powder Toy's and Minecraft's lag: the world slows, the
-// screen keeps moving), never more ticks to catch up. The cost is timed on the queue: the work
-// before the ticks and the ticks go as submissions of their own, and a tick's cost is from the
-// earlier work's completion to its own.
+// The physics time governor: physics may take PHYSICS_BUDGET_MS of the GPU's time a frame (at most its
+// share of a 60 Hz frame's wall time), and a tick is recorded a stage at a time (v2/physics.js
+// TICK_STAGES), so an expensive tick spreads over frames instead of stretching one: the frame rate holds
+// and game time slows (The Powder Toy's and Minecraft's lag: the world slows, the screen keeps moving),
+// never more ticks to catch up. Each frame earns its budget as credit into a bank of BANK_FRAMES budgets
+// and spends at most its own budget on stages, each at its measured GPU cost, so no frame records more
+// than its budget; a stage that costs more than a budget runs alone, in a frame whose bank holds a whole
+// budget, and later frames repay the rest (deficit round robin). Physics gets its budget a frame on
+// average: what a frame leaves unspent waits in the bank for the next stage, not lost.
+// A stage's cost is the GPU's own clock: its compute passes are its own (gpu.frame.endPass around it),
+// each with begin and end timestamps (gpu.frame.passTimer), read back a frame or two later; while the
+// profiler times every pass (gpu.timing), its times of the same passes. Timed by the queue's completion
+// callbacks before, which land about a frame late in Chrome, every stage of a quiet box cost a whole
+// frame (~30 ms each, 2026-10-25) and a quiet world ran 3 ticks a second; timestamps of empty passes
+// came back out of order on Metal. Without timestamp queries nothing is priced, and the frame's due
+// ticks are recorded whole, as before the governor.
 export const PHYSICS_BUDGET_MS = 10;
 const PHYSICS_SHARE = PHYSICS_BUDGET_MS * HOST_HZ / 1000;   // of wall time
-const COST_WEIGHT = 0.2;   // a new tick's weight in the running cost
+const BANK_FRAMES = 2;   // the credit kept is this many frames' budgets at most: a quiet spell banks no burst
+const COST_RISE = 0.5;   // a new sample's weight in a stage's running cost when it costs more (a blast starting)...
+const COST_FALL = 0.2;   // ...and when it costs less
+const SLOTS_MAX = 512;        // timestamp slots a frame: two a pass (a tick's stages open a few dozen passes)
+const PASS_MAX_MS = 1000;     // a pass's span past this is a broken timestamp, not a cost
+const NS_PER_MS = 1e6;
+const QUERY_RESOLVE = 0x200;  // GPUBufferUsage.QUERY_RESOLVE
+const COPY_SRC = 0x4;         // GPUBufferUsage.COPY_SRC
 export function createPhysicsGovernor(gpu) {
-  let ms = 0, credit = 0;
+  const cost = new Map();   // stage name -> its GPU cost, ms (absent: not measured yet)
+  const timed = !!gpu.device?.features?.has?.('timestamp-query');
+  let credit = 0, spent = 0, queries = null, resolved = null, slots = 0, last = [];
+  let own = [];        // this frame's stages on our timestamps: { stage, slots }
+  let profiled = [];   // stages on the profiler's: { stage, passes }, until their frame's times land
+  const costOf = (stage) => cost.get(stage) ?? 0;
+  const learn = (stage, ms) => {
+    last.push([stage, ms]);
+    const was = cost.get(stage);
+    cost.set(stage, was === undefined ? ms : was + (ms > was ? COST_RISE : COST_FALL) * (ms - was));
+  };
+  const span = (begin, end) => {
+    const ms = Number(end - begin) / NS_PER_MS;
+    return ms >= 0 && ms < PASS_MAX_MS ? ms : null;
+  };
+  // the timestamp slots of a pass the stage begins (gpu.frame.passTimer)
+  const passTimer = (entry) => () => {
+    if (slots + 2 > SLOTS_MAX) { entry.unpriced = true; return {}; }
+    queries ??= gpu.device.createQuerySet({ label: 'physics stage passes', type: 'timestamp', count: SLOTS_MAX });
+    resolved ??= gpu.device.createBuffer({ label: 'physics stage passes', size: SLOTS_MAX * 8, usage: QUERY_RESOLVE | COPY_SRC });
+    const at = slots;
+    slots += 2;
+    entry.slots.push(at);
+    return { timestampWrites: { querySet: queries, beginningOfPassWriteIndex: at, endOfPassWriteIndex: at + 1 } };
+  };
   return {
-    /** A recording tick's GPU cost, ms (0: not measured yet). */
-    get ms() { return ms; },
-    /** The recording ticks a frame of dt seconds may run. Credit holds a frame's budget at most (or one
-     * tick, when a tick costs more), so a quiet spell doesn't bank a burst. */
-    allow(dt) {
-      credit = Math.min(credit + Math.max(0, dt) * 1000 * PHYSICS_SHARE, Math.max(ms, PHYSICS_BUDGET_MS));
-      return ms > 0 ? Math.floor(credit / ms) : Infinity;
+    /** Each stage's running GPU cost, ms ({ stage: ms }: the profiler's and tools' view). */
+    get costs() { return Object.fromEntries(cost); },
+    /** The stages timed most recently, [stage, ms] in the order their times landed. */
+    get last() { return last; },
+    /** The credit this frame has left, ms. */
+    get credit() { return credit; },
+    /** Whether stages are priced (the device has timestamp queries). */
+    get timed() { return timed; },
+    /** A recording tick's GPU cost, ms (its stages' running costs; 0: not measured yet). */
+    get ms() { let sum = 0; for (const c of cost.values()) sum += c; return sum; },
+    /** A frame of dt seconds starts: its budget into the bank (a long stage's debt carries over). */
+    earn(dt) {
+      const earned = Math.min(Math.max(0, dt) * 1000 * PHYSICS_SHARE, PHYSICS_BUDGET_MS);
+      credit = Math.min(credit + earned, BANK_FRAMES * PHYSICS_BUDGET_MS);
+      spent = 0;
     },
-    /** Runs record() (it returns the ticks it recorded), timed on the queue, and charges them. */
-    measure(record) {
-      gpu.frame.flush('physics governor: before the ticks');
-      let start = performance.now();
-      gpu.queue.onSubmittedWorkDone().then(() => { start = Math.max(start, performance.now()); }, () => {});
-      const n = record();
-      if (n > 0) {
-        credit -= n * ms;
-        gpu.frame.flush('physics governor: the ticks');
-        gpu.queue.onSubmittedWorkDone().then(() => {
-          const each = (performance.now() - start) / n;
-          ms = ms > 0 ? ms + COST_WEIGHT * (each - ms) : each;
-        }, () => {});
+    /** Whether the frame may record `stage`: within its budget and the bank's credit, or alone (a stage
+     * past a budget, once the bank holds a whole one). */
+    fits(stage) {
+      const c = costOf(stage);
+      return spent === 0 ? credit >= Math.min(c, PHYSICS_BUDGET_MS) : spent + c <= PHYSICS_BUDGET_MS && credit >= c;
+    },
+    /** Records a stage (record() returns whether it ended the tick) in passes of its own, timed, and charges it. */
+    run(stage, record) {
+      if (!timed) return record();
+      const frame = gpu.frame, entry = { stage, slots: [], passes: [], unpriced: false };
+      const profiling = !!gpu.timing?.enabled;
+      frame.endPass();
+      const stop = profiling ? gpu.timing.addPassListener((p) => entry.passes.push(p)) : null;
+      if (!profiling) frame.passTimer = passTimer(entry);
+      credit -= costOf(stage);
+      spent += costOf(stage);
+      try {
+        return record();
+      } finally {
+        frame.endPass();
+        frame.passTimer = null;
+        stop?.();
+        (profiling ? profiled : own).push(entry);
       }
-      return n;
+    },
+    /** The frame's stages are recorded: their timestamps resolved and read back, each stage's cost learnt;
+     * and the stages the profiler timed whose frame's times have landed. */
+    settle() {
+      last = [];
+      profiled = profiled.filter((e) => {
+        if (e.passes.some((p) => !p.error && p.end === undefined)) return true;   // (its frame's times are still coming)
+        const spans = e.passes.map((p) => (p.error ? null : span(p.begin, p.end)));
+        if (!spans.includes(null)) learn(e.stage, spans.reduce((a, b) => a + b, 0));
+        return false;
+      });
+      const entries = own, used = slots;
+      own = [];
+      slots = 0;
+      if (!used) { for (const e of entries) if (!e.unpriced) learn(e.stage, 0); return; }
+      gpu.frame.direct().resolveQuerySet(queries, 0, used, resolved, 0);
+      gpu.readback.buffer(resolved, 0, used * 8).then((bytes) => {
+        const t = new BigUint64Array(bytes);
+        for (const e of entries) {
+          if (e.unpriced) continue;
+          const spans = e.slots.map((at) => span(t[at], t[at + 1]));
+          if (!spans.includes(null)) learn(e.stage, spans.reduce((a, b) => a + b, 0));
+        }
+      }, () => {});
     },
   };
 }
 
-// max: the recording ticks the governor allows this frame (createPhysicsGovernor allow); past it the
-// frame runs fewer and the accumulator starts over (game time slows). owner.recordedTicks: the ticks
-// this call recorded (a resting box's cost nothing).
-export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, after, max = Infinity } = {}) {
+// governor: the app's (createPhysicsGovernor): the frame's ticks are recorded a stage at a time while
+// its credit lasts (owner.beginTick / stepTick), a tick in flight going on in the next frames; the ticks
+// due meanwhile wait, at most the catch-up's, past it game time slows. Without one (tools, fixtures,
+// an owner without stages) the frame's due ticks are recorded whole. Returns the ticks the frame ended.
+export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, after, governor = null } = {}) {
   if (!owner?.isReady || owner.disposed || owner.sim.nativeTransition || owner.sim.nativeTransitionError) return 0;
   if (!Number.isFinite(dt) || !Number.isFinite(speed) || speed < 0) throw new Error('Invalid native host time');
   owner.activate();
@@ -199,12 +281,50 @@ export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, af
   // machines) and the clocks keyed on its steps go on while it records nothing (nativeHostTick rest).
   const due = frameTicks(owner.acc, dt, speed);
   owner.acc = due.acc;
-  let n = once ? Math.max(1, due.n) : due.n;
-  if (!once && !owner.asleep && n > max) { n = max; owner.acc = 0; }
-  let recorded = 0;
-  for (let i = 0; i < n; i++) recorded += nativeHostTick(owner, { before, after, rest: true });
-  owner.recordedTicks = recorded;
-  return n;
+  if (!governor || typeof owner.beginTick !== 'function') {
+    const n = once ? Math.max(1, due.n) : due.n;
+    for (let i = 0; i < n; i++) nativeHostTick(owner, { before, after, rest: true });
+    return n;
+  }
+  let ended = 0;
+  if (once) {
+    // a single step (paused): the tick in flight and one more, whole
+    if (owner.tickInFlight) { owner.finishTick(); ended++; }
+    owner.owed = 0;
+    nativeHostTick(owner, { before, after, rest: true });
+    return ended + 1;
+  }
+  const max = Math.max(1, Math.ceil(CATCH_UP_TICKS * speed));
+  let owed = (owner.owed ?? 0) + due.n;
+  if (owed > max) { owed = max; owner.acc = 0; }
+  governor.earn(dt);
+  for (;;) {
+    if (!owner.tickInFlight) {
+      if (owed <= 0) break;
+      owed--;
+      if (!beginHostTick(owner, before, after)) { ended++; continue; }   // (at rest: its clock alone)
+    }
+    if (!governor.fits(owner.nextStage)) break;
+    if (governor.run(owner.nextStage, () => owner.stepTick())) ended++;
+  }
+  governor.settle();
+  owner.owed = owed;
+  return ended;
+}
+// A host tick that records in stages: before() now, then the tick begun (stepTick records it), its clock
+// and after() when its last stage is recorded. A box still at rest after before() records nothing: its
+// clock and after() now, false (nativeHostTick's rest).
+function beginHostTick(owner, before, after) {
+  before?.();
+  const frame = owner.sim.frame;
+  const done = () => {
+    if (owner.sim.frame === frame) owner.sim.frame++;
+    owner.sim.nativeTicks = (owner.sim.nativeTicks ?? 0) + 1;
+    after?.();
+  };
+  if (owner.asleep) { done(); return false; }
+  owner.beginTick(done);
+  return true;
 }
 /**
  * One host tick: before(), the native tick, after(). rest: a box still certified idle after before()

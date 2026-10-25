@@ -42,6 +42,9 @@ export class GpuFrame {
     this._flushNo = 0;
     this._submitsAtEnd = 0;
     this._last = '';
+    /** null, or () => extra GPUComputePassDescriptor fields for each compute pass this frame begins (the
+     * physics governor's timestampWrites while a stage records: v2/host.js createPhysicsGovernor) */
+    this.passTimer = null;
   }
 
   /** True while an encoder holds commands not yet submitted. */
@@ -92,7 +95,7 @@ export class GpuFrame {
     if (this._passKind === 'compute' && !(opts?.dispatch && timing.split && timing.enabled)) return this._pass;
     if (this._passKind === 'render') throw new Error(`gpu.frame.compute("${name}") while render pass "${this._passName}" is open`);
     this._endPass();
-    const desc = { label: name };
+    const desc = { label: name, ...this.passTimer?.() };
     this._pass = this._encoder().beginComputePass(desc);
     this._passKind = 'compute';
     this._passName = name;
@@ -160,6 +163,9 @@ export class GpuFrame {
   clear(buffer, offset = 0, size = buffer.size - offset) {
     this.direct().clearBuffer(buffer, offset, size);
   }
+
+  /** Ends an open compute pass, so the next command begins a pass of its own (a render pass is its owner's). */
+  endPass() { if (this._passKind === 'compute') this._endPass(); }
 
   _endPass() {
     const p = this._pass;

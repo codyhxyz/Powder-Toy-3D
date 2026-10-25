@@ -110,6 +110,7 @@ export function resetNativeDynamics(owner) {
   const d = owner?.dynamics, sim = owner?.sim;
   if (!d) return;
   if (sim.nativeTransitionKind === 'shift') throw new Error('Cannot replace a world during its native shift');
+  owner.finishTick?.();   // (the old world's tick in flight ends on it: v2/physics.js beginTick)
   const token = owner.dynamicResetToken = {};
   // A replaced world takes the requests made of the old one with it: the dynamics' own queues (the
   // empty state below) and, while their kernels build, the ones waiting for them (sim.deferNative),

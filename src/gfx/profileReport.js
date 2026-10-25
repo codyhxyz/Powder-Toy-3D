@@ -302,6 +302,9 @@ export function formatReport(r) {
   const pose = s.pose ? `pose ${s.pose.name ?? 'custom'} eye ${s.pose.eye?.map((x) => f(x, 1)).join(',')} → ${s.pose.target?.map((x) => f(x, 1)).join(',')}` : 'pose ?';
   out.push(`${pose} · grid ${(s.grid ?? []).join('×') || '–'}${s.world ? ` · world ${s.world.join('×')}` : ''} · ${s.gpuName ?? '?'}`);
   out.push(`frames ${r.frames.n} (since boot ${s.framesSinceBoot ?? '?'}) · compiles: cache ${s.pipelines?.cachePending ?? '?'}, device ${s.pipelines?.deviceCompiling ?? '?'} · GPU slot ${s.gpuShared ? `SHARED (${s.gpuShared})` : 'not shared'} · memory ${f((s.memory?.bytes ?? 0) / MB, 0)} MB`);
+  // the physics governor (v2/host.js): game speed, each tick stage's GPU cost, a frame's budget
+  const ph = s.physics;
+  if (ph) out.push(`physics ${f(ph.ticksPerSec, 0)} ticks/s (game speed ${f(100 * ph.ticksPerSec / ph.hz, 0)}%) · stage ms ${Object.entries(ph.stages ?? {}).map(([k, v]) => `${k} ${f(v, 2)}`).join(', ') || 'unpriced'} · budget ${ph.budgetMs} ms a frame${ph.inFlight ? ' · a tick in flight' : ''}`);
   out.push('');
   for (const v of r.verdict) out.push(`» ${v}`);
   out.push('');

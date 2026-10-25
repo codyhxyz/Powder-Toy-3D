@@ -34,6 +34,10 @@ import { kindOfGrid } from '../mapKind.js';
 // Ticks a frame may run at Speed 1×, at most: past them time dilates rather than the frame stretching
 // (docs/v2.md 5.1: Minecraft's lag).
 const CATCH_UP = 2;
+// A tick's stages (_tickStages yields after each but the last), the units the host spreads an expensive
+// tick over frames by: activity and lists; flying matter; columns, blocks, heat and electricity; the blast
+// batch; runs, pairs and jets; air. A stage is recorded whole (its passes share scratch: see _tickStages).
+export const TICK_STAGES = ['grid', 'particles', 'blocks', 'blasts', 'moves', 'air'];
 // V1's electric steps a tick (v2/contact.js CT_ELEC_STEPS: NOMINAL_STEP_RATE / TICK_HZ)
 const ELEC_STEPS = CONTACT_CONSTANTS.CT_ELEC_STEPS[1];
 // The grid's longest cold compiles (dawn.node, Metal, cache-busted: v2block 3.2 s, v2runs 1.9 s, v2pairs
@@ -84,6 +88,7 @@ export class PhysicsV2 {
     this.layout = v2ActLayout(g);
     this.tick = 0;          // ticks run (they're numbered from 1)
     this.acc = 0;           // the accumulator's fraction of a tick
+    this.inFlight = null;   // the tick recording in stages (beginTick), or null
     this.epoch = 0;         // bumped by every write: an idle read from before one can't certify
     this.certified = false; // no brick awake and nothing written since: frame() records nothing
     this.idleRead = null;
@@ -304,6 +309,7 @@ export class PhysicsV2 {
 
   /** Certified idle with nothing written since: ticking would record nothing. */
   get asleep() {
+    if (this.inFlight) return false;   // (a tick recording in stages: the loop goes on until it ends)
     const sim = this.sim;
     return this.settingsSignature === modeSignature(nativeModes(sim)) && this.certified && (!this.dynamics || this.dynamics.isIdle === true) && !this.importFull && !this.importMarked && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
   }
@@ -351,6 +357,8 @@ export class PhysicsV2 {
   sync() {
     if (!this.isReady || this.disposed) return;
     this._noteWrites();
+    // (a whole-grid write, a load's or an undo's, replaces the box: the tick in flight ends on the old one)
+    if (this.importFull) this.finishTick();
     this._import(this._params(this.tick + 1));
   }
 
@@ -406,6 +414,7 @@ export class PhysicsV2 {
   // cores and banks (v2/integration.js shift), whose caller moves the activity with its bricks instead
   // (moveActivity): the activity, its whole-grid notes and the content change are left to it.
   restore(snapshot, aux = null, { moved = false } = {}) {
+    this.finishTick();
     const { sim, gpu, g } = this;
     if (aux && !this.aux) throw new Error('v2 state: auxiliary owner is unavailable');
     if (this.aux) {
@@ -444,6 +453,19 @@ export class PhysicsV2 {
    * (columns.js colFall), as a refused launch does, until the jets are built.
    */
   _tick() {
+    for (const stage of this._tickStages()) void stage;
+  }
+
+  /**
+   * The tick's passes in TICK_STAGES' order, a stage at a time: each yield ends one, recorded whole. The
+   * app's host records an expensive tick a few stages a frame (v2/host.js nativeHostSteps), so no frame
+   * waits for a whole tick. Between two stages other work may record: the frame's own (the renderer reads
+   * the box as the passes so far left it), a small writer's (a stroke, a tool's force: it wakes the bricks
+   * the next tick reads, as one between ticks does: P.tick is the next tick's), never one that moves or
+   * replaces the whole box (finishTick first). No stage leaves scratch another stage reads that a writer
+   * also writes: the dynamics' plans and allocator are taken and given back within one stage.
+   */
+  *_tickStages() {
     this._noteWrites();
     const dynamics = this.dynamicsBuilt ? this.dynamics : null, jets = this.jetsBuilt ? this.jets : null;
     // the requests held while they built, oldest first, before this tick moves anything (the app's
@@ -470,7 +492,9 @@ export class PhysicsV2 {
     run(k.v2activity, ind(ARGS2.ACT));
     run(k.v2cols, fold(Math.ceil((this.g.bx * this.g.bz) / 64)));
     run(k.v2args, [1, 1, 1], [sim.tables, gpu.emptyGroup, groups.args]);
+    yield 'grid';
     dynamics?.advanceParticles(this.tick);
+    yield 'particles';
     run(k.v2column, ind(ARGS2.COLS));
     // The faces the block's cubes cut trade heat on the cubes one cell over (shaders/v2/heat.js), every face
     // once a tick: before the block pass on odd ticks and after it on even ones, so a face is traded twice
@@ -499,7 +523,9 @@ export class PhysicsV2 {
         run(k.v2elecCommit, ind(ARGS2.ELEC), undefined, p);
       }
     }
+    yield 'blocks';
     dynamics?.consumeMaterialEvents(this.tick);
+    yield 'blasts';
     // R13 as column runs (src/shaders/v2/columns.js), a thread an awake column: settle the runs, then
     // every face's flux and the four colours of transfers, one step a tick.
     run(k.v2runs, ind(ARGS2.COLS));
@@ -509,6 +535,7 @@ export class PhysicsV2 {
     if (params.edge === 1) run(k.v2boundary, ind(ARGS2.BRICKS));
     // the cells' motion, after every pass that moves them, into the renderer's flow field (v2/flow.js)
     this.flowField?.record(ind(ARGS2.BRICKS));
+    yield 'moves';
     dynamics?.advanceAir(this.tick);
     // (full: the tick ran the air, so its live words say where the air may have changed: v2InvalidateWGSL)
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation, { ...params, full: dynamics ? 1 : 0 });
@@ -521,11 +548,49 @@ export class PhysicsV2 {
    */
   ticks(n) {
     if (!this.isReady || this.disposed) return 0;
+    this.finishTick();
     this.activate();
     this._noteWrites();
     for (let i = 0; i < n; i++) this._tick();
     if (n > 0) this._ran();
     return n;
+  }
+
+  // ---- a tick in stages (v2/host.js nativeHostSteps: the app's frames) ----
+
+  /** The tick recording in stages, or null. */
+  get tickInFlight() { return this.inFlight !== null; }
+  /** The stage recorded next (TICK_STAGES): the tick in flight's, else the first of the next tick. */
+  get nextStage() { return TICK_STAGES[this.inFlight?.at ?? 0]; }
+  /**
+   * Starts a tick that records a stage per stepTick call. done() runs once its last stage has been
+   * recorded (the host's: the tick's aftersim, its clock), whoever records it (finishTick too).
+   */
+  beginTick(done = null) {
+    this.finishTick();
+    this.activate();
+    this._noteWrites();
+    this.inFlight = { stages: this._tickStages(), at: 0, done };
+  }
+  /** Records the in-flight tick's next stage. Returns true when that ended the tick. */
+  stepTick() {
+    const t = this.inFlight;
+    if (!t || t.recording) return false;
+    t.recording = true;
+    let done;
+    try { ({ done } = t.stages.next()); } finally { t.recording = false; }
+    t.at++;
+    if (!done) return false;
+    this.inFlight = null;
+    this._ran();
+    t.done?.();
+    return true;
+  }
+  /** Records the rest of the tick in flight now: before anything moves, replaces or saves the whole box. */
+  finishTick() {
+    // (a stage's own passes reach sync: the tick it is recording goes on from there, not again inside it)
+    while (this.inFlight && !this.inFlight.recording && !this.disposed) this.stepTick();
+    if (this.disposed) this.inFlight = null;
   }
 
   // After ticks the authoritative state changed: advance the derived key, then read idle.
@@ -546,6 +611,7 @@ export class PhysicsV2 {
    */
   frame(dt, { speed = 1, once = false, each = null } = {}) {
     if (!this.isReady || this.disposed) return 0;
+    this.finishTick();
     this.activate();
     this._noteWrites();
     if (this.asleep) { this.acc = 0; return 0; }
@@ -563,6 +629,7 @@ export class PhysicsV2 {
   // mode: the engine the save records, 'v2' (a save made while V1 ran said 'v1': wire/saves.js imports those).
   async captureState(mode = 'v2') {
     if (!this.isReady || this.disposed) throw new Error('v2 state: engine is not ready');
+    this.finishTick();
     this.sync();
     const { gpu, sim, g } = this;
     const meta = { dims: [g.nx, g.ny, g.nz], mode, tick: this.tick, acc: this.acc,
@@ -578,6 +645,7 @@ export class PhysicsV2 {
 
   restoreState(bytes, { legacyCurrent = false } = {}) {
     if (!this.isReady || this.disposed) throw new Error('v2 state: engine is not ready');
+    this.finishTick();
     const { sim, gpu, g } = this;
     const state = decodeV2State(bytes, [g.nx, g.ny, g.nz]);
     if (!this.aux && state.aux.some(word => word !== 0)) throw new Error('v2 state: auxiliary owner is unavailable');
@@ -648,6 +716,7 @@ export class PhysicsV2 {
     if (this.disposed) return;
     if (this.sim.compact === this) this.sim.compact = null;
     this.disposed = true;
+    this.inFlight = null;
     if (this.sim.compactOwner === this) this.sim.compactOwner = null;
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');

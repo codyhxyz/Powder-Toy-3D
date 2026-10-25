@@ -60,6 +60,9 @@ export class GpuTiming {
     // the profiler samples on landing, so a frame nothing follows (a parked test's
     // renderOnce) is still sampled.
     this._frameListeners = new Set();
+    // Listeners for every timed pass as it begins (addPassListener): its begin and end (BigInt ns) or its
+    // error are set on it once its frame's timestamps land (the physics governor prices its stages so).
+    this._passListeners = new Set();
     const commands = new WeakMap();
     this._framePool = null;   // the pool this frame's encoders take slots from
     // An encoder (or its command buffer) dropped without a submit gives its pool back its slot users.
@@ -104,6 +107,7 @@ export class GpuTiming {
           const name = this.scope || descriptor.label || `(unlabelled ${kind})`;
           const pass = { name, kind, phase: 'other', epoch: this._epoch, error: null, index: null };
           this.onPass?.(pass);
+          for (const fn of this._passListeners) fn(pass);
           record.passes.push(pass);
           // Do not overwrite another query owner or pretend an overflow is zero ms.
           if (descriptor.timestampWrites) pass.error = 'foreign timestamp owner';
@@ -331,6 +335,9 @@ export class GpuTiming {
   }
 
   /** fn(frame) for every landed frame ({ frame, passes, coverage, gpu }); returns the unsubscribe. */
+  /** Calls fn(pass) for each pass timed from now on; returns the remover. */
+  addPassListener(fn) { this._passListeners.add(fn); return () => this._passListeners.delete(fn); }
+
   addFrameListener(fn) { this._frameListeners.add(fn); return () => this._frameListeners.delete(fn); }
 
   // Park the app before awaiting this to drain a bounded profiling capture.

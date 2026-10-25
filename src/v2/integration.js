@@ -86,6 +86,7 @@ export class NativeIntegration {
   shift(dx, dz) {
     const { owner: o, sim } = this, shift = [dx, 0, dz];
     if (!nativeCapabilities(sim).world) throw new Error('native world dynamics shift is unavailable');
+    o.finishTick?.(); // (a tick recording in stages ends on the box as it is: v2/physics.js beginTick)
     o.sync();
     this.scratch ??= [this.buffer('shift cores', sim.g.slots * 16), this.buffer('shift banks', sim.g.slots * 4)];
     this.run('shift', sim.g.slots, this.group(o.cells, o.aux, ...this.scratch), { shift });
@@ -106,6 +107,7 @@ export class NativeIntegration {
   ringLeave(dx, dz) {
     const { owner: o, sim } = this, g = sim.g, shift = [dx, 0, dz];
     if (!nativeCapabilities(sim).world) throw new Error('native world dynamics shift is unavailable');
+    o.finishTick?.();
     o.sync();
     this.scratch ??= [this.buffer('shift cores', g.slots * 16), this.buffer('shift banks', g.slots * 4)];
     const width = Math.abs(dx || dz), axis = dx ? 0 : 2, dims = [g.nx, g.ny, g.nz];
@@ -115,6 +117,7 @@ export class NativeIntegration {
   }
   ringEnter({ shift, lo, bricks, moved }) {
     const { owner: o, sim, gpu } = this, f = gpu.frame, g = sim.g, nb = g.nbricks;
+    o.finishTick?.();
     this.run('enter', bricks[0] * bricks[1] * bricks[2] * 64, this.group(o.cells, o.aux, ...this.scratch), { lo, bricks });
     // (v2/physics.js restore with moved: everything but the copy of the cores and banks, and the requests,
     // which the copying move clears there only to copy the moved ones back)
@@ -157,6 +160,7 @@ export class NativeIntegration {
   // air and flying matter over them too.
   undo(core, bank, dx, dz, dynamic = null) {
     const { owner: o, sim, gpu } = this;
+    o.finishTick?.();
     o.sync();
     this.scratch ??= [this.buffer('shift cores', sim.g.slots * 16), this.buffer('shift banks', sim.g.slots * 4)];
     gpu.frame.copy(o.cells, 0, this.scratch[0], 0, sim.g.slots * 16);
@@ -171,6 +175,7 @@ export class NativeIntegration {
   }
   captureSlab(lo, bricks) {
     const { owner: o, gpu, sim } = this;
+    o.finishTick?.();
     o.sync();
     const n = bricks.reduce((a, b) => a * b, 1), count = n * 64;
     const core = this.buffer('leaving cores', count * 16), bank = this.buffer('leaving banks', count * 4);
@@ -186,6 +191,7 @@ export class NativeIntegration {
   // region codes only the bricks it keeps, a slice at a time outside the frame (world/window.js readBack).
   captureSlabRaw(lo, bricks) {
     const { owner: o, gpu, sim } = this;
+    o.finishTick?.();
     o.sync();
     const n = bricks.reduce((a, b) => a * b, 1), count = n * 64;
     const core = this.buffer('leaving cores', count * 16), bank = this.buffer('leaving banks', count * 4);
@@ -199,7 +205,7 @@ export class NativeIntegration {
   restoreBricks(lo, bricks, entries, { derived = true } = {}) {
     if (!entries.length) return;
     const { owner: o, sim, gpu } = this;
-    o.sync(); // consume bounded generator writes before overriding retained bricks
+    o.finishTick?.(); o.sync(); // consume bounded generator writes before overriding retained bricks
     const count = entries.length * 64;
     const cores = new Uint32Array(count * 4), banks = new Int32Array(count + entries.length);
     entries.forEach(({ index, bytes }, i) => {

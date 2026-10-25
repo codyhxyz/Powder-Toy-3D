@@ -1,5 +1,5 @@
 import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, legacyStepHooks, brushPace, createPhysicsGovernor, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, legacyStepHooks, brushPace, createPhysicsGovernor, PHYSICS_BUDGET_MS, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -2383,6 +2383,9 @@ const prof = createProfiler(gpu, {
     resolutionScale: post.settings.resolutionScale, autoRes: !!autoRes.enabled,
     pose: { eye: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov, pov: !!pov?.active },
     testMode: testMode ?? null, paused: !!settings.paused, pov: !!pov?.active,
+    // the physics governor: game speed, its stages' GPU costs (v2/host.js)
+    physics: { ticksPerSec: settings.paused || mp.isGuest ? 0 : stepRate / LEGACY_STEPS_PER_TICK, hz: HOST_HZ, stages: physicsGovernor.costs,
+      budgetMs: PHYSICS_BUDGET_MS, inFlight: !!physicsV2?.tickInFlight },
     sceneTarget: [Math.max(1, Math.round(canvas.width * post.renderScale)), Math.max(1, Math.round(canvas.height * post.renderScale))],
   }),
   buildReport: (input) => { const r = buildProfileReport(input); r.text = formatProfileReport(r); return r; },
@@ -2990,15 +2993,12 @@ function tick(now, renderOnly = false) {
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
       // (a resting box ticks its clock and hooks and records nothing, as V1's idle steps: v2/host.js)
-      // (the governor: past physics' share of the frame, fewer ticks and slower game time: v2/host.js)
-      const max = physicsGovernor.allow(dt);
-      physicsGovernor.measure(() => {
-        stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
-          before: nativeBeforeStep,
-          after: nativeAfterStep,
-          max,
-        });
-        return stepped ? physicsV2.recordedTicks : 0;
+      // (the governor: physics' share of the frame, a tick a stage at a time; past it game time slows, the
+      // frame rate holds: v2/host.js. stepped: the ticks this frame ended)
+      stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
+        before: nativeBeforeStep,
+        after: nativeAfterStep,
+        governor: physicsGovernor,
       });
     }
     if (DAY.running) day.clock += stepped * LEGACY_STEPS_PER_TICK; // the day is tuned in V1 steps
@@ -3384,6 +3384,7 @@ try {
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     gpu,           // the WebGPU device and its frame, stats, readback (src/gpu)
+    physicsGovernor,   // physics' share of the frame: its stages' measured costs, the credit left (v2/host.js)
     // the volume's per-frame values that were uniforms (tools read them): its animation clock, the frame counter, the detail drawn
     // volumeDrawn: the last presented frame drew the volume (material transitions retain a ready view)
     // meshFrames: the last view frame's kind ('full', 'capture', 'meshes': gfx/meshFrames.js) and the kept scene's state
