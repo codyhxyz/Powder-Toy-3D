@@ -71,26 +71,37 @@ export function metalTimes(report, byEncoder, pose) {
   const rows = byEncoder.map((e) => { const [name, tag] = splitTag(e.label); return { ...e, name, tag }; })
     .filter((e) => (pose === null ? e.tag === null : e.tag === String(pose)));
   const ours = new Map(report.passes.map((p) => [p.name, p]));
-  const estimates = [];
-  for (const e of rows) {
-    const p = ours.get(e.name);
-    if (p && p.presence === 1 && p.count) estimates.push(e.count / p.count);
-  }
-  estimates.sort((a, b) => a - b);
+  // The frames the pose's tag covered, from once-a-frame passes' encoder counts (for unlabelled
+  // Metal time per frame, and the disagreement note). Render passes when there are any: the pump
+  // draws every frame, while sim passes skip frames (Lab, 2026-10-25: the median over all passes
+  // read 18 for 30 timed frames).
+  const estimatesOf = (kind) => {
+    const out = [];
+    for (const e of rows) {
+      const p = ours.get(e.name);
+      if (p && p.presence === 1 && p.count && (!kind || p.kind === kind)) out.push(e.count / p.count);
+    }
+    return out.sort((a, b) => a - b);
+  };
+  const renderEst = estimatesOf('render');
+  const estimates = renderEst.length ? renderEst : estimatesOf(null);
   const frames = estimates.length ? estimates[Math.floor((estimates.length - 1) / 2)] : null;
   const agree = frames ? estimates.filter((x) => Math.abs(x - frames) <= FRAME_AGREE * frames).length / estimates.length : 0;
   const perPass = {}, unattributed = [], disagree = [];
   for (const e of rows) {
-    const ms = frames ? e.totalMs / frames : null;
     const p = ours.get(e.name);
     if (p) {
-      // a pass whose encoder count doesn't fit the window's frames (by its own count per frame): its Metal ms is unknown
+      // Metal's mean GPU ms per run of the pass, times how often the pass runs per timed frame (the
+      // report's count × presence). Not Metal's total over a frame count: under load the trace drops
+      // intervals (Lab, 2026-10-25: GI and shadow passes' encoder counts at half the timed frames
+      // while the timestamps saw them every frame), so its counts are lower bounds, its durations not.
+      const perFrame = (p.count ?? 0) * (p.presence ?? 0);
+      if (!(e.count > 0) || !(perFrame > 0)) continue;
+      perPass[e.name] = (perPass[e.name] ?? 0) + (e.totalMs / e.count) * perFrame;
       const implied = p.presence === 1 && p.count ? e.count / p.count : null;
-      if (implied !== null && frames && Math.abs(implied - frames) > FRAME_AGREE * frames) { disagree.push(e.name); continue; }
-      perPass[e.name] = (perPass[e.name] ?? 0) + ms;
-    } else if (!/^cost view/.test(e.name)) unattributed.push({ label: e.label, ms, count: e.count });
+      if (implied !== null && frames && Math.abs(implied - frames) > FRAME_AGREE * frames) disagree.push(e.name);   // (said, not dropped)
+    } else if (!/^cost view/.test(e.name)) unattributed.push({ label: e.label, ms: frames ? e.totalMs / frames : null, count: e.count });
   }
-  for (const n of disagree) delete perPass[n];
   const total = Object.values(perPass).reduce((a, b) => a + b, 0) + unattributed.reduce((a, b) => a + (b.ms ?? 0), 0);
   return { frames, agree, perPass, disagree, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
     trusted: !!frames && rows.length > 0 };
@@ -134,6 +145,14 @@ export function applyMetal(report, metal) {
   const unat = metal.unattributed.reduce((s, u) => s + (u.ms ?? 0), 0);
   if (unat > 0.05 * metal.total) report.notes.push(`${unat.toFixed(2)} ms/frame of Metal GPU time has no pass label (${metal.unattributed.slice(0, 3).map((u) => u.label).join(', ')})`);
   report.frames.metalMs = metal.total;
+  // Metal's per-pass ms are shares of the GPU's busy time (gpu-counters.mjs exclusiveShares), so they
+  // can't honestly sum past the frame's GPU span; if they do, the per-run means or the run counts are off
+  const span = report.frames.span?.median ?? report.frames.gpu?.median;
+  const metalSum = report.passes.reduce((s, p) => s + (p.msSource === 'metal' ? p.ms : 0), 0);
+  if (Number.isFinite(span) && span > 0 && metalSum > span * (1 + FRAME_AGREE)) {
+    report.untrusted.push(`Metal per-pass ms (${metalSum.toFixed(2)}) exceed the frame's GPU span (${span.toFixed(2)} ms)`);
+    report.trusted = false;
+  }
   return report;
 }
 

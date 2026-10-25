@@ -209,8 +209,13 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   assert.match(formatReport(r), /Metal ms/);
   // frame estimates that disagree: not trusted
   const bad = metalTimes(r, [{ label: 'scene@0', count: 40, totalMs: 1 }, { label: 'canvas@0', count: 10, totalMs: 1 }, { label: 'move@0', count: 25, totalMs: 1 }], 0);
-  assert.ok(bad.disagree.length >= 1, 'passes whose encoder counts are off the frames lose their Metal ms');
-  for (const n of bad.disagree) assert.equal(bad.perPass[n], undefined);
+  assert.ok(bad.disagree.length >= 1, 'passes whose encoder counts are off the frames are named');
+  // ... but keep their Metal ms: mean per run × runs per frame (a trace that drops intervals undercounts runs, not durations)
+  assert.equal(bad.perPass.canvas, 0.1);
+  // Metal ms that sum past the frame's GPU span: untrusted
+  const over = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  applyMetal(over, metalTimes(over, [{ label: 'scene@0', count: 40, totalMs: 40 * 200 }, { label: 'canvas@0', count: 40, totalMs: 40 }], 0));
+  assert.ok(!over.trusted && over.untrusted.some((u) => /exceed the frame's GPU span/.test(u)), over.untrusted.join('; '));
   // a render pass Metal didn't name, with untrusted timestamps: no ms, said why, report untrusted
   const r2 = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
   applyMetal(r2, metalTimes(r2, rows.filter((x) => !x.label.startsWith('scene')), 0));

@@ -25,13 +25,17 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { formatReport, reportHtml, annotate, compareReports } from '../src/gfx/profileReport.js';
+import { CLEANUP_MS } from './gpu-deadline.mjs';
 import { metalTimes, applyMetal, categoryTotals, estimateCauses, causesFor, targetVerdict, compareCauses } from '../src/gfx/profileCauses.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // the whole headless slot (CLAUDE.md), boot to close; the lead's long slot (tools/gpu-deadline.mjs: TPT_LEAD_LONG_SLOT=1, never in agent briefs) for big maps' full boot
 export const SLOT_MS = process.env.TPT_LEAD_LONG_SLOT === '1' ? 120000 : 25000;
 const BOOT_TIMEOUT_MS = 15000;         // the page's own boot, inside the slot
-const PAGE_MARGIN_MS = 6000;           // the page gives up this long before the slot ends (the launcher's cleanup is 4 s)
+// the page gives up this long before the slot ends: before the launcher's guard starts closing the
+// browser (2 × CLEANUP_MS before the deadline, gpu-deadline.mjs), so a stall is reported and the poses
+// already captured still print (at 6 s the guard closed the browser first and the run said nothing)
+const PAGE_MARGIN_MS = 2 * CLEANUP_MS + 2000;   // (+ PAGE_ANSWER_MS for the tool: still 1 s before the guard)
 const PAGE_ANSWER_MS = 1000;           // ... and the tool this long after the page should have (it says the last stage the page reported)
 const SHARED_BUSY_PCT = 25;            // GPU busy % right after our browser closed: someone else was using it
 export const POSES = ['default', 'landDown', 'sky', 'horizon'];
