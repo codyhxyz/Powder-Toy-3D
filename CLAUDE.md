@@ -2,16 +2,14 @@
 
 Many Claude sessions and their subagents work here at the same time, some in this checkout and some in their own worktrees. Leave things as tidy as you found them.
 
-## Recovery checkout — all agents
+## Main checkout — all agents
 
-On Cody's Mac, `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu` is a preserved recovery checkout, not the current source.
-Do not edit, commit, build, or deploy from that directory.
-Do not reset, clean, stash, or merge it.
-The clean local `main` checkout is `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-main`.
-Use it for navigation, not concurrent edits.
-Create a task worktree from fetched `origin/main` before new work.
-Keep existing task worktrees intact; check their base before resuming.
+On Cody's Mac, `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu` is the local `main` checkout.
+Use it for navigation and for pushing `main`, not for concurrent edits.
+Create a task worktree from fetched `origin/main` before new work, and remove it once its branch has landed.
+Keep other sessions' task worktrees intact; check their base before resuming.
 Pass these rules, the task worktree path, and the base commit to every subagent.
+The work left uncommitted here on 2026-10-13/14 is saved on the local branch `recovery/shared-checkout-20261014`.
 
 ## Start here — every session and worktree
 
@@ -25,7 +23,7 @@ Before code investigation, profiling, edits, or delegation:
 
 For resumed work, compare its base with the fetched remote before continuing.
 An explicit request for a local branch or historical commit overrides the base choice, not the freshness check.
-Preserve shared edits and local-only commits. Never reset, clean, stash, or merge the dirty shared checkout automatically.
+Preserve shared edits and local-only commits. Never reset, clean or stash another session's uncommitted work.
 Fetching updates `origin/main`; it does not update local `main`. A branch name is not proof of production freshness.
 
 ## Shared checkout and deployment

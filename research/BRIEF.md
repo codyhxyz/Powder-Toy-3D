@@ -39,5 +39,5 @@ we are not perfect and probably have missed key points of these resources."
 
 ## Rules
 - Network + CPU only. No GPU runs, no browsers launched through tools/browser.mjs, no dev servers.
-- Write only inside `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-main/research/<your topic>/`.
+- Write only inside `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu/research/<your topic>/`.
 - Plain words in the report. Quote the source for every claim about it.
