@@ -134,7 +134,7 @@ export const POST_DEFAULTS = {
   // EV stops. +0.7 with look 0.5 reproduces the mean brightness and saturation of the
   // old in-shader ACES (measured on the lab and volcano presets).
   exposure: 0.7,
-  sharpen: 0.25, // CAS-style post-TAA sharpen (0..1)
+  sharpen: 0.5, // post-TAA RCAS at native, as FSR 2's sharpness (0..1; 0 = off); upscaled frames get more (sharpenAt)
   sprintBlur: 0, // transient 0..1 speed effect, set by the POV shell; never stored or used in stills
   cruelty: false, // transient gamemode treatment; original PaletteLimiter + screenmat (crueltyDisplay.js)
   look: 0.5, // 0 = AgX base, 1 = Blender's AgX "Punchy" look
@@ -197,6 +197,13 @@ export const MIPS = 6;
 // Upscaling presets: render scale per axis of the output's (the device's) pixels,
 // AMD FSR 2's quality modes (FidelityFX Super Resolution 2 docs, "Quality modes").
 export const UPSCALE = { native: 1, quality: 1 / 1.5, balanced: 1 / 1.7, performance: 1 / 2 };
+// RCAS's strength (FSR 2's sharpness, 0..1) at an upsample ratio r (output ÷ scene pixels per axis):
+// settings.sharpen at native, + PER_RATIO for each pixel of ratio past 1, up to MAX. At FSR 2's
+// Performance (2×) the default lands on 0.8, the sharpness FSR 2's own sample ships with; the
+// fewer pixels TAA had, the softer its reconstruction and the more it takes back.
+export const SHARPEN_RATIO = { PER_RATIO: 0.3, MAX: 0.9 };
+export const sharpenAt = (sharpen, ratio) => (sharpen > 0
+  ? Math.max(sharpen, Math.min(SHARPEN_RATIO.MAX, sharpen + SHARPEN_RATIO.PER_RATIO * Math.max(0, ratio - 1))) : 0);
 // The lowest render scale automatic resolution may take under an upscaling preset:
 // FSR 2's Ultra Performance mode, 3× per axis. At native it never lowers the scale.
 export const UPSCALE_FLOOR = 1 / 3;
@@ -792,18 +799,37 @@ fn display(c: vec3f) -> vec3f {
   return tonemap(c) * hdrGain(c);
 }
 
-// The reversible tone map CAS works in, t = c / (1 + luma(c)): t, and its luma in w
-// (luma(c) / (1 + luma(c)): one luma and one reciprocal a tap)
-fn tmL(c: vec3f) -> vec4f {
-  let l = luma(c);
-  let r = 1.0 / (1.0 + l);
-  return vec4f(c * r, l * r);
+// RCAS (AMD FidelityFX FSR 1's robust contrast-adaptive sharpening, ffx_fsr1.h FsrRcasF with
+// FSR_RCAS_DENOISE, the pass FSR 2 runs after its upscale) on the cross taps, in the reversible
+// max-channel tone map t = c / (1 + max3(c)) (AMD's advice for HDR input: RCAS wants [0, 1)).
+fn max3(c: vec3f) -> f32 { return max(c.r, max(c.g, c.b)); }
+fn tmMax(c: vec3f) -> vec3f { return c / (1.0 + max3(c)); }
+const RCAS_INV_FLOOR: f32 = 1e-3;   // 1 - max3(t) at or below which the inverse tone map holds (t → 1: c → ∞)
+fn itmMax(t: vec3f) -> vec3f { return t / max(1.0 - max3(t), RCAS_INV_FLOOR); }
+const RCAS_LIMIT: f32 = 0.25 - 1.0 / 16.0;   // FSR_RCAS_LIMIT: the strongest lobe, short of a 4-tap blur's inverse
+const RCAS_STOPS: f32 = 2.0;   // FSR 2's remap of its sharpness s (0..1) to RCAS's 2 - 2s stops: s 1 is RCAS at full
+const RCAS_EPS: f32 = 1e-5;    // keeps RCAS's reciprocals finite on black taps
+// FSR's luma × 2 (b·½ + r·½ + g)
+fn rcasLuma(t: vec3f) -> f32 { return t.b * 0.5 + (t.r * 0.5 + t.g); }
+fn rcas(e: vec3f, n: vec3f, s: vec3f, w: vec3f, r: vec3f, sharpness: f32) -> vec3f {
+  let lE = rcasLuma(e);
+  let lN = rcasLuma(n);
+  let lS = rcasLuma(s);
+  let lW = rcasLuma(w);
+  let lR = rcasLuma(r);
+  // noise: a lone pixel against its ring sharpens less (FSR_RCAS_DENOISE)
+  let range = max(max(max(lN, lS), max(lW, lR)), lE) - min(min(min(lN, lS), min(lW, lR)), lE);
+  let nz = 1.0 - 0.5 * saturate(abs(0.25 * (lN + lS + lW + lR) - lE) / max(range, RCAS_EPS));
+  let mn4 = min(min(n, s), min(w, r));
+  let mx4 = max(max(n, s), max(w, r));
+  // the largest negative lobe that keeps every channel inside [0, 1] (FSR's peakC = (1, -4))
+  let hitMin = min(mn4, e) / (4.0 * max(mx4, vec3f(RCAS_EPS)));
+  let hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3f(-RCAS_EPS));
+  let lobeC = max(-hitMin, hitMax);
+  let lobe = max(-RCAS_LIMIT, min(max3(lobeC), 0.0)) * sharpness * nz;
+  return (lobe * (n + s + w + r) + e) / (4.0 * lobe + 1.0);
 }
-fn itm(c: vec3f) -> vec3f { return c / max(1.0 - luma(c), 1e-3); }
 
-// AMD CAS: the cross taps get the negative lobe -amp / mix(SOFT, HARD, sharpen).
-const CAS_LOBE_SOFT: f32 = 8.0;
-const CAS_LOBE_HARD: f32 = 5.0;
 // Output dither: interleaved gradient noise (Jimenez 2014), ±½ of one 8-bit step.
 const IGN: vec3f = vec3f(0.06711056, 0.00583715, 52.9829189);
 const DITHER_LEVELS: f32 = 255.0;  // output code values above 0
@@ -856,17 +882,13 @@ ${crueltyDisplayWGSL()}
   var rad = c.rgb;
 
   if (P.sharpen > 0.0) {
-    // contrast-adaptive sharpening (AMD CAS, cross taps, luma-driven) in tone-mapped space
-    let e = tmL(c.rgb);
-    let n = tmL(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
-    let s = tmL(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
-    let w = tmL(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
-    let r = tmL(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
-    let mnL = min(e.w, min(min(n.w, s.w), min(w.w, r.w)));
-    let mxL = max(e.w, max(max(n.w, s.w), max(w.w, r.w)));
-    let amp = sqrt(clamp(min(mnL, 1.0 - mxL) / max(mxL, 1e-4), 0.0, 1.0));
-    let k = -amp / mix(CAS_LOBE_SOFT, CAS_LOBE_HARD, P.sharpen);
-    rad = itm(max((e.rgb + k * (n.rgb + s.rgb + w.rgb + r.rgb)) / (1.0 + 4.0 * k), vec3f(0.0)));
+    // RCAS (above) at FSR 2's sharpness P.sharpen (sharpenAt in gfx/post.js: more the fewer pixels TAA had)
+    let e = tmMax(c.rgb);
+    let n = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
+    let s = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
+    let w = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
+    let r = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
+    rad = itmMax(max(rcas(e, n, s, w, r, exp2(RCAS_STOPS * (P.sharpen - 1.0))), vec3f(0.0)));
   }
 
   // Blur world radiance and coverage together, after sharpening, before the unblurred hands/HUD.
@@ -1584,7 +1606,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       pipe.draw(rp, {
         bind: [, , bind],
         params: compositeParams(s, size, {
-          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? s.sharpen : 0,
+          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? sharpenAt(s.sharpen, size[0] / Math.max(1, inSize[0])) : 0,
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
           peak: out.canvas && presenter?.hdrActive && !s.raw && !s.cruelty ? HDR_OUT.PEAK : 1, packed,
