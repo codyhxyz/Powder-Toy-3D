@@ -365,10 +365,10 @@ if (launch.startupError) { gpu.fail(launch.startupError); throw launch.startupEr
 // (their GPUs pay for every output pixel of post).
 // Post and TAAU work at the screen's pixels only while the preset draws the
 // scene with more pixels than the page has (Off, Quality and Balanced on
-// Retina). Fast works at the page's size (pixelRatio 1), where TAAU at the
-// Retina size costs ~2 ms more (three:TAAU 1.58 ms at 3024×1890 against 0.41
-// at 1512×945, Metal, M5, 2026-10-26; 14.1 against 3.8 ms on 2026-10-13,
-// before its ping-pong history), and the canvas pass takes that frame up to
+// Retina). Fast works at the page's size (pixelRatio 1): at the Retina size
+// post costs ~2 ms more, TAAU ~1.2 of it (three:TAAU 1.58 ms at 3024×1890
+// against 0.41 at 1512×945, Metal, M5, 2026-10-26; post 14.1 against 3.8 ms
+// on 2026-10-13, before TAAU's ping-pong history), and the canvas pass takes that frame up to
 // the Retina canvas with FSR 1's EASU and RCAS (gfx/post.js settings.present),
 // as FSR 1 upscales a frame, instead of the browser stretching a page-sized
 // canvas 2× bilinearly. Auto resolution still works under it
