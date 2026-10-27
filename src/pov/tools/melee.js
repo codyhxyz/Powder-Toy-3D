@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
+import { beforeControlContact } from '../electronicsInteractions.js';
 import { HAND_REACH } from '../constants.js';
 import { toolPass } from '../gpu.js';
 import { flushNativeLaunch } from '../../v2/interactions.js';
@@ -86,7 +87,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       let turning = pose, driving = push, tellK = 0, telling = false;
       const load = pack(env.owner);
       const digs = dig ? digger(env, { power: dig.power, limit: blow.ENERGY, tools: dig.tools, reach }) : null;   // no harder than the blow's energy (melee.js's rule)
-      let lastHit = null, aimed = null;
+      let lastHit = null, aimed = null, disposed = false;
       const full = (id) => { if (!load.busy) env.feedback?.refuse('Your pack is full: build with the trowel or throw some with the shovel', { id }); };
 
       // A digging blow (spec.dig): the aimed lattice block cracks, or comes up whole into the pack.
@@ -125,9 +126,9 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       const bodyInReach = (ctx) => ctx.peaceful ? null : rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(reach, ctx.aim?.valid ? ctx.aim.dist : Infinity), povEvents.actor?.id ?? PLAYER);
 
       // { landed, lethal }
-      function strike(ctx) {
+      function strike(ctx, activated = false, digTarget = aimed) {
         const aim = ctx.aim;
-        const target = bodyInReach(ctx);
+        const target = activated ? null : bodyInReach(ctx);
         if (target) {
           const b = bodyBlow?.(ctx, target) ?? null;
           const lethal = !!b?.lethal;
@@ -136,7 +137,21 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           model.rig.hit(b?.hit ?? HIT_ROW);
           return { landed: true, lethal };
         }
-        if (digs) return aimed ? digStrike(ctx, aimed) : { landed: false };
+        if (!activated && aim?.valid && aim.dist <= reach && aim.cell.y >= 0) {
+          const sim = ctx.sim ?? env.getSim(), actor = povEvents.actor;
+          const frozen = { ...ctx, eye: ctx.eye.clone(), dir: ctx.dir.clone(),
+            aim: { ...aim, cell: aim.cell.clone() } };
+          const frozenDig = digTarget ? { ...digTarget, min: digTarget.min.clone(), aim: { ...digTarget.aim, cell: digTarget.aim.cell.clone() } } : null;
+          if (beforeControlContact(sim, frozen.aim, 'melee', shift => {
+            frozen.eye.add(shift); frozen.aim.cell.add(shift);
+            if (frozenDig) {
+              frozenDig.aim.cell.add(shift); frozenDig.min.add(shift);
+              frozenDig.key = `${frozenDig.min.x},${frozenDig.min.y},${frozenDig.min.z}:${frozenDig.id}`;
+            }
+            if (!disposed) povEvents.as(actor, () => strike(frozen, true, frozenDig));
+          }, { valid: () => !disposed })) return { landed: true };
+        }
+        if (digs) return digTarget ? digStrike(ctx, digTarget) : { landed: false };
         if (!aim?.valid || aim.dist > reach || aim.cell.y < 0) return { landed: false };   // air, or the floor
         const sim = ctx.sim ?? env.getSim();
         const c = aim.cell.clone().addScalar(0.5), swingDir = ctx.dir.clone().normalize();
@@ -190,7 +205,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         get telling() { return telling; },   // for checks: the tell (pose.ready) is up
         windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
         get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
-        dispose() { pass.dispose(); digs?.dispose(); model.dispose(); },
+        dispose() { disposed = true; pass.dispose(); digs?.dispose(); model.dispose(); },
       };
     },
   };

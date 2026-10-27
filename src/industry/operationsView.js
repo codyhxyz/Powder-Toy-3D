@@ -209,7 +209,13 @@ export function createOperationsView(parent, actions = {}) {
       if (part) {
         const name = CONTROL_PARTS[part.type]?.name ?? part.type;
         const thresholdText = part.type === 'TSNS' && Number.isFinite(part.threshold) ? ` · threshold ${part.threshold}°C` : '';
-        text(controlPartText, `${name}${part.on === true ? ' · on' : part.on === false ? ' · off' : ''}${thresholdText}`);
+        const stateText = part.type === 'SWITCH' ? part.on === true ? 'ON' : part.on === false ? 'OFF' : null
+          : part.type === 'BUTTON' ? part.pressed === true ? 'pressed' : part.pressed === false ? 'open' : null
+            : part.type === 'CONTACTOR' ? part.supplied === true ? 'supply' : part.supplied === false ? 'no supply' : null
+              : part.type === 'LAMP' ? part.lit === true ? 'lit' : part.lit === false ? 'unlit' : null : null;
+        const holdText = part.type === 'LAMP' ? part.directDC ? ' · DC'
+          : Number.isFinite(part.hold) ? ` · hold ${part.hold}` : '' : '';
+        text(controlPartText, `${name}${stateText === null ? '' : ` · ${stateText}`}${thresholdText}${holdText}`);
       }
       if (isSwitch) {
         toggleControl.disabled = typeof actions?.toggleControl !== 'function';

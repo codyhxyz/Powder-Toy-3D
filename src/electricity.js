@@ -38,6 +38,7 @@
 import { ELEMENTS, E } from './elements.js';
 import { accessorsWGSL } from './shaders/hostStruct.js';
 import { glf as f } from './glsl.js';
+import { electricContactKernelWGSL } from './shaders/electric-contact-kernel.js';
 
 const SPARK_REST_STEPS = 4;   // ELEC.SPARK_REST, named here so LAMP_HOLD can build on it
 export const ELEC = {
@@ -69,6 +70,21 @@ export const ELEC = {
   // wired lamp shines steadily; short enough that cutting its wire puts it out.
   LAMP_HOLD: SPARK_REST_STEPS + 4,
 };
+export const BUTTON_HOLD = 15;
+export const CONTACTOR_HOLD = ELEC.LAMP_HOLD;
+const CT_CONTACTOR_HOLD = CONTACTOR_HOLD;
+// Emitted at build time for both shader paths; never reflected at runtime.
+export function ctContactClosed(id, life) {
+  return id !== E.BUTTON || life > 0;
+}
+export function ctContactLife(id, life, offered) {
+  if (id === E.BUTTON) return Math.max(0, life - 1);
+  if (id === E.CONTACTOR) {
+    if (offered) return CT_CONTACTOR_HOLD;
+    return Math.max(0, life - 1);
+  }
+  return life;
+}
 // A conductor's phase when sparked, and the number of phases (ready = 0).
 export const SPARK_BORN = ELEC.SPARK_LIFE + ELEC.SPARK_REST;
 export const SPARK_CYCLE = SPARK_BORN + 1;
@@ -93,7 +109,7 @@ export const isLive = (id, w) => CONDUCTS[id] && sparkPhase(Math.floor(w)) > ELE
 // Its spark as a share of a full one: 0 when it isn't live, else (0, 1].
 export const sparkOf = (id, w) => (isLive(id, w) ? sparkLevel(Math.floor(w)) / ELEC.SPARK_V : 0);
 // Can a cell of element id with life `life` take a spark at all (a switch only while on)?
-export const takesSpark = (id, life) => CONDUCTS[id] && (id !== E.SWITCH || life === ELEC.SWITCH_ON);
+export const takesSpark = (id, life) => CONDUCTS[id] && ctContactClosed(id, life) && (id !== E.SWITCH || life === ELEC.SWITCH_ON);
 // May a live `from` spark a ready `to`? (P-N junction; switches)
 export function conductsInto(from, to) {
   if (to === E.PSCN && from === E.NSCN) return false;   // reverse bias: N never sparks P
@@ -154,6 +170,8 @@ const SWITCH_ON: f32 = ${f(ELEC.SWITCH_ON)};
 const TSNS_FIRE: f32 = ${f(ELEC.TSNS_FIRE)};
 const LAMP_HOLD: i32 = ${ELEC.LAMP_HOLD};
 const LAMP_DC_LEVEL: i32 = ${LAMP_DC_LEVEL};
+const CONTACTOR_HOLD: f32 = ${f(CONTACTOR_HOLD)};
+${electricContactKernelWGSL}
 ${accessorsWGSL('TB.elem', ELEC_FIELDS)}
 fn sparkPhase(ctype: f32) -> i32 { return i32(ctype) % SPARK_CYCLE; }
 fn sparkLevel(ctype: f32) -> i32 { return i32(ctype) / SPARK_CYCLE; }
@@ -166,7 +184,7 @@ fn cellSpark(a: vec4f) -> f32 {
   if (!sparkLive(id, ct)) { return 0.0; }
   return f32(sparkLevel(ct)) / f32(SPARK_V);
 }
-fn takesSpark(id: i32, life: f32) -> bool { return CONDUCTS(id) && (!SPARK_GATED(id) || life == SWITCH_ON); }
+fn takesSpark(id: i32, life: f32) -> bool { return CONDUCTS(id) && electricContactClosed(id, life) && (id != E_SWITCH || life == SWITCH_ON); }
 ${conductsIntoWGSL()}
 // Spark cell state a (in place) with a full spark, if it conducts, can take a
 // spark and is ready. For a writer (shaders/common.js editMain): call it on
@@ -185,6 +203,7 @@ fn electricQuiet(id: i32, a: vec4f) -> bool {
   if (id == E_LAMP && sparkLevel(floor(a.w)) > 0 && sparkLevel(floor(a.w)) != LAMP_DC_LEVEL) { return false; }   // a lamp's light running down
   if (powered(id) && a.z > 0.0 && a.z != SWITCH_ON) { return false; }
   if (id == E_TSNS && a.z > 0.0) { return false; }
+  if ((id == E_BUTTON || id == E_CONTACTOR) && a.z > 0.0) { return false; }
   return true;
 }
 // ...and per face neighbour (j holding n; shaders/activity.js inertNear): a
@@ -194,6 +213,7 @@ fn electricQuiet(id: i32, a: vec4f) -> bool {
 // neighbour isn't inert itself.)
 fn electricQuietNear(id: i32, a: vec4f, j: i32, n: vec4f) -> bool {
   if (j == E_BATTERY && takesSpark(id, a.z) && sparkPhase(floor(a.w)) == 0 && !(id == E_LAMP && sparkLevel(floor(a.w)) == LAMP_DC_LEVEL)) { return false; }
+  if (id == E_CONTACTOR && j == E_BATTERY && a.z != CONTACTOR_HOLD) { return false; }
   if (powered(id) && a.z == 0.0 && j == id && n.z >= SWITCH_ON) { return false; }
   if (id == E_PCLN && ((a.z == SWITCH_ON && j == E_EMPTY) || (a.w < 1.0 && cloneable(j)))) { return false; }
   if (id == E_TSNS && tsnsSenses(j) && n.y > a.y + MATTER_REST_T) { return false; }
@@ -237,6 +257,15 @@ fn electric(id: i32, T: ptr<function, f32>, life: ptr<function, f32>, ctype: ptr
     for (var i = 0; i < faces; i++) { hot = hot || (tsnsSenses((*nid)[i]) && (*na)[i].y > *T + MATTER_REST_T); }
     *life = select(0.0, TSNS_FIRE, hot);
   }
+  if (id == E_BUTTON || id == E_CONTACTOR) {
+    var offered = false;
+    for (var i = 0; i < faces; i++) {
+      let j = (*nid)[i];
+      offered = offered || j == E_BATTERY || (sparkLive(j, floor((*na)[i].w)) && electricContactClosed(j, (*na)[i].z));
+    }
+    *life = electricContactLife(id, life0, offered);
+    if (id == E_BUTTON && !electricContactClosed(id, *life)) { *ctype = 0.0; return; }
+  }
   if (!CONDUCTS(id)) { return; }
   var ph = sparkPhase(*ctype);
   var lv = sparkLevel(*ctype);
@@ -258,7 +287,7 @@ fn electric(id: i32, T: ptr<function, f32>, life: ptr<function, f32>, ctype: ptr
     for (var i = 0; i < faces; i++) {
       let j = (*nid)[i];
       if (j == E_BATTERY || (j == E_TSNS && (*na)[i].z >= TSNS_FIRE)) { best = SPARK_V; }
-      else if (sparkLive(j, floor((*na)[i].w)) && conductsInto(j, id)) { best = max(best, sparkLevel(floor((*na)[i].w))); }
+      else if (sparkLive(j, floor((*na)[i].w)) && electricContactClosed(j, (*na)[i].z) && conductsInto(j, id)) { best = max(best, sparkLevel(floor((*na)[i].w))); }
     }
     if (best > 0) {
       let c = SPARK_COST(id);

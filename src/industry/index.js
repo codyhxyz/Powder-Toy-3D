@@ -9,6 +9,7 @@ import { createIndustryView } from './view.js';
 import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from './validation.js';
 import { allLoads } from '../pov/tools/transfer.js';
 import { E } from '../elements.js';
+import { ELEC, LAMP_DC, sparkLevel } from '../electricity.js';
 
 const fail = reason => ({ ok: false, reason });
 const dimensions = app => [app.sim.g.nx, app.sim.g.ny, app.sim.g.nz];
@@ -37,12 +38,11 @@ export function createIndustry(app) {
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode, lastSim = app.sim;
   let heldDt = 0; // V2: a running frame's wall time that no tick went with yet (update)
-  // Machines are built only in Factory, on the Quarry (factory() below), and Sandbox there keeps them
-  // running. The Quarry is a small map and no big map lists Factory (maps.js), so the mapKind.js industry
-  // row never hides a machine a player could have built; a big Factory map would need world-coordinate
-  // machine records first.
-  // Both engines run the machines: V2 natively on its own cells (physics.js, src/v2/industry.js).
-  const active = () => app.mapKind.industry && ['sandbox','factory'].includes(app.gamemode);
+  // Intentional (gamemode: Factory): construction remains Quarry-only.
+  // Authored machines operate independently of the build UI. The documented
+  // mapKind.industry restriction does not gate generic BUTTON/CONTACTOR physics.
+  const active = () => app.mapKind.industry && !app.mp?.replica;
+  const constructionEligible = () => active() && ['sandbox', 'factory'].includes(app.gamemode);
   // Keep machines running and preserve the build selection, but driving has no
   // construction input or placement ghost. Exit restores the previous console.
   const driving = () => !!app.pov?.vehicles?.seated;
@@ -90,7 +90,7 @@ export function createIndustry(app) {
   });
   physics.ready.catch(error => app.hud.toast(`Industry unavailable: ${error.message}`));
   const anyMutationPending = () => pending || !!gatePhysics.pending || !!controlParts.pending;
-  const canBuild = type => !active() ? fail('Industry is available in Sandbox and Factory box maps')
+  const canBuild = type => !constructionEligible() ? fail('Industry is available in Sandbox and Factory box maps')
     : anyMutationPending() ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
@@ -246,7 +246,7 @@ export function createIndustry(app) {
     finally { if (token === epoch) pending = false; }
   }
   async function remove(id) {
-    if (!active()) return fail('Industry is not active');
+    if (!constructionEligible()) return fail('Industry is not active');
     if (anyMutationPending() || physics.pending) return fail('Wait for the current machine transfer to finish');
     const d = devices.find(d => d.id === id); if (!d) return fail('Aim at a machine to dismantle it');
     // Physics retains a removed pump's cargo and spills it back into the world.
@@ -333,34 +333,23 @@ export function createIndustry(app) {
     }
   };
   addEventListener('keydown',key,true); addEventListener('pointerdown',pointer,true); addEventListener('mousedown',pointer,true);
-  // Five bounded ID-set probes encode all seven whitelist materials uniquely;
-  // each region permits two IDs and remains within the diagnostic 8-region cap.
-  const controlCodes = {
-    TSNS: [1, 0, 0, 0, 0], SWITCH: [0, 1, 0, 0, 0], BATTERY: [0, 0, 1, 0, 0],
-    METAL: [0, 0, 0, 1, 0], PSCN: [0, 0, 0, 0, 1], NSCN: [1, 1, 0, 0, 0], INSULATOR: [0, 0, 1, 1, 0],
-  };
   function controlProbeOverrides(device, cell) {
-    const regions = {};
-    for (let index = 0; index < 5; index++) {
-      const keys = Object.keys(controlCodes).filter(key => controlCodes[key][index]);
-      regions[`controlPart${index}`] = { cells: [cell], ids: keys.map(key => CONTROL_PARTS[key].material) };
-    }
-    // Inspect the actual native port signal independently of the machine's
-    // optional drive setting; the backend still samples only this one cell.
-    return { regions, ...(device.type === 'control-cell'
-      ? { guard: { base: [0, 0, 0], material: -1, port: cell, powered: true } } : {}) };
+    // Reuse the physical guard-port read without consuming work-region slots.
+    return device.type === 'control-cell'
+      ? { regions: {}, guard: { base: [0, 0, 0], material: -1, port: cell, powered: true } } : {};
   }
   function observedControlPart(observation, cell) {
-    const regions = observation?.evidence?.regions;
-    if (!regions || observation.freshness !== 'fresh') return null;
-    const code = Array.from({ length: 5 }, (_, index) => regions[`controlPart${index}`]?.eligible === 1 ? 1 : 0);
-    const type = Object.keys(controlCodes).find(key => controlCodes[key].every((bit, index) => bit === code[index]));
+    const sample = observation?.evidence?.control?.sample;
+    if (!sample || observation.freshness !== 'fresh') return null;
+    const type = Object.keys(CONTROL_PARTS).find(key => CONTROL_PARTS[key].material === sample.material);
     if (!type) return null;
-    const signal = observation.evidence?.control?.active ?? null;
-    const sensor = type === 'TSNS' ? regions.controlPart0 : null;
-    return { type, x: cell[0], y: cell[1], z: cell[2],
-      threshold: type === 'TSNS' ? sensor?.meanTemperatureC ?? null : null,
-      on: type === 'SWITCH' ? signal : null };
+    return { type, x: cell[0], y: cell[1], z: cell[2], ...sample,
+      threshold: type === 'TSNS' ? sample.temperatureC : null,
+      on: type === 'SWITCH' ? sample.life === ELEC.SWITCH_ON : null,
+      ...(type === 'BUTTON' ? { pressed: sample.life > 0 } : {}),
+      ...(type === 'CONTACTOR' ? { supplied: sample.life > 0 } : {}),
+      ...(type === 'LAMP' ? { hold: sample.ctype === LAMP_DC ? null : sparkLevel(sample.ctype),
+        directDC: sample.ctype === LAMP_DC, lit: sparkLevel(sample.ctype) > 0 } : {}) };
   }
   function inspectHovered() {
     if (!inspectMode || !active() || !factory() || driving()) { clearInspection(); return; }
@@ -484,6 +473,12 @@ export function createIndustry(app) {
   }
   let lastProbe = fail('Checking clearance…');
   const api = {
+    observe(id) {
+      const device = active() && devices.find(d => d.id === id);
+      if (!device) return Promise.resolve(null);
+      return diagnostics.inspect(device, device.type === 'ship'
+        ? { expectedShipId: physics.expectedShipId(device.id) } : {});
+    },
     nativeStep() {
       if (disposed) return;
       if (app.sim !== lastSim || app.gamemode !== lastMode) modeChanged();
@@ -493,14 +488,21 @@ export function createIndustry(app) {
     setDrive, setGateMode, toggleControl,
     get state() { return state(); }, get building() { return isBuilding(); },
     get hasMachines() { return devices.length > 0; },
+    get needsSteps() { return active() && (devices.some(d => d.type !== 'foundation') || physics.buffered > 0); },
     get pending() { return pending || !!physics.pending || !!gatePhysics.pending || !!controlParts.pending; },
-    reset({ starters = false } = {}) {
+    reset({ starters = false, devices: authored } = {}) {
+      if (disposed) throw new Error('Industry is disposed');
+      if (starters && authored !== undefined) throw new Error('Choose starters or authored devices, not both');
+      const next = authored === undefined ? null : validateDevices(authored, dimensions(app));
+      if (next?.length && !app.mapKind.industry) throw new Error('This map does not support registered Industry machines');
       epoch++; physics.reset(); gatePhysics.reset(); controlParts.reset(); diagnostics.reset();
       devices = []; progression = null; paid.clear(); factoryRun = false; assisted = false;
       pending = false; building = false; dismantling = false; part = null; partThreshold = 200; inspectMode = false;
       partCandidate = partCandidateResult = null; clearInspection();
       if (factory()) powered = false; probeKey = ''; lastMode = app.gamemode; lastSim = app.sim;
-      if (starters && app.settings.preset === 'quarry') {
+      heldDt = 0; animation = 0; candidate = candidateResult = null;
+      if (next !== null) devices = next;
+      else if (starters && app.settings.preset === 'quarry') {
         devices = QUARRY_STARTERS.map(d => ({...deviceSpec(d,dimensions(app)),id:d.id}));
         progression = createProgression(); paid = new Set(devices.map(d => d.id)); factoryRun = factory();
       }
@@ -520,7 +522,7 @@ export function createIndustry(app) {
       // first: a malformed orphan must leave both registrations and cargo intact.
       physics.fromJSON(data.physics,next);
       epoch++; gatePhysics.reset(); controlParts.reset(); diagnostics.reset();
-      devices = next; progression = nextProgression;
+      devices = next; progression = nextProgression; heldDt = 0;
       paid = new Set(data.paid); factoryRun = data.factoryRun; assisted = data.assisted;
       building = false; dismantling = false; part = null; inspectMode = false;
       partCandidate = partCandidateResult = null; clearInspection(); probeKey = ''; lastMode = app.gamemode; lastSim = app.sim;

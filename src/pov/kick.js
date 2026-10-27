@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
+import { beforeControlContact } from './electronicsInteractions.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
 import { CELL_M } from '../scale.js';
 import { KICK, kickWeight } from '../shaders/povKick.js';
@@ -136,7 +137,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
       carried.at = carried.last ?? carried.from;
     }),
   ];
-  let wait = 0, poseT = Infinity;
+  let wait = 0, poseT = Infinity, generation = 0, disposed = false;
   const walked = [];   // for checks: the cells the last reach ray crossed, [x, y, z, id]
   const hip = new THREE.Vector3(), dir = new THREE.Vector3(), center = new THREE.Vector3();
 
@@ -214,7 +215,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
   function kick(dirIn) {
     const sim = getSim();
     // (its kernels still building, B5: the kick waits, as a tool's use does)
-    if (!sim || wait > 0 || body.dead || !povGpu(sim).ready) return null;
+    if (disposed || !sim || wait > 0 || body.dead || !povGpu(sim).ready) return null;
     const halo = haloMatch();
     wait = halo ? MELEE_REFIRE : KICK_REFIRE;
     poseT = 0;
@@ -234,15 +235,22 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
     } else if (struck) {
       const l = lump(struck.cell);
       const [, share] = split(BODY_MASS_KG, l.kg);
-      if (l.loose && share > 0) carry(struck, share);
-      if (l.breaks) {
-        // the lump's speed on the sim's clock (cells/step, as player.js's coupling converts)
-        const v = body.stepRate > 0 ? KICK_SPEED * share / speedRate(sim) : 0;
-        const r = KICK.RADIUS;
-        povGpu(sim).edit('povKick', sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]), {
-          center, shove: dir.clone().multiplyScalar(Math.min(v, PHYS.V_MAX)),
+      const carryContact = { ...struck, cell: struck.cell.clone(), normal: struck.normal.clone() };
+      const contactCenter = center.clone(), contactDir = dir.clone(), contactHip = hip.clone();
+      const mine = generation;
+      const valid = () => !disposed && generation === mine && getSim() === sim;
+      const v = body.stepRate > 0 ? KICK_SPEED * share / speedRate(sim) : 0;
+      const applyBlow = (shift = contactCenter.clone().set(0, 0, 0)) => {
+        if (!valid()) return;
+        contactCenter.add(shift); carryContact.cell.add(shift); contactHip.add(shift);
+        if (l.loose && share > 0) carry(carryContact, share, contactHip, contactDir);
+        if (!l.breaks) return;
+        const r = KICK.RADIUS, c = contactCenter;
+        povGpu(sim).edit('povKick', sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]), {
+          center: c, shove: contactDir.clone().multiplyScalar(Math.min(v, PHYS.V_MAX)),
         });
-      }
+      };
+      if (!beforeControlContact(sim, struck, 'melee', applyBlow, { valid })) applyBlow();
       res = { hit: 'cell', point: center.clone(), normal: struck.normal, id: struck.id, broke: l.broke, mass: l.kg };
       if (struck.id >= 0) povEvents.emit('impact', { source: 'kick', point: res.point, normal: struck.normal, id: struck.id, energy: KICK.ENERGY, broke: l.broke });
     }
@@ -256,7 +264,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
   }
 
   // Take the grains under the sole onto the boot; they're set down in update().
-  function carry(struck, share) {
+  function carry(struck, share, hip, dir) {
     const sim = getSim();
     if (!sim || carried || load.busy || load.cells.length) return;
     // a boot driven under a heap lifts what rests on it: the clump that flies is the column's top one,
@@ -273,7 +281,8 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
     const at = from.clone().addScaledVector(splash, Math.max(KICK_REACH - struck.t, CARRY_MIN));
     const p = transfer().take(load, { cells: cellsNear(from, SOLE_RADIUS, sim.g), kinds: [K.POWDER, K.LIQUID], limit: SOLE_CELLS });
     Object.assign(lastCarry, { from: from.toArray(), took: p ? -1 : -2, round: 0, landedAt: null, putTries: 0 });
-    p?.then((got) => { lastCarry.took = got.length; });
+    const mine = generation;
+    p?.then((got) => { if (!disposed && generation === mine) lastCarry.took = got.length; });
     const boot = hip.clone().addScaledVector(dir, Math.max(struck.t - BOOT_GAP, 0));
     if (p) carried = { from, boot, splash, speed, at, vel: stepVel(splash, speed), tries: 0, flying: false, flew: false, round: 0, last: null };
   }
@@ -283,7 +292,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
 
   // the clump lands: back into the sim in the open cell before what it hit, at the speed it arrives with
   function land({ hit, dir }) {
-    if (!carried) return;
+    if (disposed || !carried) return;
     carried.flying = false;
     carried.at = hit.point.clone().addScaledVector(dir, -LAUNCH_CLEAR);
     lastCarry.landedAt = carried.at.toArray().map((v) => +v.toFixed(2));
@@ -308,6 +317,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
   return {
     kick,
     update(dt) {
+      if (disposed) return;
       wait = Math.max(0, wait - dt);
       poseT += dt;
       setDown();
@@ -318,7 +328,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
     get carrying() { return { on: !!carried, load: load.count, busy: load.busy, tries: carried?.tries ?? 0, flying: !!carried?.flying }; },   // for checks
     get lastCarry() { return { ...lastCarry, engine: !!flight }; },   // for checks
     set ballistics(b) { flight = b; },   // the shell hands over the toolbelt's projectile engine
-    dispose() { offs.forEach((off) => off()); },   // (grains still on the boot stay in its load: tool loads persist)
+    dispose() { disposed = true; generation++; offs.forEach((off) => off()); },   // (grains still on the boot stay in its load: tool loads persist)
   };
 }
 

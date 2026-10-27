@@ -5,6 +5,7 @@ import {
   controlPartsWGSL, WGSL_CHECK, createFactoryControlParts,
 } from '../../src/industry/controlParts.js';
 import { E } from '../../src/elements.js';
+import { BUTTON_HOLD } from '../../src/electricity.js';
 import { World } from '../../src/ui/tiles/engine.js';
 
 const BOUNDS = { nx: 32, ny: 32, nz: 32 };
@@ -41,9 +42,9 @@ async function waitFor(predicate) {
 }
 
 test('control parts are a paid whitelist of existing native materials', () => {
-  assert.deepEqual(CONTROL_PART_KEYS, ['TSNS', 'SWITCH', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'INSULATOR']);
-  assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].material), [E.TSNS, E.SWITCH, E.BATTERY, E.METAL, E.PSCN, E.NSCN, E.INSULATOR]);
-  assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].cost), [3, 2, 5, 5, 1, 1, 1]);
+  assert.deepEqual(CONTROL_PART_KEYS, ['TSNS', 'SWITCH', 'BUTTON', 'CONTACTOR', 'LAMP', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'INSULATOR']);
+  assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].material), [E.TSNS, E.SWITCH, E.BUTTON, E.CONTACTOR, E.LAMP, E.BATTERY, E.METAL, E.PSCN, E.NSCN, E.INSULATOR]);
+  assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].cost), [3, 2, 2, 2, 2, 5, 5, 1, 1, 1]);
   for (const p of Object.values(CONTROL_PARTS)) assert.ok(p.description.length > 8);
   assert.equal(CONTROL_PARTS.TSNS.defaultThreshold, 200);
   assert.deepEqual(CONTROL_PART_THRESHOLD_BOUNDS, [-273.15, 10000]);
@@ -72,11 +73,12 @@ test('pure control-part validation enforces bounds and native TSNS threshold con
   assert.throws(() => validateControlPartSpec({ key: 'TSNS', x: 1, y: 2, z: 3 }, [0, 1, 1]), /bounds/);
 });
 
-test('control-part WGSL writes only an empty cell and toggles only actual E_SWITCH', () => {
+test('control-part WGSL places only into empty cells and activates only matching physical controls', () => {
   const code = controlPartsWGSL(BOUNDS);
   assert.match(code, /@compute @workgroup_size\(1\)/);
   assert.match(code, /if \(eid\(a\) == E_EMPTY\)/);
-  assert.match(code, /if \(P\.mode == FACTORY_PART_TOGGLE && eid\(a\) == E_SWITCH\)/);
+  assert.match(code, /if \(P\.mode == FACTORY_PART_TOGGLE && eid\(a\) == P\.material\s+&& \(P\.material == E_SWITCH \|\| P\.material == E_BUTTON\)\)/);
+  assert.match(code, new RegExp(`if \\(P\\.material == E_BUTTON\\) \\{ outA\\.z = ${BUTTON_HOLD}\\.0; \\}`));
   assert.match(code, /outA\.z = select\(SWITCH_ON, SWITCH_ON - 1\.0, a\.z == SWITCH_ON\)/);
   assert.match(code, /SPAWNLIFE\(P\.material\)/);
   assert.match(code, /markBrick\(brickId\(P\.at >> vec3u\(2u\)\)\)/);

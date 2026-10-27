@@ -1734,6 +1734,7 @@ struct MatPlan {
   w: f32,
   n: vec3f, T: f32, fp: f32,
   flatId: i32, flatCt: f32, flatK: f32,
+  contactLife: f32,
 }
 fn planMat(pl: MatPlan) -> Mat {
   var m: Mat;
@@ -1742,6 +1743,13 @@ fn planMat(pl: MatPlan) -> Mat {
     if (j == 0) { m = mj; } else { m = mixMat(m, mj, pl.w); }
   }
   if (pl.flatK > 0.0) { m = mixMat(m, matFlat(pl.flatId, pl.T, pl.flatCt), pl.flatK); }
+  if (pl.id0 == E_BUTTON || pl.id0 == E_CONTACTOR) {
+    let p = fract(pl.p0);
+    var uv = p.xy;
+    if (abs(pl.n.x) > 0.5) { uv = p.yz; }
+    else if (abs(pl.n.y) > 0.5) { uv = p.xz; }
+    m.alb = contactFaceAlbedo(pl.id0, pl.contactLife > 0.0, uv);
+  }
   return m;
 }
 
@@ -2017,6 +2025,7 @@ fn crispPlan(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f, pl: ptr<functi
   if (SURFCH(id) >= 0) { tp = hp - vec3f(cell) + s.seed * GRAIN_TEX_SPREAD; }
   (*pl).count = 1; (*pl).id0 = id; (*pl).p0 = tp; (*pl).n = n; (*pl).T = s.T; (*pl).ct0 = floor(a.w); (*pl).fp = footprint(hp);
   (*pl).flatK = 0.0;
+  (*pl).contactLife = a.z;
   return s;
 }
 fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {

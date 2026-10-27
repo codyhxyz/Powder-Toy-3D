@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TRACE, TRACE_MISS, TRACE_ROUND, STRIKE } from '../shaders/povTrace.js';
 import { povGpu } from './gpu.js';
+import { beforeControlContact } from './electronicsInteractions.js';
 import { projectileSeconds, HOST_HZ } from '../v2/host.js';
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
@@ -87,6 +88,7 @@ let nextId = 1; // round events share one bus across player and NPC ballistic in
 
 export function createBallistics() {
   const rounds = [];                     // in flight, oldest first
+  let generation = 0, disposed = false;
   // grid cells the window has moved over the world in all (docs/scaling.md
   // D11): a trace answers in the grid it was asked in, this much back
   const shifted = new THREE.Vector3();
@@ -136,6 +138,7 @@ export function createBallistics() {
   }
 
   function end(r) {
+    if (!r.alive) return;
     const i = rounds.indexOf(r);
     if (i >= 0) rounds.splice(i, 1);
     r.alive = false;
@@ -154,7 +157,7 @@ export function createBallistics() {
     speed = ROUND_SPEED, carry = null, kind = 'round', onStrike = null,
     energy = ROUND_ENERGY, depth = ROUND_DEPTH, damage = BODY_ROUND_DAMAGE, bodies = false,
   } = {}) {
-    if (rounds.length >= MAX_ROUNDS) return 0;
+    if (disposed || rounds.length >= MAX_ROUNDS) return 0;
     const v0 = dir.clone().normalize().multiplyScalar(speed);
     if (carry) v0.add(carry);
     const r = {
@@ -250,11 +253,32 @@ export function createBallistics() {
   }
 
   // The round strikes: announce it and spend it on the cells (the strike's edit).
-  function strike(sim, r) {
-    const h = r.hit;
+  function strike(sim, r, contact = null) {
+    const h = contact?.hit ?? r.hit;
+    const vel = contact?.vel ?? velAt(r, h.t);
+    if (!contact) {
+      // Keep the live round and its consumer record while the contact waits.
+      // windowShifted moves the live trajectory; rebase only this frozen hit.
+      const frozen = { hit: { ...h, cell: h.cell.clone(), point: h.point.clone(), prev: h.prev?.clone() ?? null }, vel: vel.clone() };
+      const mine = generation;
+      const valid = () => !disposed && generation === mine && r.alive && r.contactPending;
+      r.contactPending = true;
+      if (beforeControlContact(sim, h, 'ballistic', shift => {
+        if (!valid()) return;
+        frozen.hit.cell.add(shift); frozen.hit.point.add(shift); frozen.hit.prev?.add(shift);
+        r.contactPending = false;
+        povEvents.as(r.actor, () => strike(sim, r, frozen));
+      }, { valid, cancel: () => povEvents.as(r.actor, () => end(r)) })) {
+        if (!r.alive) return;
+        if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: h.point.clone() });
+        r.tShown = h.t; r.shown.copy(h.point);
+        return;
+      }
+      r.contactPending = false;
+    }
     // (an answer that came late finds the round already past the hit: nothing left to show)
     if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: h.point.clone() });
-    const vel = velAt(r, h.t), dir = vel.clone().normalize();
+    const dir = vel.clone().normalize();
     const normal = new THREE.Vector3(...NORMALS[h.face]);
     if (r.onStrike) { r.onStrike({ sim, hit: h, dir, normal, vel }); end(r); return; }
     const id = h.id, energy = r.energy;
@@ -275,6 +299,7 @@ export function createBallistics() {
 
   // one round's frame: strike, or fly on (and hit a body on the way)
   function fly(sim, r) {
+    if (!r.alive || r.contactPending) return;
     r.t += frameTime;
     if (r.t >= (r.kind === 'round' ? MAX_ROUND_FLIGHT : MAX_FLIGHT)) { end(r); return; }
     const striking = r.hit && r.t >= r.hit.t && r.tClear >= r.hit.t;
@@ -309,9 +334,10 @@ export function createBallistics() {
 
   return {
     fire,
-    prepare(sim) { if (sim) ensureWorld(sim); },   // (the kernels build on entering POV: src/pov/gpu.js prepare)
+    prepare(sim) { if (!disposed && sim) ensureWorld(sim); },   // (the kernels build on entering POV: src/pov/gpu.js prepare)
     // ctx: { sim, dt, stepsPerFrame } (see docs/pov.md); stepsPerFrame 0 = paused
     update({ sim, dt, stepsPerFrame }) {
+      if (disposed) return;
       ensureWorld(sim);
       frameNo++;
       const t = projectileSeconds(sim, dt, stepsPerFrame);   // (V2: the ticks this frame ran)
@@ -347,6 +373,7 @@ export function createBallistics() {
     // take round `id` out of the air now (a frag whose fuse ran out mid-flight: frag.js); its round:end follows
     cancel(id) { const r = rounds.find((x) => x.id === id); if (r) end(r); },
     dispose() {
+      disposed = true; generation++;
       while (rounds.length) end(rounds[0]);
       simId = -1;
     },

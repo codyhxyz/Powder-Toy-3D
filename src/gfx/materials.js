@@ -367,6 +367,8 @@ const LOOKS = {
   PSCN: { rough: 0.15, ior: 3.9, alb: '#5c4646' },
   NSCN: { rough: 0.15, ior: 3.9, alb: '#46465c' },
   SWITCH: { rough: 0.4, alb: '#1d4a1f', tex: 'blue_metal_plate' },
+  BUTTON: { rough: 0.4, alb: '#8a482b', tex: 'blue_metal_plate' },
+  CONTACTOR: { rough: 0.4, alb: '#394f68', tex: 'blue_metal_plate' },
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
   TSNS: { rough: 0.5, alb: '#c21aa6', tex: 'blue_metal_plate' },
   LAMP: { rough: 0.5, ior: 1.5, alb: '#f4e6c4', sss: 0.5 },   // frosted bulb glass: its light is sparkEmit's (lampLit)
@@ -824,6 +826,15 @@ fn cellEmission(id: i32, T: f32, ctype: f32) -> vec3f {
     return mix(emissionWith(id, lavaCrustT(T, Ts, crust), e), emissionWith(id, T, e), crk);
   }
   return emissionWith(id, skinT(id, T), e);
+}
+// Mechanical contact geometry, not an emissive claim of electrical supply.
+fn contactFaceAlbedo(id: i32, closed: bool, uv: vec2f) -> vec3f {
+  let frame = ALBEDO(id) * 0.55;
+  let inset = all(uv > vec2f(0.15)) && all(uv < vec2f(0.85));
+  let rail = abs(uv.y - 0.5) < 0.12;
+  let gap = abs(uv.x - 0.5) < select(0.12, 0.025, closed);
+  let copper = vec3f(0.55, 0.28, 0.12);
+  return select(frame, copper, inset && rail && !gap);
 }
 // a lit lamp (src/electricity.js LAMP_HOLD: its spark level holds while it is lit)
 fn lampLit(id: i32, ctype: f32) -> bool { return id == E_LAMP && sparkLevel(ctype) > 0; }

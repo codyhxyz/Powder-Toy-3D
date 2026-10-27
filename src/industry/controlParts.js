@@ -1,17 +1,24 @@
 import { E, ELEMENTS } from '../elements.js';
+import { BUTTON_HOLD } from '../electricity.js';
 import { PHYS } from '../physics.js';
 import { prelude, STATE_OPTS, LAYOUT } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
 import { nativeIndustryWriter } from '../v2/industry.js';
 
-// Existing TPT materials only: Industry charges credits in its controller after
+// Native materials only: Industry charges credits in its controller after
 // a confirmed placement; purchases are physical and irreversible.
 export const CONTROL_PARTS = Object.freeze({
   TSNS: Object.freeze({ key: 'TSNS', material: E.TSNS, cost: 3, name: 'Temperature sensor',
     description: 'Fires when touching matter hotter than its native temperature threshold.', threshold: true, defaultThreshold: 200 }),
   SWITCH: Object.freeze({ key: 'SWITCH', material: E.SWITCH, cost: 2, name: 'Switch',
     description: 'A native SWCH relay; toggle this real cell on or off.' }),
+  BUTTON: Object.freeze({ key: 'BUTTON', material: E.BUTTON, cost: 2, name: 'Momentary button',
+    description: 'Normally open contact. Press or hit to briefly pass an external supply.' }),
+  CONTACTOR: Object.freeze({ key: 'CONTACTOR', material: E.CONTACTOR, cost: 2, name: 'Supply receiver',
+    description: 'Native machine input. Holds an incoming supply across pulse gaps; never generates power.' }),
+  LAMP: Object.freeze({ key: 'LAMP', material: E.LAMP, cost: 2, name: 'Indicator lamp',
+    description: 'Native light driven by incoming sparks, with a short afterglow. Not a machine-running guarantee.' }),
   BATTERY: Object.freeze({ key: 'BATTERY', material: E.BATTERY, cost: 5, name: 'Battery',
     description: 'A native battery that energizes touching conductors.' }),
   METAL: Object.freeze({ key: 'METAL', material: E.METAL, cost: 5, name: 'Metal conductor',
@@ -61,7 +68,7 @@ export const PartParams = uniformStruct('FactoryControlPart', {
   at: 'vec3i', material: 'i32', temperature: 'f32', mode: 'u32', slot: 'u32',
 });
 
-/** One workgroup writes one empty cell or toggles one real native SWITCH.
+/** One workgroup writes one empty cell or activates one physical control.
  * Its body (after the prelude) is also V2's (src/v2/industry.js NativeIndustryWriter). */
 export const controlPartsBodyWGSL = (params = PartParams) => /* wgsl */ `${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
@@ -95,14 +102,17 @@ fn main() {
       } else {
         result = vec4f(FACTORY_PART_REJECTED, f32(eid(a)), a.y, a.z);
       }
-    } else if (P.mode == FACTORY_PART_TOGGLE && eid(a) == E_SWITCH) {
+    } else if (P.mode == FACTORY_PART_TOGGLE && eid(a) == P.material
+        && (P.material == E_SWITCH || P.material == E_BUTTON)) {
       var outA = a;
-      // TPT shutdown countdown spreads OFF through a touching switch bank.
-      outA.z = select(SWITCH_ON, SWITCH_ON - 1.0, a.z == SWITCH_ON);
+      // Preserve heat, seed, spark, velocity and pressure; only the contact
+      // timer changes. Re-pressing an already-held button is idempotent.
+      if (P.material == E_BUTTON) { outA.z = ${BUTTON_HOLD.toFixed(1)}; }
+      else { outA.z = select(SWITCH_ON, SWITCH_ON - 1.0, a.z == SWITCH_ON); }
+      result = vec4f(FACTORY_PART_OK, f32(P.material), outA.y, outA.z);
       if (writeCell(P.at, a, b, fetchF(P.at), outA, b)) {
         markBrick(brickId(P.at >> vec3u(2u)));
         markControlNeighbours(P.at);
-        result = vec4f(FACTORY_PART_OK, f32(E_SWITCH), outA.y, outA.z);
       }
     } else {
       result = vec4f(FACTORY_PART_REJECTED, f32(eid(a)), a.y, a.z);
@@ -130,7 +140,7 @@ function recordResult(bytes) { return new Float32Array(bytes, 0, 4); }
  * Places existing physical control materials atomically into empty cells and
  * toggles only a SWCH at the requested position. Never changes credits.
  */
-export function createFactoryControlParts({ getSim }) {
+export function createFactoryControlParts({ getSim, isCurrent = () => true }) {
   if (typeof getSim !== 'function') throw new TypeError('createFactoryControlParts requires getSim');
   let sim = null, context = null, epoch = 0, disposed = false, pendingCount = 0;
   let queue = Promise.resolve(), bindFailure = '';
@@ -162,39 +172,45 @@ export function createFactoryControlParts({ getSim }) {
     }
   }
   const current = ctx => !disposed && context === ctx && sim === ctx.sim && epoch === ctx.epoch
-    && !ctx.sim.disposed && getSim() === ctx.sim;
+      && !ctx.sim.disposed && getSim() === ctx.sim && isCurrent();
   function enqueue(ctx, spec, mode) {
+    const origin = ctx.sim.origin ? [ctx.sim.origin.x, ctx.sim.origin.y, ctx.sim.origin.z] : [0, 0, 0];
+    const owner = ctx.sim.compactOwner;
+    const valid = () => current(ctx) && ctx.sim.compactOwner === owner
+      && origin.every((n, i) => n === (ctx.sim.origin ? [ctx.sim.origin.x, ctx.sim.origin.y, ctx.sim.origin.z][i] : 0));
     pendingCount++;
     const operation = async () => {
       try {
-        if (!current(ctx)) return failure('Simulation changed before the control-part operation');
+        if (!valid()) return failure('Simulation changed before the control-part operation');
         await ctx.ready;
-        if (!current(ctx)) return failure('Simulation changed before the control-part operation');
+        if (!valid()) return failure('Simulation changed before the control-part operation');
         const slot = ctx.ring.next();
-        const material = mode === 0 ? spec.material : E.SWITCH;
+        const material = spec.material;
         const temperature = mode === 0 ? (spec.threshold ?? ELEMENTS[spec.material].temp) : 0;
         const params = { at: [spec.x, spec.y, spec.z], material, temperature, mode, slot };
         // V2: V2's own cells, in this frame (its write counts its own change)
         const native = ctx.sim.compact ? nativeIndustryWriter(ctx.sim, 'industryFactoryControlParts', NATIVE_CONTROL_PARTS) : null;
+        if (ctx.sim.compact && !native) return failure('Native control writer is unavailable');
         if (native) {
           await native.ready;
-          if (!current(ctx)) return failure('Simulation changed before the control-part operation');
+          if (!valid()) return failure('Simulation changed before the control-part operation');
           const cell = [spec.x, spec.y, spec.z];
           if (!native.run({ lo: cell, hi: cell }, params, ctx.ring.buffer)) return failure('The new physics is not ready for control parts yet');
         } else ctx.sim._dispatch(ctx.kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(), params });
         const result = ctx.ring.read(slot);
         ctx.gpu.flush('industry factory control part');
         const [code, foundMaterial, temperatureOut, stateOut] = recordResult(await result);
-        if (!current(ctx)) return failure('Simulation changed during the control-part operation');
+        if (!valid()) return failure('Simulation changed during the control-part operation');
         if (code !== 1) {
           const reason = code === 3 ? 'Control-part cell is outside the simulation' : mode === 0
-            ? 'Control parts may only be placed in an empty cell' : 'A real SWCH is not at the requested cell';
-          return failure(reason, { key: spec.key ?? 'SWITCH', x: spec.x, y: spec.y, z: spec.z });
+            ? 'Control parts may only be placed in an empty cell' : 'The expected physical control is not at the requested cell';
+          return failure(reason, { key: spec.key, x: spec.x, y: spec.y, z: spec.z });
         }
         if (!native) { ctx.sim.version++; ctx.sim.wake(); }
         if (mode === 0) return { ok: true, reason: '', key: spec.key, material: Math.trunc(foundMaterial), cost: spec.cost,
           x: spec.x, y: spec.y, z: spec.z, ...(spec.threshold === undefined ? {} : { threshold: temperatureOut }) };
-        return { ok: true, reason: '', key: 'SWITCH', material: E.SWITCH, x: spec.x, y: spec.y, z: spec.z, on: stateOut === 10 };
+        return { ok: true, reason: '', key: spec.key, material: spec.material, x: spec.x, y: spec.y, z: spec.z,
+          ...(spec.material === E.SWITCH ? { on: stateOut === 10 } : { pressed: stateOut > 0, life: stateOut }) };
       } catch (error) {
         return failure(error?.message ?? 'Control-part operation failed');
       }
@@ -212,18 +228,22 @@ export function createFactoryControlParts({ getSim }) {
     catch (error) { return Promise.resolve(failure(error.message)); }
     return enqueue(ctx, canonical, 0);
   }
-  function toggle(spec) {
+  function activate(spec) {
     if (disposed) return Promise.resolve(failure('Factory control parts are disposed'));
     const ctx = bind();
     if (!ctx) return Promise.resolve(failure(bindFailure || 'No active simulation'));
-    if (!record(spec) || ![spec.x, spec.y, spec.z].every(Number.isInteger)
+    if (!record(spec) || !Number.isInteger(spec.material) || ![E.SWITCH, E.BUTTON].includes(spec.material)
+        || ![spec.x, spec.y, spec.z].every(Number.isInteger)
         || spec.x < 0 || spec.y < 0 || spec.z < 0 || spec.x >= ctx.sim.g.nx || spec.y >= ctx.sim.g.ny || spec.z >= ctx.sim.g.nz) {
-      return Promise.resolve(failure('Switch position must be an in-bounds cell'));
+      return Promise.resolve(failure('Activation requires an in-bounds physical SWITCH or BUTTON'));
     }
-    return enqueue(ctx, { key: 'SWITCH', x: spec.x, y: spec.y, z: spec.z }, 1);
+    return enqueue(ctx, { key: spec.material === E.SWITCH ? 'SWITCH' : 'BUTTON',
+      material: spec.material, x: spec.x, y: spec.y, z: spec.z }, 1);
   }
+  function toggle(spec) { return activate(record(spec) ? { ...spec, material: E.SWITCH } : spec); }
   return {
     place,
+    activate,
     toggle,
     get pending() { return pendingCount; },
     reset() {

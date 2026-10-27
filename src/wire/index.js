@@ -62,6 +62,7 @@
 // deep idle, the meshes-first frame of the Sync log's S1).
 import world from './world.js';
 import pov from './pov.js';
+import electronics from './electronics.js';
 import descent from './descent.js';
 import rays from './rays.js';
 import lightning from './lightning.js';
@@ -80,7 +81,7 @@ import weather from './weather.js';
  * window follows the focus in `follow`, so a tick keeps the old one's order:
  * the body, Descent, the god camera, the window, the brush.
  */
-export const WIRES = [world, pov, descent, rays, lightning, signs, mp, mesh, deco, console_, industry, saves, weather];
+export const WIRES = [world, electronics, pov, descent, rays, lightning, signs, mp, mesh, deco, console_, industry, saves, weather];
 
 /** A wire by name, or null. */
 export const wireNamed = (name) => WIRES.find((w) => w.name === name) ?? null;

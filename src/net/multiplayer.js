@@ -10,6 +10,7 @@ import { h } from '../ui/dom.js';
 import './net.css';
 import { stamp, validPose, leash, NET_VERSION, MIN_GUEST_VERSION, UPDATE_GAME } from './protocol.js';
 import { SMALL_MAP } from '../mapKind.js';
+import { CONTROL_VERSION, validControlContext, validControlPose, createControlIntentGuard, controlIntentRay, validControlBaseline, controlBaselineMatches } from './controlActivation.js';
 
 // Multiplayer: one player hosts and runs the simulation; guests see the
 // host's world (streamed, ~100 ms behind) from their own camera, send paint
@@ -83,6 +84,7 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, mapKind = () => SMALL_MAP, score = () => null,
   getMetadata = () => null, commitFrame = () => {}, canHost = () => true, canStream = () => true, sessionChanged = () => {},
   getPose = () => null, avatars = null, catchUp = () => {},
+  getControlContext = () => null, getControlPose = () => null, controlUse = () => {},
 }) {
   let role = 'solo';
   let socket = null, room = null, me = null;
@@ -113,6 +115,20 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   let epoch = 0, receivedMeta = null, committedMeta = null, sentMeta = '', lastReceived = 0, hostAway = false;
   let lastPose = 0, poseSeq = 0, frozen = false, cursorStamp = null, avatarMap = null;
   const poses = new Map();
+  const controlIntents = createControlIntentGuard(), controlPoses = new Map();
+  let controlContext = null, controlSignature = '', controlRevision = 0, controlSeq = 0, controlPoseSeq = 0;
+  let controlBaseline = null, controlApplied = null, controlConfirmedAt = -Infinity;
+  let controlContextAt = -Infinity, controlHeartbeatSeq = 0, controlHeartbeatSeen = 0;
+  function syncControlContext() {
+    if (role !== 'host') return controlContext;
+    const next = getControlContext(), signature = JSON.stringify(next);
+    if (signature !== controlSignature) {
+      controlSignature = signature; controlPoses.clear();
+      controlBaseline = null; controlConfirmedAt = -Infinity;
+      controlContext = next ? { ...next, v: CONTROL_VERSION, id: epoch + ':' + (++controlRevision) } : null;
+    }
+    return controlContext;
+  }
 
   let lastPresence = 0, lastPresenceJSON = '';
 
@@ -148,7 +164,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     frozen = wasGuest && !mapKind().guestPlaysOn;
     epoch++; worldDirty = false; receivedMeta = committedMeta = null; sentMeta = ''; worldDims = null; lastReceived = 0;
     frames = sending = Promise.resolve(); seq = worldSeq = poseSeq = 0; hostAway = false;
-    poses.clear(); avatars?.clear(); sessionChanged('solo');
+    poses.clear(); controlPoses.clear(); controlIntents.reset();
+    controlContext = null; controlSignature = ''; controlSeq = controlPoseSeq = 0;
+    controlBaseline = controlApplied = null; controlConfirmedAt = controlContextAt = -Infinity;
+    controlHeartbeatSeq = controlHeartbeatSeen = 0;
+    avatars?.clear(); sessionChanged('solo');
     socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null; worldNative = null; sentSection = null;
     peers.clear();
     guestVersions.clear(); outdated.clear(); heldStrokes.length = 0;
@@ -218,7 +238,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
           return;
         }
         if (p) chat.notice(`${peerName(p)} left`);
-        peers.delete(m.id);
+        peers.delete(m.id); controlPoses.delete(m.id); controlIntents.forget(m.id);
         pings.delete(m.id);
         guestVersions.delete(m.id); outdated.delete(m.id);
         cursors.remove(m.id); avatars?.remove(m.id); poses.delete(m.id);
@@ -245,6 +265,37 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       case 'cursor':
         if (from && validContext(m) && (m.c === null || bounded(m.c))) cursors.set(m.from, { name: peerName(from), color: peerColor(from) }, m);
         break;
+      case 'control-context':
+        if (role === 'guest' && from?.role === 'host'
+            && Number.isSafeInteger(m.seq) && m.seq > controlHeartbeatSeen) {
+          controlHeartbeatSeen = m.seq;
+          controlContext = validControlContext(m.context) ? m.context : null;
+          controlBaseline = validControlBaseline(m.baseline, controlContext) ? m.baseline : null;
+          controlContextAt = controlBaseline && Number.isFinite(m.age) && m.age >= 0 && m.age <= 2500
+            ? performance.now() - m.age : -Infinity;
+        }
+        break;
+      case 'control-pose': {
+        const context = syncControlContext(), prev = controlPoses.get(m.from), now = performance.now();
+        if (role !== 'host' || from?.role !== 'guest' || !validControlPose(m, context)
+            || (prev && m.seq <= prev.seq)) break;
+        if (prev && m.warp === prev.warp && m.source === prev.source && m.source === 'use'
+            && Math.hypot(...m.p.map((n, i) => n - prev.p[i])) > 16 + 200 * Math.min(1, (now - prev.at) / 1000)) break;
+        controlPoses.set(m.from, { ...m, at: now });
+        break;
+      }
+      case 'control-use': {
+        if (role !== 'host' || from?.role !== 'guest') break;
+        const context = syncControlContext(), pose = controlPoses.get(m.from), now = performance.now();
+        const ray = controlIntents.take(m, { context, peer: from, pose, now });
+        if (!ray) break;
+        const generation = epoch;
+        const valid = () => role === 'host' && epoch === generation && peers.get(m.from) === from
+          && syncControlContext() === context && controlPoses.get(m.from) === pose
+          && !!controlIntentRay(m, { context, peer: from, pose, now: performance.now() });
+        void Promise.resolve(controlUse({ ...ray, valid })).catch(error => console.warn('control use failed', error));
+        break;
+      }
       case 'paint':
         if (role === 'host' && from?.role === 'guest' && strokes.length < 128 && validContext(m) && validStroke(m)) strokes.push(m);
         break;
@@ -324,19 +375,26 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   });
 
   // ---- host: stream the world ----
-  async function sendCapture({ bytes, dims, meta, release, native = null }, generation) {
+  async function sendCapture({ bytes, dims, meta, release, native = null }, generation, controlCapture) {
     const key = wantKey;
     wantKey = false;
     try {
       if (epoch !== generation || role !== 'host') return;
       const dimsKey = dims.join('x'), metadataKey = JSON.stringify(meta);
-      const fresh = key || !sent || sentDims !== dimsKey || stamp(meta) !== stamp(sentMeta ? JSON.parse(sentMeta) : null);
+      const context = syncControlContext();
+      const currentControl = context && controlCapture.context === context
+        && dims.every((n, i) => n === context.size[i])
+        && (!meta || meta.origin.every((n, i) => n === context.origin[i]));
+      const fresh = key || (currentControl && controlBaseline?.generation !== context.id) || !sent || sentDims !== dimsKey || stamp(meta) !== stamp(sentMeta ? JSON.parse(sentMeta) : null);
       // a V2 host's native section rides every frame whole (codec.js FRAME_NATIVE_*)
       const section = native ? nativeSection(native) : null;
       if (!fresh) {
         scratch ??= new Uint8Array(bytes.length);
         const changed = xorInto(scratch, bytes, sent);
-        if (!changed && metadataKey === sentMeta && !meta && (!section || sameSection(section, sentSection))) return;
+        if (!changed && metadataKey === sentMeta && !meta && (!section || sameSection(section, sentSection))) {
+          if (currentControl) controlConfirmedAt = controlCapture.at;
+          return;
+        }
         // Heartbeats distinguish a quiet world from a stale host.
       }
       const kind = section ? (fresh ? FRAME_NATIVE_KEY : FRAME_NATIVE_DELTA) : fresh ? FRAME_KEY : FRAME_DELTA;
@@ -346,6 +404,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       sentSection = section;
       socket.send(frame);
       seq++;
+      if (currentControl && syncControlContext() === context) {
+        controlBaseline = { generation: context.id, seq, size: dims.slice(),
+          origin: context.origin.slice(), stamp: stamp(meta) };
+        controlConfirmedAt = controlCapture.at;
+      }
       if (fresh) { sent = new Uint8Array(bytes.length); scratch = new Uint8Array(bytes.length); sentDims = dimsKey; }
       sent.set(bytes);
     } catch (err) {
@@ -381,11 +444,12 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     if (role !== 'guest' || epoch !== generation) return;
     const { kind, seq: n, dims, body, meta, native } = await decodeFrame(buf);
     if (role !== 'guest' || epoch !== generation || n === OUTDATED_SEQ) return;   // (another guest's: an old build's)
+    if (n <= worldSeq) return; // A replayed key cannot renew an applied baseline.
     if (KEY_FRAMES.includes(kind)) {
       const previousSim = getSim();
       if (!setGrid(dims, meta)) { socket?.close(); end('The host is using a map this version or device cannot load'); return; }
       if (meta?.id !== receivedMeta?.id || getSim() !== previousSim) {
-        avatars?.clear(); poses.clear(); cursors.clear(); committedMeta = null; lastReceived = 0;
+        avatars?.clear(); poses.clear(); cursors.clear(); committedMeta = null; lastReceived = 0; controlApplied = null;
       }
       world = body;
       worldDims = dims;
@@ -532,6 +596,16 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     },
 
     // Guests send their strokes to the host instead of painting locally.
+    requestControlUse({ cell, material, source = 'use', actionRay }) {
+      const c = controlContext, sim = getSim(), now = performance.now();
+      if (role !== 'guest' || hostAway || now < controlContextAt || now - controlContextAt > 2500
+          || !controlBaselineMatches(controlBaseline, controlApplied, c, sim)) return false;
+      const pose = { ...getControlPose(source, actionRay), v: CONTROL_VERSION, context: c.id, source, seq: ++controlPoseSeq };
+      if (!validControlPose(pose, c)) return false;
+      if (!send({ ...pose, t: 'control-pose', to: 'host' })) return false;
+      return send({ t: 'control-use', v: CONTROL_VERSION, to: 'host', source, seq: ++controlSeq,
+        poseSeq: pose.seq, context: c.id, cell: cell.slice(), material });
+    },
     paint({ center, radius, shape, tool, rate, replace, wind, ...edits }) {
       send({ t: 'paint', context: context(), to: 'host', c: xyz(center), r: radius, shape, tool, rate, replace, w: wind, ...editsOut(edits) });
     },
@@ -572,10 +646,14 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         }
         if (hasGuests && canStream() && now - lastStream >= STREAM_INTERVAL_MS && socket.bufferedAmount < MAX_BUFFERED_BYTES) {
           const generation = epoch;
-          const capture = packer.pack(sim, getMetadata);
+          const controlCapture = { context: null, at: -Infinity };
+          const capture = packer.pack(sim, () => {
+            controlCapture.context = syncControlContext(); controlCapture.at = performance.now();
+            return getMetadata();
+          });
           if (capture) {
             lastStream = now;
-            sending = sending.then(() => capture).then((c) => sendCapture(c, generation))
+            sending = sending.then(() => capture).then((c) => sendCapture(c, generation, controlCapture))
               .catch((err) => console.error('multiplayer: could not capture the world', err));
           }
         }
@@ -584,9 +662,14 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       // (a keyframe at another size rebuilt the grid first: applyFrame's setGrid)
       if (role === 'guest' && worldDirty && sameDims(sim.g, worldDims)) {
         const generation = epoch, meta = receivedMeta, bytes = world.slice(), native = worldNative;
+        const appliedSeq = worldSeq, appliedDims = worldDims.slice();
         unpacker.unpack(sim, bytes, { native,
           valid: () => epoch === generation && role === 'guest' && getSim() === sim,
-          commit: () => { commitFrame(meta, bytes); committedMeta = meta; lastReceived = performance.now(); },
+          commit: () => {
+            commitFrame(meta, bytes); committedMeta = meta; lastReceived = performance.now();
+            controlApplied = { seq: appliedSeq, size: appliedDims, stamp: stamp(meta),
+              origin: sim.origin.toArray(), sim };
+          },
         }).catch((err) => console.error('multiplayer: could not unpack the world', err));
         worldDirty = false;
       }
@@ -604,6 +687,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         }
       }
 
+      if (role === 'host' && peers.size && now - lastPose >= PRESENCE_INTERVAL_MS) {
+        const c = syncControlContext(), age = now - controlConfirmedAt;
+        send({ t: 'control-context', context: c, seq: ++controlHeartbeatSeq,
+          baseline: age >= 0 && age <= 2500 ? controlBaseline : null, age: Number.isFinite(age) ? age : null });
+      }
       if (role !== 'solo' && peers.size && now - lastPose >= PRESENCE_INTERVAL_MS) {
         const meta = role === 'host' ? getMetadata() : committedMeta;
         const pose = getPose();

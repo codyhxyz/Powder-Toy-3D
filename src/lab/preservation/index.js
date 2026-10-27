@@ -4,6 +4,8 @@ import { buildProcessing } from './processing.js';
 import { buildExceptions } from './exceptions.js';
 import { buildArchive } from './archive.js';
 import { ceilingLight } from './fixtures.js';
+import { buildPowerGallery } from './powerGallery.js';
+import { stampControlStations } from './circuits.js';
 
 export const PRESERVATION_SIZE = [256, 96, 128];
 export const PRESERVATION_SPAWN = [20, 28, 28];
@@ -20,7 +22,7 @@ export const PRESERVATION_GATES = [
 // Intentional (user request, 2026-10-25): one authored narrative, not competing
 // specimen rooms. Only the inventory archive is laid out from the catalog.
 export function buildPreservation({ box, set, elements = ELEMENTS }) {
-  const plaques = [], chapters = [];
+  const plaques = [], chapters = [], devices = [], stations = [];
   for (const chapter of PRESERVATION_CHAPTERS) {
     const [ox, oy, oz] = chapter.origin;
     const localBox = (x0, y0, z0, x1, y1, z1, id, extra) => box(x0 + ox, y0 + oy, z0 + oz, x1 + ox, y1 + oy, z1 + oz, id, extra);
@@ -38,7 +40,17 @@ export function buildPreservation({ box, set, elements = ELEMENTS }) {
       box: localBox,
       set: (x, y, z, id, extra) => set(x + ox, y + oy, z + oz, id, extra),
     });
+    if (chapter.key === 'receiving') {
+      const gallery = buildPowerGallery({ box: localBox });
+      built.stations = [...(built.stations ?? []), ...gallery.stations];
+      Object.assign(built.landmarks, gallery.landmarks);
+    }
     for (const p of built.plaques) plaques.push({ ...p, cell: p.cell.map((n, i) => n + chapter.origin[i]) });
+    for (const d of built.devices ?? []) devices.push({ ...d, x: d.x + ox, y: d.y + oy, z: d.z + oz });
+    for (const station of built.stations ?? []) stations.push({ ...station,
+      at: station.at.map((n, i) => n + chapter.origin[i]),
+      lamps: station.lamps?.map(p => p.map((n, i) => n + chapter.origin[i])),
+    });
     chapters.push({
       key: chapter.key,
       landmarks: Object.fromEntries(Object.entries(built.landmarks).map(([key, at]) => [key, at.map((n, i) => n + chapter.origin[i])])),
@@ -67,11 +79,21 @@ export function buildPreservation({ box, set, elements = ELEMENTS }) {
   plaques.push({ cell: [88, 34, 114], normal: [0, 0, -1],
     text: 'MATERIAL ARCHIVE / Follow this rear wall to the marked descending stairs.' });
 
+  const wiring = stampControlStations({ box, set, size: PRESERVATION_SIZE, devices, stations });
+  plaques.push(...wiring.plaques);
+  const pulse = wiring.circuits.find(c => c.id === 'light-wave');
+  if (pulse) plaques.push({ cell: pulse.gate, normal: [0, 0, -1], elementKey: 'BUTTON',
+    text: 'BUTTON / Press to send a real electrical pulse around the ceiling.' });
+  if (wiring.circuits.some(c => c.inputs.length)) {
+    const station = stations.find(s => s.devices.length), [x, y, z] = station.at;
+    plaques.push({ cell: [x + 6, y + 1, z], normal: [0, 0, -1], elementKey: 'CONTACTOR',
+      text: 'CONTACTOR / Supply receiver. No incoming signal: drive is disabled.' });
+  }
   const featured = plaques.filter(p => p.elementKey).map(p => p.elementKey);
   if (new Set(featured).size !== featured.length) throw new Error('Preservation repeats a primary specimen.');
   const archive = buildArchive({ box, elements, featured });
   plaques.push(...archive.plaques);
-  return { plaques, chapters, stocks: archive.stocks, catalog: archive.catalog };
+  return { plaques, chapters, devices, stations, circuits: wiring.circuits, stocks: archive.stocks, catalog: archive.catalog };
 }
 
 let manifest;

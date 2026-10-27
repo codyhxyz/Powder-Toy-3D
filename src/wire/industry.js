@@ -28,6 +28,11 @@ export default {
   // 60 Hz, a low Speed: app.js nativeHostSteps) and still counts its time, held for the next frame that ticks
   // (industry/index.js update). The decks' carry is game time, beside each tick (industry/physics.js nativeStep).
   afterStep(app, dt) { app.industry?.update(...machineFrame(app, dt)); },
-  busy(app) { return !!(app.industry?.building || app.industry?.pending); },
+  busy(app) {
+    // Host callbacks must continue for native actuators and orphan pump cargo,
+    // even when the material grid itself has settled.
+    return !!(app.industry?.building || app.industry?.pending ||
+      (!app.mp?.replica && !app.settings.paused && !app.renderOnly && app.industry?.needsSteps));
+  },
   invalidate(app) { app.industry?.dispose(); app.industry = null; },
 };

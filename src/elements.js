@@ -1201,6 +1201,13 @@ const defs = [
   // crates and fences are built of. Its colour is sawn softwood's.
   { key: 'PLANKS', abbr: 'PLNK', name: 'Planks', ...TIMBER, color: '#a8794a',
     desc: 'Planks, sawn wood. Flammable: burns slowly above 300 °C and leaves ash behind. What houses, docks and crates are built of.' },
+  // Append only: existing saved material IDs must not move.
+  { key: 'BUTTON', abbr: 'BUTN', name: 'Button', kind: K.SOLID, render: R.OPAQUE, color: '#8a482b', var: 0.04,
+    cond: 0.1, cap: 0.85, melt: 1500, meltInto: 'METAL', hard: 60, breakInto: 'SCRAP', sound: 'ping', elec: 5.96e7,
+    desc: 'Button. Normally open momentary contact. Press to conduct existing sparks briefly; pressing without a supply creates no electricity.' },
+  { key: 'CONTACTOR', traits: ['electrical-receiver'], abbr: 'CTCT', name: 'Contactor', kind: K.SOLID, render: R.OPAQUE, color: '#394f68', var: 0.04,
+    cond: 0.1, cap: 0.85, melt: 1500, meltInto: 'METAL', hard: 60, breakInto: 'SCRAP', sound: 'ping',
+    desc: 'Contactor. Machine-input receiver. A touching battery or live conductor renews its short input hold. Never transmits sparks or powers a wire.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1420,7 +1427,7 @@ export const PALETTE = [
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANKS', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
-  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
+  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'BUTTON', 'CONTACTOR', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)

@@ -866,6 +866,7 @@ fn nearChange(a0: vec4f, a1: vec4f) -> bool {
   let i1 = eid(a1);
   return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR))
       || (powered(i1) && (a0.z >= SWITCH_ON) != (a1.z >= SWITCH_ON))
+      || ((i1 == E_BUTTON || i1 == E_CONTACTOR) && (a0.z > 0.0) != (a1.z > 0.0))
       || (i1 == E_FUSE && (a0.z < 1.0) != (a1.z < 1.0))
       || ((i1 == E_MOSS || i1 == E_FUNGUS) && floor(a0.w) != floor(a1.w));
 }
@@ -1005,4 +1006,3 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }`,
   layouts: () => [LAYOUT.TABLES, stateLayout(opts)],
 }));
-

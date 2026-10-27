@@ -6,7 +6,7 @@ export const INDUSTRY_DIAGNOSTICS = Object.freeze({
   MAX_BASE_CELLS: 64,
   MAX_SAMPLES: 128,
   MAX_REGIONS: 8,
-  RESULT_VECS: 1 + 8,
+  RESULT_VECS: 1 + 8 + 1,
 });
 
 export const IndustryDiagnosticsParams = uniformStruct('IndustryDiagnosticsParams', {
@@ -23,7 +23,7 @@ export const INDUSTRY_DIAGNOSTICS_LAYOUT = [{ binding: 0, buffer: { type: 'stora
 
 // This read-only probe is bounded to one inspected machine: at most 64 base
 // cells, 128 explicitly listed region cells, and local support/occlusion reads.
-// It returns counts and temperature summaries, never cell contents or a grid scan.
+// Counts, temperatures and one exact control-port cell; never a grid scan.
 export const industryDiagnosticsWGSL = g => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${IndustryDiagnosticsParams.wgsl}
@@ -108,6 +108,12 @@ fn main() {
     if (eligible(id, a, p, P.rules[r], P.limits[r])) { counts[r].y += 1.0; }
   }
   for (var r = 0u; r < MAX_REGIONS; r++) { result[at + 1u + r] = counts[r]; }
+  var controlSample = vec4f(-1.0, 0.0, 0.0, 0.0);
+  if (P.guardEnabled != 0u && inGrid(P.guardPort)) {
+    let a = fetchA(P.guardPort);
+    controlSample = vec4f(f32(eid(a)), a.y, a.z, floor(a.w));
+  }
+  result[at + 1u + MAX_REGIONS] = controlSample;
 }
 `;
 

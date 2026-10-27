@@ -161,6 +161,7 @@ fn ${prefix}look(v: ${input}, back: bool) -> ${prefix}Look {
   let ao = ${prefix}faceAO(info, v.uv);
   let tint = f32((info >> 19u) & 255u) / 255.0;
   var alb = COLOR(id) * (1.0 + COLORVAR(id) * (tint * 2.0 - 1.0));   // TPT's per-particle colour jitter
+  if (id == E_BUTTON || id == E_CONTACTOR) { alb = contactFaceAlbedo(id, life > 0.0, v.uv); }
   if (cls == CL_FIRE) {
     // a flame: its blackbody glow and a little of its own colour, taking nothing away
     let e = incandescence(max(T, BK_FIRE_MIN_T)) * BK_FIRE_GAIN * mix(0.5, 1.0, clamp(life, 0.0, 1.0));

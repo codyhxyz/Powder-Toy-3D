@@ -7,11 +7,18 @@ import { DEVICE_TYPES } from '../../src/industry/catalog.js';
 import { createProgression } from '../../src/industry/progression.js';
 import { deviceSpec } from '../../src/industry/validation.js';
 import { controlCell, machineGuard, createIndustryPhysics } from '../../src/industry/physics.js';
+import { SMALL_MAP, BIG_MAP } from '../../src/mapKind.js';
+import { ELEC, packSpark, SPARK_BORN, LAMP_DC } from '../../src/electricity.js';
+import { INDUSTRY_DIAGNOSTICS } from '../../src/shaders/industryDiagnostics.js';
+import { industrySignalActive, industrySignalWGSL } from '../../src/industry/signal.js';
+import { machineGuardWGSL } from '../../src/shaders/industry.js';
+import { gateBodyWGSL } from '../../src/industry/gates.js';
 
 const hooks = registerHooks({ load(url, context, next) {
   return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : next(url, context);
 } });
 const { createIndustry, validateIndustrySave } = await import('../../src/industry/index.js');
+const { default: industryWire } = await import('../../src/wire/industry.js');
 hooks.deregister();
 
 class Element {
@@ -79,7 +86,7 @@ function fixture(mode = 'factory') {
     header: () => ({}), wake() {}, editKernel: () => ({ ready: Promise.resolve() }), edit: (...args) => edits.push(args),
     _dispatch(kernel, _size, { params }) { calls.push({ name: kernel.name, params }); },
   };
-  const app = { sim, gpu, gamemode: mode, settings: { preset: 'quarry' }, win: null, scale: 1,
+  const app = { sim, gpu, mapKind: SMALL_MAP, gamemode: mode, settings: { preset: 'quarry' }, win: null, scale: 1,
     canvas: new Element('canvas'), scene: new THREE.Group(), volume: { position: new THREE.Vector3() },
     hud: { toast: text => toasts.push(text), dismissHint() {} }, requestRender() {}, leaveBuild() {},
     dock: { setCollapsed() {}, setSpawnLocked() {} }, toolbar: { setUndoEnabled() {}, setIndustry() {} }, isTyping: () => false,
@@ -125,9 +132,9 @@ test('standalone sensor inspection stays pinned when the cursor moves to the pan
   listeners.get('pointerdown')({ target: f.app.canvas, button: 0, type: 'pointerdown',
     preventDefault() {}, stopImmediatePropagation() {} });
   await waitFor(() => f.pendingReads.some(read => read.name === 'industry diagnostics'));
-  const values = new Float32Array(36);
+  const values = new Float32Array(INDUSTRY_DIAGNOSTICS.RESULT_VECS * 4);
   values.set([0, 0, 0, 1]);
-  values.set([1, 1, 200, 200], 4); // standalone controlPart0 identifies TSNS
+  values.set([E.TSNS, 200, 0, 0], (INDUSTRY_DIAGNOSTICS.RESULT_VECS - 1) * 4);
   f.answer('industry diagnostics', [...values]);
   await waitFor(() => f.industry.state.inspection?.controlPart?.type === 'TSNS');
   f.app.hover.valid = false; f.industry.update(0, false);
@@ -141,6 +148,8 @@ test('standalone sensor inspection stays pinned when the cursor moves to the pan
 
 test('canvas placement releases threshold focus so Escape and Q still work', async () => {
   const f = fixture(); await settle();
+  // Q is the first-person build key; god view intentionally uses T.
+  f.app.pov.active = true; f.app.pov.locked = true;
   const panel = document.body.children.at(-1);
   const input = findNode(panel, element => element.className === 'industry-threshold-input');
   f.app.isTyping = () => document.activeElement?.tagName === 'INPUT';
@@ -293,11 +302,11 @@ test('one-cell candidates use exact port coordinates and confirmed inspection se
   f.industry.toggleInspect(true);
   f.industry.update(0, false);
   await waitFor(() => f.pendingReads.some(read => read.name === 'industry diagnostics'));
-  const values = new Float32Array(36);
+  const probe = f.calls.find(call => call.name === 'industryDiagnostics').params;
+  assert.equal(probe.sampleCount, 16, 'work-region slots are not spent on material code probes');
+  const values = new Float32Array(INDUSTRY_DIAGNOSTICS.RESULT_VECS * 4);
   values.set([16, 1, 1, 1], 0); // all 16 registered base cells; energized native port
-  values[3] = 1;
-  // Region order is work, then the five one-cell control-material code probes.
-  values[3 * 4 + 1] = 1; // controlPart1 identifies SWITCH
+  values.set([E.SWITCH, 20, ELEC.SWITCH_ON, 0], (INDUSTRY_DIAGNOSTICS.RESULT_VECS - 1) * 4);
   f.answer('industry diagnostics', [...values]);
   await waitFor(() => f.industry.state.inspection?.controlPart?.type === 'SWITCH');
   assert.equal(f.industry.state.inspection.controlPart.on, true);
@@ -347,7 +356,7 @@ test('inspection has explicit pending/no-hover state and discards stale results'
   assert.equal(f.industry.state.inspection.observation.freshness, 'pending');
   f.app.hover.valid = false; f.industry.update(0, false);
   assert.equal(f.industry.state.inspection, null);
-  const diagnostics = new Float32Array(36); diagnostics.set([16, 0, 0, 1]);
+  const diagnostics = new Float32Array(INDUSTRY_DIAGNOSTICS.RESULT_VECS * 4); diagnostics.set([16, 0, 0, 1]);
   f.answer('industry diagnostics', [...diagnostics]); await settle();
   assert.equal(f.industry.state.inspection, null, 'unhovered result cannot restore stale inspection');
 
@@ -396,4 +405,200 @@ test('save validation round-trips partsSpent while accepting pre-ledger saves', 
   validateIndustrySave(saved, [128, 128, 128], 'quarry');
   assert.equal(createProgression(saved.progression).snapshot().partsSpent, 0);
   f.industry.dispose();
+});
+
+const authoredBelt = () => ({ id: 'preservation-sorter', type: 'separator', x: 24, y: 12, z: 24,
+  rotation: 0, filter: E.SAND, powered: true });
+
+test('authored reset owns registrations without constructing or duplicating matter', () => {
+  const f = fixture('sandbox');
+  try {
+    f.app.settings.preset = 'preservationLab';
+    const input = [authoredBelt()];
+    f.industry.reset({ devices: input });
+    const saved = f.industry.toJSON();
+    assert.equal(saved.devices.length, 1);
+    assert.equal(saved.progression, null);
+    assert.deepEqual(saved.paid, []);
+    assert.equal(saved.factoryRun, false);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.edits.length, 0);
+    input[0].x = 80;
+    assert.equal(f.industry.state.devices[0].x, 24);
+    f.industry.reset({ devices: [authoredBelt()] });
+    f.industry.reset({ devices: [authoredBelt()] });
+    assert.deepEqual(f.industry.toJSON(), saved);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.edits.length, 0);
+    f.industry.toggle(true);
+    assert.equal(f.industry.building, false, 'authored operation does not grant Factory UI');
+  } finally { f.industry.dispose(); }
+});
+
+test('authored initialization validates atomically and cannot mix ownership models', () => {
+  const f = fixture('sandbox');
+  try {
+    f.industry.reset({ devices: [authoredBelt()] });
+    const saved = f.industry.toJSON();
+    assert.throws(() => f.industry.reset({ devices: [authoredBelt(), authoredBelt()] }), /duplicate/i);
+    assert.throws(() => f.industry.reset({ devices: [{ ...authoredBelt(), x: -1 }] }), /fit/i);
+    assert.throws(() => f.industry.reset({ starters: true, devices: [] }), /not both/i);
+    assert.deepEqual(f.industry.toJSON(), saved);
+    f.app.mapKind = BIG_MAP;
+    assert.throws(() => f.industry.reset({ devices: [authoredBelt()] }), /does not support/i);
+    assert.deepEqual(f.industry.toJSON(), saved);
+  } finally { f.industry.dispose(); }
+});
+
+test('authored devices and buffered pump cargo round-trip without terrain edits', async () => {
+  const f = fixture('sandbox');
+  try {
+    f.app.settings.preset = 'preservationLab';
+    const pump = { id: 'preservation-pump', type: 'pump', x: 40, y: 12, z: 24, rotation: 0, powered: true };
+    f.industry.reset({ devices: [authoredBelt(), pump] });
+    const saved = f.industry.toJSON();
+    saved.physics.pumps = [{ id: pump.id, device: saved.devices.find(d => d.id === pump.id),
+      cells: [[E.WATER, 42, 0, 0.125]] }];
+    validateIndustrySave(saved, [128, 128, 128], 'preservationLab');
+    f.industry.fromJSON(saved);
+    await settle();
+    assert.deepEqual(f.industry.toJSON(), saved);
+    f.industry.fromJSON(f.industry.toJSON());
+    assert.equal(f.industry.state.devices.length, 2);
+    assert.equal(f.industry.toJSON().physics.pumps[0].cells.length, 1);
+    assert.equal(f.edits.length, 0);
+    assert.equal(f.calls.length, 0);
+    f.industry.reset();
+    assert.equal(f.industry.hasMachines, false);
+    assert.deepEqual(f.industry.toJSON().physics.pumps, []);
+  } finally { f.industry.dispose(); }
+});
+
+test('Sandbox authored machines dispatch beside steps, not while paused or on replicas', async () => {
+  const f = fixture('sandbox');
+  try {
+    f.app.settings.preset = 'preservationLab';
+    f.industry.reset({ devices: [authoredBelt()] });
+    f.industry.update(.05, true);
+    await settle();
+    f.edits.length = 0;
+    f.industry.update(.05, true);
+    assert.equal(f.edits.length, 1);
+    assert.deepEqual(f.edits[0][2].guardPort, controlCell(authoredBelt()));
+    assert.equal(f.edits[0][2].guardPowered, 1);
+    const n = f.edits.length;
+    f.industry.update(.05, false, false);
+    assert.equal(f.edits.length, n);
+    f.app.gamemode = 'wand';
+    f.industry.update(.05, true);
+    assert.equal(f.edits.length, n + 1);
+    f.app.mp = { replica: true };
+    f.industry.update(.05, true);
+    assert.equal(f.edits.length, n + 1);
+    assert.equal(f.industry.state.devices.length, 1);
+  } finally { f.industry.dispose(); }
+});
+
+test('Industry busy prevents resting actors from losing host callbacks', () => {
+  const f = fixture('sandbox');
+  try {
+    f.app.settings.paused = false;
+    f.industry.reset({ devices: [authoredBelt()] });
+    assert.equal(f.industry.needsSteps, true);
+    assert.equal(industryWire.busy(f.app), true);
+    f.app.settings.paused = true;
+    assert.equal(industryWire.busy(f.app), false);
+    f.app.settings.paused = false;
+    f.app.renderOnly = true;
+    assert.equal(industryWire.busy(f.app), false);
+    f.app.renderOnly = false;
+    f.app.mp = { replica: true };
+    assert.equal(industryWire.busy(f.app), false);
+    f.app.mp = null;
+    f.industry.reset();
+    assert.equal(industryWire.busy(f.app), false);
+    f.industry.reset({ devices: [{ ...authoredBelt(), type: 'foundation' }] });
+    assert.equal(industryWire.busy(f.app), false);
+  } finally { f.industry.dispose(); }
+});
+
+test('machine and gate guards consume CONTACTOR permits with legacy SWCH semantics', () => {
+  assert.equal(industrySignalActive({ id: E.CONTACTOR, life: 1 }), true);
+  assert.equal(industrySignalActive({ id: E.CONTACTOR, life: 0, ctype: packSpark(SPARK_BORN, ELEC.SPARK_V) }), false);
+  assert.equal(industrySignalActive({ id: E.CONTACTOR, life: -1 }), false);
+  assert.equal(industrySignalActive({ id: E.BATTERY }), true);
+  assert.equal(industrySignalActive({ id: E.SWITCH, life: ELEC.SWITCH_ON }), true);
+  assert.equal(industrySignalActive({ id: E.SWITCH, life: ELEC.SWITCH_ON - 1 }), false);
+  assert.equal(industrySignalActive({ id: E.METAL, ctype: packSpark(SPARK_BORN, ELEC.SPARK_V) }), true);
+  assert.equal(industrySignalActive({ id: E.METAL }), false);
+  assert.equal(industrySignalActive({ id: E.WALL, life: 100 }), false);
+  assert.ok(machineGuardWGSL.includes(industrySignalWGSL));
+  assert.ok(gateBodyWGSL().includes(industrySignalWGSL));
+  assert.match(machineGuardWGSL, /return industrySignalActive\(fetchA\(port\)\)/);
+  assert.match(gateBodyWGSL(), /return industrySignalActive\(fetchA\(port\)\)/);
+});
+
+test('exact control observations distinguish contact position, supply, lamp hold and direct DC', async () => {
+  const cases = [
+    { type: 'SWITCH', life: ELEC.SWITCH_ON, ctype: 0, active: 0, field: 'on', value: true, label: 'ON' },
+    { type: 'SWITCH', life: ELEC.SWITCH_ON - 1, ctype: 0, active: 1, field: 'on', value: false, label: 'OFF' },
+    { type: 'BUTTON', life: 2, ctype: 0, active: 0, field: 'pressed', value: true, label: 'pressed' },
+    { type: 'BUTTON', life: 0, ctype: 0, active: 0, field: 'pressed', value: false, label: 'open' },
+    { type: 'CONTACTOR', life: 1, ctype: 0, active: 1, field: 'supplied', value: true, label: 'supply' },
+    { type: 'CONTACTOR', life: 0, ctype: packSpark(SPARK_BORN, ELEC.SPARK_V), active: 0, field: 'supplied', value: false, label: 'no supply' },
+    { type: 'LAMP', life: 0, ctype: LAMP_DC, active: 0, field: 'lit', value: true, label: 'lit', dc: true },
+    { type: 'LAMP', life: 0, ctype: packSpark(0, 2), active: 0, field: 'lit', value: true, label: 'lit', hold: 2 },
+    { type: 'LAMP', life: 15, ctype: 0, active: 0, field: 'lit', value: false, label: 'unlit', hold: 0 },
+  ];
+  for (const c of cases) {
+    const f = fixture(); await settle();
+    try {
+      const panel = document.body.children.at(-1), cell = [127, 40, 127];
+      f.app.hover = { valid: true, cell: { x: cell[0], y: cell[1], z: cell[2] }, face: 2, id: E[c.type] };
+      f.industry.toggleInspect(true); f.industry.update(0, false);
+      await waitFor(() => f.pendingReads.some(read => read.name === 'industry diagnostics'));
+      const params = f.calls.find(call => call.name === 'industryDiagnostics').params;
+      assert.deepEqual(params.guardPort, cell); assert.equal(params.guardEnabled, 1);
+      assert.equal(params.sampleCount, 0, 'observing a control consumes no work-region slots');
+      const values = new Float32Array(INDUSTRY_DIAGNOSTICS.RESULT_VECS * 4);
+      values.set([0, 0, c.active, 1]);
+      values.set([E[c.type], 20, c.life, c.ctype], (INDUSTRY_DIAGNOSTICS.RESULT_VECS - 1) * 4);
+      f.answer('industry diagnostics', [...values]);
+      await waitFor(() => f.industry.state.inspection?.controlPart?.type === c.type);
+      f.industry.update(0, false);
+      const details = f.industry.state.inspection;
+      assert.equal(details.controlPart[c.field], c.value); assert.equal(details.observation.running, 'unconfirmed');
+      const label = findNode(panel, e => e.className === 'industry-control-part-label').textContent;
+      assert(label.includes(` · ${c.label}`), label);
+      if (c.hold !== undefined) {
+        assert.equal(details.controlPart.hold, c.hold); assert(label.includes(` · hold ${c.hold}`), label);
+      }
+      if (c.dc) {
+        assert.equal(details.controlPart.directDC, true); assert.equal(details.controlPart.hold, null);
+        assert(label.includes(' · DC')); assert(!label.includes('hold 9'));
+      }
+    } finally { f.industry.dispose(); }
+  }
+});
+
+test('registered-machine observations are read-only and preserve authority boundaries', async () => {
+  const f = fixture('sandbox');
+  try {
+    f.industry.reset({ devices: [authoredBelt()] });
+    const before = f.industry.toJSON();
+    assert.equal(await f.industry.observe('missing'), null);
+    const pending = f.industry.observe(authoredBelt().id);
+    await waitFor(() => f.pendingReads.some(read => read.name === 'industry diagnostics'));
+    const values = new Float32Array(INDUSTRY_DIAGNOSTICS.RESULT_VECS * 4);
+    values.set([16, 16, 1, 1]);
+    values.set([E.CONTACTOR, 20, 2, 0], (INDUSTRY_DIAGNOSTICS.RESULT_VECS - 1) * 4);
+    f.answer('industry diagnostics', [...values]);
+    const observation = await pending;
+    assert.equal(observation.evidence.control.sample.material, E.CONTACTOR);
+    assert.equal(observation.evidence.control.sample.life, 2);
+    assert.equal(observation.running, 'unconfirmed');
+    assert.deepEqual(f.industry.toJSON(), before); assert.equal(f.edits.length, 0);
+    f.app.mp = { replica: true };
+    assert.equal(await f.industry.observe(authoredBelt().id), null);
+  } finally { f.industry.dispose(); }
 });

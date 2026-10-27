@@ -1,6 +1,7 @@
 import { EDIT_FIELDS, EDIT_SCRATCH_BINDING, LAYOUT, editKernelWGSL } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { hearthUpdateWGSL } from './hearth.js';
+import { industrySignalWGSL } from '../industry/signal.js';
 
 // Sandustry: machines act on grains, never item inventories. Control is TPT's
 // existing spark automaton, including a direct battery or enabled SWCH.
@@ -9,13 +10,10 @@ export const MACHINE_GUARD_FIELDS = {
   guardPort: 'vec3i', guardPowered: 'u32',
 };
 export const machineGuardWGSL = /* wgsl */ `
+${industrySignalWGSL}
 fn industryControlActive(port: vec3i) -> bool {
   if (!inGrid(port)) { return false; }
-  let a = fetchA(port);
-  let id = eid(a);
-  if (id == E_BATTERY) { return true; }
-  if (id == E_SWITCH) { return a.z == SWITCH_ON; }
-  return sparkLive(id, floor(a.w));
+  return industrySignalActive(fetchA(port));
 }
 fn machineEnabled(base: vec3i, material: i32, port: vec3i, controlled: u32) -> bool {
   if (material < 0) { return true; }

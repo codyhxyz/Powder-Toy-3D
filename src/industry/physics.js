@@ -1,6 +1,6 @@
 import { nativeCargo } from '../v2/transfer.js';
 import { E, K, ELEMENTS } from '../elements.js';
-import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, CASTING_TEMPERATURE, baseMaterial, deviceCell, deviceDirection } from './catalog.js';
+import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, CASTING_TEMPERATURE, baseMaterial, deviceCell, deviceDirection, controlCell } from './catalog.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
@@ -9,7 +9,7 @@ import { nativeIndustry } from '../v2/industry.js';
 import { stepClock, LEGACY_STEP_HZ } from '../v2/host.js';
 
 // Ports are integer local cells, rotated exactly like construction geometry.
-export const controlCell = d => deviceCell(d, -1, 0, 1);
+export { controlCell } from './catalog.js';
 export const machineGuard = d => ({ base: [d.x, d.y, d.z], material: baseMaterial(d.type), port: controlCell(d), powered: !!d.powered });
 const region = (d, x0, x1, y0, y1, z0, z1) => {
   const cells = [];

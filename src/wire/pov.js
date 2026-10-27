@@ -46,6 +46,8 @@ const pov = {
       getMode: () => app.gamemode, getWorld: () => app.win,   // the village switches on in Animal Crossing on Tinker Creek
       withVillageFocus: (at, valid, visit) => app.withVillageFocus(at, valid, visit),
       requestRender: () => app.requestRender(),
+      useElectronics: (eye, dir, options) => app.electronics.useRay(eye, dir, options),
+      onWorldReplaced: () => app.electronics?.reset(),
       mapKind: () => app.mapKind,
       gamemode: () => app.gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools
       industryBuilding: () => !!app.industry?.building,

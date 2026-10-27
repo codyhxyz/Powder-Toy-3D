@@ -30,7 +30,7 @@ export function buildPreset(name, sim) {
     const e = ELEMENTS[id];
     A[i] = id;
     A[i + 1] = extra.temp ?? e.temp;
-    A[i + 2] = e.life;
+    A[i + 2] = extra.life ?? e.life;
     A[i + 3] = appearanceCtype(id, extra.ctype ?? 0, extra.appearance ?? Appearance.NONE) + Math.random() * SEED_MAX;
   };
   const box = (x0, y0, z0, x1, y1, z1, id, extra) => {
@@ -44,7 +44,7 @@ export function buildPreset(name, sim) {
   let layout = null;
 
   if (name === 'preservationLab') {
-    buildPreservation({ box, set });
+    layout = buildPreservation({ box, set });
   } else if (name === 'quarry') {
     buildQuarry({ g, set, box });
   } else if (name in ARENA_PRESETS) {

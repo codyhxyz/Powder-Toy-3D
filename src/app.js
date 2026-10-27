@@ -947,6 +947,7 @@ function loadPreset(name, undoable = true) {
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
   if (undoable && ctx.industry?.pending) { hud.toast('Wait for the machine transfer before changing the scene.'); return false; }
+  ctx.electronics?.reset();
   if (mapKind.presets && presetWire(name) && !wire(presetWire(name))) {
     hud.toast(`${notYet(sceneLabel(name))}. Here is the Lab instead`, { kind: 'error' });
     name = 'lab';
@@ -973,15 +974,18 @@ function loadPreset(name, undoable = true) {
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
     if (mp.replica) return;
+    let sceneBuild = null;
     if (!mapKind.presets) { /* loaded above */ }
     else if (name === 'empty') sim.clear();
     // (the Islet fills on the GPU, from the island scene: world/gpu.js loadIsland's world P. Its sea past
     // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
     else if (name === 'island') wire('world').loadIsland(ctx)?.then((P) => { if (P && mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P); });
-    else arenaLayout = buildPreset(name, sim);
-    if (!mapKind.presets || !(name in ARENA_PRESETS)) arenaLayout = null;
+    else sceneBuild = buildPreset(name, sim);
+    arenaLayout = mapKind.presets && name in ARENA_PRESETS ? sceneBuild : null;
     resetSimModes();
-    ctx.industry?.reset({ starters: name === 'quarry' && mapKind.presets });
+    ctx.industry?.reset(sceneBuild?.devices !== undefined
+      ? { devices: sceneBuild.devices }
+      : { starters: name === 'quarry' && mapKind.presets });
     post.reset();
     signs?.clear();
     elementInspector.close();
@@ -1849,6 +1853,7 @@ async function undo() {
   if (ctx.descent?.terrainPending) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
+  if (ctx.electronics?.pending) { hud.toast('Wait for the control interaction before undoing.'); return; }
   if (mp.guard()) return;
   const entry = sim.history?.at(-1), { note, label } = entry ?? {};
   const shrine = note?.shrine;
@@ -3197,6 +3202,8 @@ function tick(now, renderOnly = false) {
   },
   get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
   get workFocus() { return workFocus; },   // (the god view's work spot: wire/world.js godFocus)
+  workAt(x, z) { if (!worldAim()) return false; workAt(x, z); return true; },
+  actionRay: () => gridRay(),
   get villageFocus() { return villageFocus; },
   villageSpawn,
   withVillageFocus(at, valid, visit) {

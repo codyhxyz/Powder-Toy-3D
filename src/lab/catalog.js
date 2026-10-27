@@ -36,7 +36,7 @@ const BY_TAG = Object.freeze({
   'thermally-unstable': ['thermal-control'], 'phase-changing': [], conductive: ['electrical-isolation'], 'acid-resistant': [],
   decaying: ['replenishment'], growing: ['growth-isolation'], replicating: ['replication-isolation'],
   'matter-consuming': ['matter-isolation'], biological: ['body-isolation'], potion: ['body-isolation'],
-  'mobile-matter-only': [],
+  'mobile-matter-only': [], 'electrical-receiver': ['electrical-isolation'],
 });
 export function requirementsForTags(tags) {
   if (!Array.isArray(tags)) throw new Error('requirementsForTags expects an array of material tag strings.');

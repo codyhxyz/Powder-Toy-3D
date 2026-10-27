@@ -8,7 +8,7 @@ import { emitContactKernel } from '../../src/shaders/v2/contact.js';
 import { E, ELEMENTS, K, REACTIONS } from '../../src/elements.js';
 import { PHYS } from '../../src/physics.js';
 import * as V1Tiles from '../../src/ui/tiles/engine.js';
-import { CONDUCTS, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
+import { CONDUCTS, SPARK_COST, conductsInto, packSpark, BUTTON_HOLD } from '../../src/electricity.js';
 import * as C from '../../src/v2/contact.js';
 import * as F from '../../src/v2/phase.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
@@ -129,6 +129,7 @@ test('all electric pairs obey TPT diode/switch direction, 3608 retained',()=>{
   for(const a of ELEMENTS)for(const b of ELEMENTS) assert.equal(C.ctConductsInto(a.id,b.id),conductsInto(a.id,b.id));
   for(const e of ELEMENTS.filter(e=>CONDUCTS[e.id])) {
     const c=cell(e.id); if(e.id===E.SWITCH)c.life=20480;
+    if(e.id===E.BUTTON)c.life=BUTTON_HOLD*2048;
     const out=elec(c,[cell(E.BATTERY)],0.999);
     assert.equal(out.spark,e.id===E.LAMP?81:packSpark(8,400-Math.trunc(+SPARK_COST[e.id].toPrecision(6))),e.key);
     if(e.id!==E.LAMP)assert.equal(elec(out,[],0).spark%9,7);

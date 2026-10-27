@@ -315,10 +315,16 @@ function decode(request, bytes, startedAt, completedAt) {
     intact: request.base.configured && request.base.complete && baseMatched === baseExpected,
     material: request.base.material,
   };
+  const v = f.subarray((1 + MAX_REGIONS) * 4, (2 + MAX_REGIONS) * 4);
+  const sample = request.guard && [...v].every(Number.isFinite)
+    && Number.isInteger(v[0]) && v[0] >= 0 && v[0] < ELEMENTS.length
+    && Number.isSafeInteger(v[3]) && v[3] >= 0
+    ? { material: v[0], temperatureC: v[1], life: v[2], ctype: v[3] } : null;
   const control = {
     required: controlRequired,
     active: request.guard ? meta[2] > 0 : null,
     port: request.guard?.port ?? null,
+    sample,
   };
   const status = industryDiagnosticStatus({ base, control, regions, policy: request.policy });
   return {

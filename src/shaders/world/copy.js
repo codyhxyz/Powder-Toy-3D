@@ -30,7 +30,7 @@ import { uniformStruct } from '../../gpu/params.js';
 import { STAGE, fold } from '../../gpu/kernels.js';
 import { ELEMENTS, E } from '../../elements.js';
 import { CHANNELS } from '../../gfx/materials.js';
-import { ELEC, powered } from '../../electricity.js';
+import { ELEC, powered, BUTTON_HOLD, CONTACTOR_HOLD } from '../../electricity.js';
 import { SCENE_BINDING } from '../../world/scenes/sceneGpu.js';
 import { glf } from '../../glsl.js';
 
@@ -66,6 +66,8 @@ export const wcLifeFull = (id) => {
   const e = ELEMENTS[id];
   if (!e) return 1;
   if (powered(id)) return Math.max(1, ELEC.SWITCH_ON);
+  if (id === E.BUTTON) return BUTTON_HOLD;
+  if (id === E.CONTACTOR) return CONTACTOR_HOLD;
   return Math.max(1, e.life ?? 0);
 };
 

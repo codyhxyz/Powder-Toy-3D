@@ -117,9 +117,13 @@ const savesWire = {
     });
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
-      prepareCapture: () => app.physics.v2?.ready,
+      prepareCapture: async () => {
+        await app.physics.v2?.ready;
+        await app.electronics?.settle();
+      },
       nativeLoad: nativeSaveLoad(app),
       header: () => {
+        if (app.electronics?.pending) throw new SaveRefused('Wait for physical control activation before saving.');
         const m = mapOf(settings);
         return {
           map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.mapKind.presets ? settings.preset : null,
@@ -267,6 +271,8 @@ export async function prepareSave(app, h) {
   if (app.graphicsFailure) throw app.graphicsFailure;
   if (app.mp.guard()) return false;
   if (app.industry?.pending) throw new SaveRefused('Wait for the current Industry transfer before loading.');
+  if (app.electronics?.pending) throw new SaveRefused('Wait for physical control activation before loading.');
+  app.electronics?.reset();
   app.painting = false;
   app.pov?.exit(true);   // the body is left out of a save; you come back in the god view
   if (h.world) {

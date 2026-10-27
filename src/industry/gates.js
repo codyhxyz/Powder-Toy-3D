@@ -122,13 +122,10 @@ fn gateBaseIntact() -> bool {
   } }
   return true;
 }
+${industrySignalWGSL}
 fn gateSignal(port: vec3i) -> bool {
   if (!inGrid(port)) { return false; }
-  let a = fetchA(port);
-  let id = eid(a);
-  if (id == E_BATTERY) { return true; }
-  if (id == E_SWITCH) { return a.z == SWITCH_ON; }
-  return sparkLive(id, floor(a.w));
+  return industrySignalActive(fetchA(port));
 }
 fn gateCell(x: i32, y: i32) -> vec3i { return P.at + P.across * x + vec3i(0, y, 0); }
 fn markGateNeighbours(p: vec3i) {
@@ -457,3 +454,4 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
     dispose() { if (disposed) return; disposed = true; invalidate(); },
   };
 }
+import { industrySignalWGSL } from './signal.js';

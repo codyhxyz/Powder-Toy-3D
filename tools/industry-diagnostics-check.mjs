@@ -8,9 +8,9 @@ import { createIndustryDiagnostics, industryDiagnosticSignature, presentIndustry
 import { E, K } from '../src/elements.js';
 import { HEARTH_FUEL_IDS, hearthRegions } from '../src/industry/hearth.js';
 import { deviceCell } from '../src/industry/catalog.js';
-import { industryDiagnosticsWGSL } from '../src/shaders/industryDiagnostics.js';
+import { INDUSTRY_DIAGNOSTICS, industryDiagnosticsWGSL } from '../src/shaders/industryDiagnostics.js';
 
-const RESULT_VECS = 9;
+const { RESULT_VECS } = INDUSTRY_DIAGNOSTICS;
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function makeSim(id = 1) {
   const reads = [];
@@ -36,10 +36,11 @@ function makeSim(id = 1) {
   };
   return sim;
 }
-function answer({ baseMatched = 16, baseExpected = 16, control = 1, controlRequired = 0, regions = [] } = {}) {
+function answer({ baseMatched = 16, baseExpected = 16, control = 1, controlRequired = 0, regions = [], controlSample = [-1, 0, 0, 0] } = {}) {
   const f = new Float32Array(RESULT_VECS * 4);
   f.set([baseMatched, baseExpected, control, controlRequired], 0);
   for (let i = 0; i < 8; i++) f.set(regions[i] ?? [0, 0, 0, -3.402823e38], (i + 1) * 4);
+  f.set(controlSample, (RESULT_VECS - 1) * 4);
   return f.buffer;
 }
 async function issue(api, sim, device, overrides, values) {
@@ -443,6 +444,55 @@ now += 101;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// Exact control observations consume no work-region slots.
+assert.equal(INDUSTRY_DIAGNOSTICS.MAX_REGIONS, 8);
+assert.equal(RESULT_VECS, 10);
+{
+  const f = fixture(16);
+  const device = { id: 'exact-control', type: 'hearth', x: 20, y: 4, z: 20, rotation: 0, powered: false };
+  for (const material of [E.BUTTON, E.CONTACTOR, E.LAMP, E.EMPTY]) {
+    const observed = await issue(f.api, f.sim, device, {}, {
+      controlSample: [material, 125.5, 2.5, 81], regions: [[1, 1, 20, 20]],
+    });
+    assert.deepEqual(observed.evidence.control.sample, { material, temperatureC: 125.5, life: 2.5, ctype: 81 });
+    assert.deepEqual(Object.keys(observed.evidence.regions), ['fuel', 'charge', 'outlet']);
+    assert.equal(f.sim.test.params.sampleCount, 22);
+    assert.equal(observed.running, 'unconfirmed'); f.clock.now += 101;
+  }
+  for (const controlSample of [[-1, 0, 0, 0], [E.BUTTON + .5, 20, 1, 0], [1e6, 20, 1, 0],
+    [E.BUTTON, NaN, 1, 0], [E.BUTTON, 20, Infinity, 0], [E.LAMP, 20, 0, NaN],
+    [E.LAMP, 20, 0, 1.5], [E.LAMP, 20, 0, -1]]) {
+    const observed = await issue(f.api, f.sim, device, {}, { controlSample });
+    assert.equal(observed.evidence.control.sample, null); f.clock.now += 101;
+  }
+  const disabled = await issue(f.api, f.sim, device, { guard: null }, { controlSample: [E.BUTTON, 20, 1, 0] });
+  assert.equal(disabled.evidence.control.sample, null); assert.equal(f.sim.test.params.guardEnabled, 0);
+  f.clock.now += 101;
+  const outside = await issue(f.api, f.sim, device,
+    { guard: { base: [20, 4, 20], material: -1, port: [-1, 4, 20], powered: false } },
+    { controlSample: [-1, 0, 0, 0] });
+  assert.equal(outside.evidence.control.sample, null); f.api.dispose();
+}
+{
+  const f = fixture(17); f.sim.compact = {}; f.sim.bindPhysicalRO = { physical: true };
+  const header = { format: 3 };
+  f.sim.readHeader = options => { assert.deepEqual(options, { physical: true }); return header; };
+  const dispatch = f.sim._dispatch;
+  f.sim._dispatch = (kernel, size, options) => {
+    assert.equal(options.bind[1], f.sim.bindPhysicalRO); assert.equal(options.header, header);
+    dispatch(kernel, size, options);
+  };
+  const device = { id: 'native-control', type: 'pump', x: 20, y: 4, z: 20, rotation: 0, powered: false };
+  const observed = await issue(f.api, f.sim, device, {}, { controlSample: [E.CONTACTOR, 20, 1, 0] });
+  assert.equal(observed.evidence.control.sample.material, E.CONTACTOR); f.api.dispose();
+}
+{
+  const shader = industryDiagnosticsWGSL({ nx: 32, ny: 32, nz: 32 });
+  assert(shader.includes('if (P.guardEnabled != 0u && inGrid(P.guardPort))'));
+  assert(shader.includes('controlSample = vec4f(f32(eid(a)), a.y, a.z, floor(a.w))'));
+  assert(shader.includes('result[at + 1u + MAX_REGIONS] = controlSample'));
 }
 
 // Pure helper and region safety checks.

@@ -30,6 +30,7 @@ export const MATERIAL_TAGS = Object.freeze({
   'thermally-unstable': tag('hazard', 'Ambient transition risk', 'A transition threshold is reached at spawn or modeled ambient; the sample may not persist unchanged.'),
   'phase-changing': tag('property', 'Thermal transitions', 'Has a modeled hot, cold or melting transition.'),
   conductive: tag('property', 'Conductive', 'Carries electrical sparks.'),
+  'electrical-receiver': tag('behavior', 'Electrical receiver', 'Receives existing electrical offers as a short-lived input; does not transmit sparks.'),
   'acid-resistant': tag('property', 'Acid resistant', 'The acid rule does not consume it; not universal containment proof.'),
   decaying: tag('behavior', 'Short-lived', 'Its active special rule spends life or disperses it.'),
   growing: tag('behavior', 'Growing', 'Its active special rule converts nearby resources into more growth.'),
@@ -39,7 +40,7 @@ export const MATERIAL_TAGS = Object.freeze({
   biological: tag('behavior', 'Biological effect', 'Has a verified body-contact or ingestion effect, not just a biological name.'),
   potion: tag('behavior', 'Potion', 'Applies a modeled magical body status.'),
 });
-const SEMANTIC = new Set(['decaying', 'growing', 'replicating', 'matter-consuming', 'mobile-matter-only', 'biological', 'potion', 'airborne-explosive', 'oxidizer', 'pressure-anomaly']);
+const SEMANTIC = new Set(['electrical-receiver', 'decaying', 'growing', 'replicating', 'matter-consuming', 'mobile-matter-only', 'biological', 'potion', 'airborne-explosive', 'oxidizer', 'pressure-anomaly']);
 const KINDS = { [K.EMPTY]: 'air', [K.SOLID]: 'solid', [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas' };
 
 export function describeTag(key) {

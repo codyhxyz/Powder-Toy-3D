@@ -16,7 +16,7 @@ import { pcg } from '../../rng.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { GRAV as GRAV_MODE } from '../../simModes.js';
 import { SALT } from '../../shaders/common.js';
-import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
+import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC, ctContactClosed, ctContactLife } from '../../electricity.js';
 import { appearanceOf, appearanceCtype, physicalCtype } from '../../appearance.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -255,6 +255,12 @@ function electric(id, T, life, ctype, nid, nT, nL, nW) {
     for (let q = 0; q < 4; q++) hot ||= tsnsSenses(nid[q]) && nT[q] > T + PHYS.MATTER_REST_T;
     life = hot ? ELEC.TSNS_FIRE : 0;
   }
+  if (id === E.BUTTON || id === E.CONTACTOR) {
+    let offered = false;
+    for (let q = 0; q < 4; q++) offered ||= nid[q] === E.BATTERY || (CONDUCTS[nid[q]] && sparkPhase(nW[q]) > ELEC.SPARK_REST && ctContactClosed(nid[q], nL[q]));
+    life = ctContactLife(id, life0, offered);
+    if (id === E.BUTTON && !ctContactClosed(id, life)) { elecOut.T = T; elecOut.life = life; elecOut.ctype = 0; return; }
+  }
   if (CONDUCTS[id]) {
     let ph = sparkPhase(ctype), lv = sparkLevel(ctype);
     let dc = false;   // a lamp on a battery's direct current (src/electricity.js LAMP_DC)
@@ -272,7 +278,7 @@ function electric(id, T, life, ctype, nid, nT, nL, nW) {
       for (let q = 0; q < 4; q++) {
         const j = nid[q];
         if (j === E.BATTERY || (j === E.TSNS && nL[q] >= ELEC.TSNS_FIRE)) best = ELEC.SPARK_V;
-        else if (CONDUCTS[j] && sparkPhase(nW[q]) > ELEC.SPARK_REST && conductsInto(j, id)) best = Math.max(best, sparkLevel(nW[q]));
+        else if (CONDUCTS[j] && sparkPhase(nW[q]) > ELEC.SPARK_REST && ctContactClosed(j, nL[q]) && conductsInto(j, id)) best = Math.max(best, sparkLevel(nW[q]));
       }
       if (best > 0) {
         const c = SPARK_COST[id];

@@ -88,6 +88,28 @@ const mp = {
         map = meta.id;
       },
       catchUp() { forceCatchup = true; },
+      getControlContext() {
+        const sim = app.sim;
+        if (!sim) return null;
+        return { map: session + ':' + sim.id + ':' + (app.win?.epoch ?? 0) + ':' + app.settings.preset + ':' + app.settings.scene + ':' + app.worldSeed + ':' + (app.electronics?.generation ?? 0),
+          origin: sim.origin.toArray(), size: [sim.g.nx, sim.g.ny, sim.g.nz] };
+      },
+      getControlPose(source, actionRay) {
+        const p = app.pov?.player, look = app.pov?.networkLook;
+        if (source === 'god') {
+          return { active: !app.pov?.active, p: actionRay?.eye?.slice(), dir: actionRay?.dir?.slice(),
+            eyeHeight: 5, crouch: 0, yaw: 0, pitch: 0, warp };
+        }
+        return { active: !!(app.pov?.active && p && !p.dead && !app.pov.networkPending),
+          p: p ? p.pos.clone().add(app.sim.origin).toArray() : [0, 0, 0], eyeHeight: p?.eyeHeight ?? 5,
+          crouch: p?.crouch ?? 0, yaw: look?.yaw ?? 0, pitch: look?.pitch ?? 0,
+          warp: warp + (app.pov?.networkWarp ?? 0) };
+      },
+      controlUse({ eye, dir, expected, source, valid }) {
+        if (!app.electronics || !valid()) return;
+        return app.electronics.useRay(new Vector3(...eye).sub(app.sim.origin), new Vector3(...dir),
+          { source, expected, authority: valid });
+      },
       getPose() {
         const p = app.pov?.player, look = app.pov?.networkLook;
         return { active: !!(app.pov?.active && p && !p.dead && !app.pov.networkPending),

@@ -226,7 +226,7 @@ export function createPov(app) {
     },
     wheel: (notches) => { wheelNotches += notches; },
     kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
-    useVehicle,
+    useVehicle: useControlAction,
   });
   const coop = () => app.mp.replica || (!mapKind().coopEntities && app.mp.role === 'host');
   const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
@@ -335,8 +335,7 @@ export function createPov(app) {
     if (coop() && [KICK_KEY, 'KeyG', 'KeyQ'].includes(e.code)) { if (!e.repeat) coopHint(); return; }
     if (e.code === VEHICLE_KEY && !e.repeat) {
       e.preventDefault();
-      if (coop()) { coopHint(); return; }
-      if (!(mode === 'on' && interact.use()) && !useVehicle() && canGrapple()) grappleQueued = true;
+      useControlAction();
     }
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
@@ -354,6 +353,24 @@ export function createPov(app) {
   addEventListener('blur', releaseInput);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });   // (a phone's app switch)
   // E (or the touch Vehicle button): get in, out, or right one
+  let controlGeneration = 0;
+  function useControlAction() {
+    if (mode !== 'on' || editing || player?.dead) return;
+    if (driving) { useVehicle(); return; }
+    const generation = controlGeneration, sim = app.getSim(), actor = player, warp = networkWarp;
+    const eye = ctx.eye.clone(), dir = ctx.dir.clone();
+    const valid = () => generation === controlGeneration && app.getSim() === sim
+      && player === actor && networkWarp === warp && mode === 'on' && !editing && !player?.dead;
+    const request = app.useElectronics?.(eye, dir, { authority: valid }) ?? { matched: false };
+    void Promise.resolve(request).then(result => {
+      if (!valid()) return;
+      if (result.matched) { if (!result.ok) hud.toast(result.reason); return; }
+      // No unrelated pickup, vehicle, village or grapple capability is
+      // enabled by this narrowly supported co-op use intent.
+      if (coop()) { coopHint(); return; }
+      if (!interact.use() && !useVehicle() && canGrapple()) grappleQueued = true;
+    }).catch(error => { if (valid()) hud.toast(error.message); });
+  }
   function useVehicle() {
     if (coop()) { coopHint(); return true; }
     if (village.enabled) { village.act({ type: 'interact' }); return true; }
@@ -608,6 +625,7 @@ export function createPov(app) {
   }
 
   function exit(instant = false) {
+    controlGeneration++;
     viewmodel.userData.rig?.resetFlap();
     if (mission.engaged) { mission.end(); void app.setMode('sandbox'); }
     village.setEnabled(false);
@@ -848,7 +866,7 @@ export function createPov(app) {
       if (live() && mode === 'on') toolbelt?.setVisible(!driving);
     }
     if (player.dead && !deadSeen) {
-      deadSeen = true; deadTime = 0;
+      controlGeneration++; deadSeen = true; deadTime = 0;
       toolbelt?.setVisible(false);
       releaseInput();
     }
@@ -1220,6 +1238,7 @@ export function createPov(app) {
     },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => {
+      controlGeneration++; app.onWorldReplaced?.();
       mission.end();
       village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
       for (const n of npcs.values()) { scene.remove(n.root); n.dispose(); }
