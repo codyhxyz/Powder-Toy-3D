@@ -1254,6 +1254,7 @@ fn farExit(ro: vec3f, inv: vec3f, lo: vec3f, size: f32, t: f32) -> f32 {${curved
 // ---- the ground map (FAR_GROUND) ----
 const FG_EPS: f32 = 1e-3;          // cells a column walk looks past a boundary to pick the column it enters
 const FG_INSET: f32 = 0.5;         // cells a hit's column is read inside its face
+const FG_FACE_F: f32 = 1.0;        // cycles per cell of a crisp voxel's faces (one face a cell), for their fade
 const FG_REFINE_UP: f32 = ${glf(FAR_GROUND.REFINE_UP)};
 const FG_REFINE_DOWN: f32 = ${glf(FAR_GROUND.REFINE_DOWN)};
 const FG_REFINE_SPAN: f32 = ${glf(FAR_GROUND.REFINE_SPAN)};
@@ -1814,8 +1815,11 @@ struct FarOut {
           tH = tE;
           let fp = footprint(pHit);
           let word = fgWordAt(vec2i(floor(pHit.xz - gh.n.xz * FG_INSET)), fp, gh.word);
-          // a crisp voxel keeps its face; a smooth surface (grains, soil, grass) its columns' slope
-          let n = select(fgNormal(pHit, fp), gh.n, isCrisp(materialId(word)));
+          // a crisp voxel keeps its face while a cell is wider than a pixel, fading to its columns' slope as it
+          // shrinks under one (the mipmap rule: lodFade, gfx/lodFade.js); a smooth surface (grains, soil,
+          // grass) has its columns' slope
+          let slope = fgNormal(pHit, fp);
+          let n = select(slope, normalize(mix(slope, gh.n, lodFade(FG_FACE_F, fp))), isCrisp(materialId(word)));
           farLand(pHit, n, farSunLit(pHit, 0), word);
         } else {
           let n = farNormal(p, 0);

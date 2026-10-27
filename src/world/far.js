@@ -471,7 +471,7 @@ export class FarField {
    * surface past physics' window, depth tested and written. march: the world march draws the window this
    * frame (its light isn't the window's: shaders/far.js FarViewParams.march), else the box volume does.
    * The rule of every engine's LOD: a coarser level past the fine one (Tanner et al. 1998, "The Clipmap").
-   * Its ground is the far grid's coarse surface.
+   * Its ground is the far grid's surface put on the ground map's cells (shaders/far.js FAR_GROUND).
    * winLo: the world march's box (world/window.js drawOrigin) on its frames; the box volume's is physics' window.
    * @param {GPURenderPassEncoder} rp
    * @param {{ march?: boolean, winLo?: number[] | null }} [opts]
