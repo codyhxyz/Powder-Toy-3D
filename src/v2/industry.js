@@ -5,6 +5,7 @@ import { PARTICLE_CAP, PACKET_KEEP, packetFlight } from './dynamics-reference.js
 import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { STEP_S } from './gravity.js';
 import { nativeForceCommitWGSL, FORCE_COMMIT_LAYOUT } from './nativeForcing.js';
+import { NATIVE_HEARTH_MATERIAL_UPDATE } from './nativeHearth.js';
 import { nativeModes } from './modes.js';
 import { GRAVITY } from './dynamics-reference.js';
 import { SIM_GRAVITY, NOMINAL_STEP_RATE, PHYS } from '../physics.js';
@@ -138,7 +139,7 @@ fn industryVelocity(p: vec3i, id: u32, motion: vec3f) -> vec3f {
 }
 `;
 export const NATIVE_INDUSTRY_SPEC = { ...INDUSTRY_EDIT, nativeForcing: true, speedSI: MACHINE_SPEED_SI };
-export const NATIVE_INDUSTRY_COMMIT = { speedSI: MACHINE_SPEED_SI, life: true, sparse: true, motion: {
+export const NATIVE_INDUSTRY_COMMIT = { speedSI: MACHINE_SPEED_SI, life: true, sparse: true, material: NATIVE_HEARTH_MATERIAL_UPDATE, motion: {
   decls: industryMotionWGSL, velocity: 'industryVelocity(p,id,r.motion.xyz)',
   flags: `if((flags&1u)!=0u && industryCarries(p)) { flags|=${PLAN.SLIDE}u; }\n` } };
 const RESULT_BYTES = 64;   // nativeWeather.js WeatherResult: four vec4s a cell

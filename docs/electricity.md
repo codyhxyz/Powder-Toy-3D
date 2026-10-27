@@ -1,5 +1,24 @@
 # Electricity
 
+## Current native controls
+
+BUTTON and CONTACTOR extend the pulse model.
+A powered BUTTON closes for `BUTTON_HOLD` electrical steps, then opens.
+It cannot supply its own spark.
+A nonconductive CONTACTOR holds incoming supply for `CONTACTOR_HOLD` steps and never backfeeds its neighbors.
+An ON SWITCH remains a mechanical latch, not proof of an arriving supply.
+
+`src/v2/contact.js` owns native contact rules.
+The canonical contact helpers also generate the shared WGSL scalar code.
+Physical E, melee, and projectile activation use the same guarded native writer.
+See [Working lab electronics](lab-electronics.md) for machine circuits, authority, and checks.
+
+This is a functional TPT-style circuit model, not an analog voltage/current solver.
+The original design notes below describe the earlier V1 implementation.
+Their historical rendering and multiplayer limitations are not the current feature matrix.
+
+## Original design
+
 The Powder Toy's electronics are a cellular automaton: a spark sits on a conductor for a few frames and hops to the
 idle conductors around it. That suits the GPU, so we borrow it, with real conductivities. The code is
 `src/electricity.js` (constants, CPU helpers, GLSL), called from `shaders/react.js` and mirrored in

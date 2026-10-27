@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { launchBrowser, newTestPage, ready, render, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { PRESERVATION_SPAWN, preservationManifest } from '../src/lab/preservation/index.js';
+import { BUTTON_HOLD } from '../src/electricity.js';
 
 const option = (key, fallback) => {
   const i = process.argv.indexOf(`--${key}`);
@@ -125,6 +126,44 @@ try {
     });
     await render(page);
     await page.screenshot({ path: `${out}/empty-chamber.png` });
+  }
+  if (process.argv.includes('--controls')) {
+    assert(!visualOnly && !inventory, 'Hand controls require the first-person UI check.');
+    const button = preservationManifest().circuits.find(c => c.id === 'light-wave').gate;
+    // Reuse the established POV test lock shim (tools/pov-play.mjs):
+    // headless Chrome does not grant the OS pointer lock. E is still sent
+    // through the real keyboard listener, hand ray, reach check and writer.
+    await page.evaluate(() => { __app.pov.test.assumeLocked = true; });
+    await page.evaluate(button => {
+      const a = __app, player = a.pov.player;
+      player.spawn(player.pos.clone().set(button[0] + 0.5, 28, button[2] - 3));
+      const eye = player.pos.clone().setY(player.pos.y + player.eyeHeight);
+      const toward = eye.clone().set(...button.map(v => v + 0.5)).sub(eye);
+      a.pov.setLook(Math.atan2(-toward.x, -toward.z), Math.atan2(toward.y, Math.hypot(toward.x, toward.z)));
+      a.test.resume();
+    }, button);
+    await page.waitForFunction(button => {
+      const a = __app, eye = new a.THREE.Vector3(), dir = eye.clone();
+      if (!a.pov.aimRay(eye, dir)) return false;
+      const target = eye.clone().set(...button.map(v => v + 0.5));
+      return target.sub(eye).normalize().dot(dir) > 0.9999;
+    }, button, { timeout: 2000 });
+    await page.keyboard.press('e');
+    const pressed = await page.evaluate(async button => {
+      const a = __app;
+      await a.electronics.settle(); await a.sim.gpuSync(); a.test.park();
+      const { createIndustryDiagnostics } = await import('/src/industry/diagnostics.js');
+      const probe = createIndustryDiagnostics({ getSim: () => a.sim });
+      try {
+        const observed = await probe.inspect({ id: 'hand-button', type: 'control-cell',
+          x: button[0], y: button[1], z: button[2], rotation: 0 }, {
+          regions: {}, guard: { base: [0, 0, 0], material: -1, port: button, powered: true },
+        });
+        return observed.evidence.control.sample;
+      } finally { probe.dispose(); }
+    }, button);
+    assert.equal(pressed.life, BUTTON_HOLD);
+    console.log('PASS real first-person E within hand reach; native button pressed');
   }
   assert.deepEqual(errors, []);
   console.log(inventory ? 'PASS physical materials before/after native stepping (singularity intentionally absent)' : visualOnly ? `PASS full-size authored story viewpoints: ${out}` :

@@ -539,6 +539,10 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
     if (disposed || event?.confirmed !== true || !Number.isInteger(event.count) || event.count <= 0) return false;
     const key = industryDiagnosticSignature(device);
     if (!key) return false;
+    // Bind before recording: otherwise the first inspection's simulation
+    // initialization would discard transfers that already happened.
+    const bound = currentSim();
+    if (!bound || bound.disposed) return false;
     boundedSet(transfers, key, { ...clone(event), observedAt: Number.isFinite(event.observedAt) ? event.observedAt : now() });
     return true;
   }
@@ -546,6 +550,8 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
     if (disposed || event?.confirmed !== true || !record(event)) return false;
     const key = industryDiagnosticSignature(device);
     if (!key) return false;
+    const bound = currentSim();
+    if (!bound || bound.disposed) return false;
     boundedSet(confirmations, key, { ...clone(event), observedAt: Number.isFinite(event.observedAt) ? event.observedAt : now() });
     return true;
   }

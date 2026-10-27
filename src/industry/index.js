@@ -41,6 +41,9 @@ export function createIndustry(app) {
   // Intentional (gamemode: Factory): construction remains Quarry-only.
   // Authored machines operate independently of the build UI. The documented
   // mapKind.industry restriction does not gate generic BUTTON/CONTACTOR physics.
+  // Intentional (gamemode: Factory): keep the existing finite-grid actor
+  // registry contract. Authored Sandbox machines reuse those supported grids;
+  // generic native contacts and their input service are not gated by this row.
   const active = () => app.mapKind.industry && !app.mp?.replica;
   const constructionEligible = () => active() && ['sandbox', 'factory'].includes(app.gamemode);
   // Keep machines running and preserve the build selection, but driving has no

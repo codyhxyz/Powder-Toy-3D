@@ -12,10 +12,13 @@ The map starts in first person at the reception gallery.
 The old `labStudies` URL opens the new map.
 
 Follow the gold floor line to the public window.
-The service doorway reveals the back of that same sand exhibit.
+The service doorway reveals the back of that same sand/gold sorting installation.
+Press **E** while aiming at exposed buttons or switches.
+The receiving gallery also contains a momentary light wave and a coal foundry.
 The next room contains a reservoir, elevated walkway, exhaust vessel, and separate oil sump.
+Its Start/Stop cabinet controls an eight-stage native water lift.
 The side stair leads to the inventory archive.
-The restricted route passes a disconnected cold-storage unit before the empty chamber.
+The restricted route passes passive cold storage and a live thermite bay before the empty chamber.
 
 Press **Q** to release the mouse.
 Click an information plaque to inspect the material.
@@ -58,14 +61,20 @@ Reloading the map generates the current collection.
 
 ## Mechanical limits
 
-The sand hopper contains a finite charge.
-The reservoir and oil sump do not provide endless circulation.
+The sand/gold hopper, hearth fuel, gold casting charge, and thermite charge are finite.
+The water lift moves existing lake water; gravity returns it.
+Blocked or damaged machinery can interrupt circulation.
+The separate oil sump has no hidden refill.
 Real battery-fed lamps illuminate the facility.
-Disconnected housings do not simulate pumps or refrigeration.
+Machine circuits contain native batteries, contacts, wires, receivers, and lamps.
+Lamp labels report ENABLE, not confirmed flow or safety.
+OFF does not stop hot chemistry.
+The disconnected cold-storage housing does not simulate refrigeration.
 Insulation slows the ice sample's warming but does not maintain its temperature.
 The map does not claim validated radiation shielding or indefinite containment.
 Small radioactive samples are live and explicitly marked as not neutron-shielded.
 The archive supply and drains are native simulation materials, not protected map-only overrides.
+See [Working lab electronics](lab-electronics.md) for controls, implementation, and runtime checks.
 
 ## Validation
 

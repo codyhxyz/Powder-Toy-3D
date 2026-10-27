@@ -21,6 +21,9 @@ export const NATIVE_LAUNCH_MODE=15;
 // opts.renameNow: a fracture renames the cell here, energy-exact as apply does, and plans only its
 //   launch, so a take recorded before the allocation (a melee tool's gather: run's defer) finds the
 //   debris on the grid where V1's take found it.
+// opts.material: { decls, handles, update }: grid-only coupled material override. `handles`
+//   authorizes the proposal, even when `update` returns the original material (zero quantum or
+//   failed energy admission); skip BOTH generic heat and life merges in that case.
 // opts.motion: { decls, velocity, flags }: WGSL for the plan's velocity (m/s) from p and r, and a
 // statement adding plan flags (src/v2/industry.js: a deck's carry and a machine's throw differ).
 // opts.vaporise: a change of element into a gas (the laser's core: water to steam, rock to its smoke,
@@ -92,6 +95,9 @@ if(isLiq(shaped)==isLiq(after.core)) {
   if(conductsNative(into)) { after.core.w=withSpark(shaped,ct).w; } else { after.core.y=withCtype(shaped,ct).y; }
  }
 }` : '';
+  const materialUpdate=opts.material ? `var after=before;
+if(${opts.material.handles}) { after=${opts.material.update}; }
+else { after=forceHeat(before,r);${life}\n}` : `${opts.life?'var':'let'} after=forceHeat(before,r);${life}`;
   const head=`${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
 ${nativeDynamicsHead(g)}
@@ -104,7 +110,7 @@ struct ForcePlan { velocity: vec3f, flags: u32 }
 @group(1) @binding(2) var<storage, read_write> plans: array<ForcePlan>;
 struct ForceParticle { position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u }
 @group(1) @binding(3) var<storage, read_write> particles: array<ForceParticle>;
-fn forceHeat(m: Material, r: WeatherResult) -> Material {
+${stage==='plan' ? opts.material?.decls ?? '' : ''}fn forceHeat(m: Material, r: WeatherResult) -> Material {
  if(r.after.y==r.before.y) { return m; }
  let dt=i32(round((r.after.y-r.before.y)*4.0));let heat=energyMul(capacityQ(m.core),u32(abs(dt)));
  let e=energyAdd(energyOf(m),select(heat,energyNeg(heat),dt<0));
@@ -127,7 +133,7 @@ else { let broke=wPressureBreak(p,r); if(broke>=0) { flags=2u|(u32(broke)<<8u); 
 if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }${opts.blocked ? `
 if((flags&1u)!=0u && !forceMoveFree(p,r.motion.xyz)) { flags&=~1u; }` : ''}
 ${opts.motion?.flags ?? ''}${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(${opts.motion?.velocity ?? `r.motion.xyz*${SI}`},flags);${opts.sparse?' }':''}
-${opts.life?'var':'let'} after=forceHeat(before,r);${life}
+${materialUpdate}
 if(any(after.core!=before.core) || after.bank!=before.bank) {
  noteEnergySource(p,energySub(energyOf(after),energyOf(before)));storeMaterial(s,before,after);markBusy(p);
 }`);

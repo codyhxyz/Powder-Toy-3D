@@ -1,5 +1,8 @@
 # Electronics and spectacle: integration contract
 
+This document records the implementation handoff.
+See [Working lab electronics](lab-electronics.md) for the maintained feature guide.
+
 Implementation approved by the user's request to dispatch parallel builders.
 Task: `/Users/codyhergenroeder/code/claude/tpt-lab-electronics`.
 Verified fetched base: `19118711a84aeabfe0d9e6e7688fa7641007c236`.

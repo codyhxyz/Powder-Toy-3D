@@ -64,7 +64,7 @@ export function buildReceiving({ box, set }) {
     set(x, y, z, (x + y + z) % 2 ? E.NUGGETS : E.SAND);
   }
 
-  // Cold scrap is heated by a finite-coal native hearth. The dry catch keeps
+  // Cold gold is heated by a finite-coal native hearth. The dry catch keeps
   // products rather than shipping them away or prescribing a finished casting.
   box(22, 8, 76, 32, 9, 92, E.WALL);
   box(22, 9, 76, 23, 30, 92, E.GLASS);
@@ -93,10 +93,12 @@ export function buildReceiving({ box, set }) {
   }
   const hearth = machine('receiving-coal-hearth', 'hearth', 24, 12, 78);
   const regions = hearthRegions(hearth);
-  for (const at of regions.fuel) set(...at, E.BROKENCOAL);
-  for (const at of regions.charge.filter(at => at[1] === 13)) set(...at, E.SCRAP);
-  set(25, 19, 69, E.SCRAP);
-  set(26, 19, 69, E.SCRAP);
+  // Solid seam coal stays in the firebox. Loose broken coal can redistribute
+  // into the charge/spout before the slower metal load reaches its melt point.
+  for (const at of regions.fuel) set(...at, E.COAL);
+  for (const at of regions.charge.filter(at => at[1] === 13)) set(...at, E.NUGGETS);
+  set(25, 19, 69, E.NUGGETS);
+  set(26, 19, 69, E.NUGGETS);
 
   for (let step = 0; step < 9; step++) box(54, 2, 62 + step * 2, 58, 3 + step, 64 + step * 2, E.METAL);
   box(36, 10, 80, 58, 11, 94, E.METAL);
@@ -117,7 +119,7 @@ export function buildReceiving({ box, set }) {
       { cell: [22, 14, 46], normal: [0, 0, -1], elementKey: 'GLASS', text: 'GLASS / One window. The tower and its backstage are the same installation.' },
       { cell: [60, 10, 46], normal: [0, 0, -1], text: 'SERVICE TOUR / Through the east door. Stairs overlook the working foundry.' },
       { cell: [53, 16, 71], normal: [0, 0, 1], text: 'SAME CHARGE / Sand forward. Gold right. No intake removes the evidence.' },
-      { cell: [31, 20, 86], normal: [1, 0, 0], text: 'COAL HEARTH / Six fuel grains. Four scrap grains. Dry catch. No refill.' },
+      { cell: [31, 20, 86], normal: [1, 0, 0], text: 'GOLD CASTING / Six coal cells. Four gold nuggets. Dry catch. No refill.' },
       { cell: [18, 5, 101], normal: [0, 0, 1], text: 'SERVICE EXIT / Return down the stairs. Continue east through the marked gate.' },
     ],
     landmarks: {

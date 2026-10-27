@@ -1,6 +1,7 @@
 # Electronics-operated lab: proposed direction
 
-Status: investigation complete; no gameplay implementation in this branch.
+Historical design proposal. The first implementation follows option A.
+See [Working lab electronics](lab-electronics.md) for current behavior and limits.
 Inspected base: `19118711a84aeabfe0d9e6e7688fa7641007c236`.
 
 ## User requirement

@@ -356,7 +356,7 @@ export function createPov(app) {
   let controlGeneration = 0;
   function useControlAction() {
     if (mode !== 'on' || editing || player?.dead) return;
-    if (driving) { useVehicle(); return; }
+    if (vehicles.seated) { useVehicle(); return; }
     const generation = controlGeneration, sim = app.getSim(), actor = player, warp = networkWarp;
     const eye = ctx.eye.clone(), dir = ctx.dir.clone();
     const valid = () => generation === controlGeneration && app.getSim() === sim

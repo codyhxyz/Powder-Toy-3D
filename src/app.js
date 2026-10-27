@@ -3395,6 +3395,8 @@ try {
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     current: currentMap,   // { map, mode } playing now
     get industry() { return ctx.industry; },
+    get electronics() { return ctx.electronics; },
+    actionRay: ctx.actionRay,   // same physical pointer ray used by controls
   presentation, setMode: startMode, // the gamemode's render-only effect (gfx/presentation.js): no map reload or simulation mutation
     pickRay, pickScreenRay: (ro, rd) => pickRay(ro, rd, true),   // a pick along a grid ray (pickScreenRay: as the screen shows it)
     undo,            // as ⌘Z does

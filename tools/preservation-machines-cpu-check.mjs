@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { E, ELEMENTS } from '../src/elements.js';
 import { CONDUCTS } from '../src/electricity.js';
 import { ctConductsInto } from '../src/v2/contact.js';
-import { baseMaterial, controlCell } from '../src/industry/catalog.js';
+import { baseMaterial, controlCell, deviceCell } from '../src/industry/catalog.js';
 import { machinePorts } from '../src/industry/physics.js';
 import { validateDevices } from '../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../src/industry/hearth.js';
@@ -117,9 +117,19 @@ test('both thermal installations begin cold with finite real fuel and visible ch
     for (const p of hearthRegions(d).fuel) {
       const id = idAt(p);
       assert([E.COAL, E.BROKENCOAL].includes(id));
+      if (d.id === 'receiving-coal-hearth') {
+        assert.equal(id, E.COAL, 'foundry fuel remains fixed in its six authored positions');
+        assert.equal(lifeAt(p), ELEMENTS[E.COAL].life, 'native default fuel; no extended-life map override');
+      }
       assert.equal(payloads.get(slot(p))?.temp ?? ELEMENTS[id].temp, 20);
       assert(lifeAt(p) > 0, `${d.id}: finite burnable fuel`);
     }
+  }
+  const foundry = layout.devices.find(d => d.id === 'receiving-coal-hearth');
+  for (const x of [1, 2]) for (const [y, z] of [[1, 2], [7, -9]]) {
+    const p = deviceCell(foundry, x, y, z);
+    assert.equal(idAt(p), E.NUGGETS, 'two preloaded and two conveyor-fed gold grains');
+    assert.equal(payloads.get(slot(p))?.temp ?? ELEMENTS[E.NUGGETS].temp, 20);
   }
   const reaction = layout.devices.find(d => d.id === 'exceptions-reaction-hearth');
   let thermite = 0;
