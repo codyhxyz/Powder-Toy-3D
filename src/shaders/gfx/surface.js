@@ -883,8 +883,10 @@ fn matTexLod(tiles: f32, fp: f32) -> f32 {
 // .a across the view (fp long: the minor axis) and .b along the view's trace
 // on the surface (fp / |cos θ|: the major axis). The view runs from the eye
 // (gEye, in the world: worldPos) straight to p, as footprint() takes it; a
-// reflected or bent ray's hit takes the eye's direction too. Face-on (or fp 0:
-// albedoOf) it is a circle, any two axes in the plane.
+// reflected or bent ray's hit, and the curved far view's (its rays are
+// parabolas: shaders/far.js gFarRay), takes the eye's direction too, so every
+// caller passes only p, n and fp. Face-on (or fp 0: albedoOf) it is a circle,
+// any two axes in the plane.
 const TEX_COS_MIN: f32 = 1e-3;      // floor on |cos θ| (a surface seen edge-on stretches the footprint without end)
 const TEX_TRACE_MIN: f32 = 1e-4;    // the view's trace on the surface under this (face-on): no direction of its own
 struct TexFoot { a: vec3f, b: vec3f }
