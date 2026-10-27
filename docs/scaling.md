@@ -486,9 +486,13 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     shadow heights are rebuilt.
   - Drawn by one full-screen pass before the scene (renderOrder −10, depth func always): sky with the sun's disc, the
     open sea beyond the world (its bed at the generator's floor, so the world's edge doesn't show), and the far grid.
-    Rays skip the window's box (the volume draws it), cross unset L2/L1 nodes whole and walk set ones brick by
-    brick, root-finding the trilinear field. Shading: `matOf` at the pixel's footprint (its texture fades to its far
-    look like the window's), sun through a shadow height field (per brick column: the max over the columns toward
+    Rays skip the window's box (the volume draws it), cross unset L2/L1 nodes whole, cross the air over the land by
+    the ground map's skip tops (a maximum mipmap of where the field is zero: Tevs, Ihrke & Seidel 2008) and walk set
+    nodes brick by brick, root-finding the trilinear field. A land hit is then walked across the ground map (a word
+    per cell column: its top run of opaque matter [B, H) and its top cell's material, built from the world copy;
+    `FAR_GROUND` in shaders/far.js) to the cells' own faces, so far land has the cells' shapes and materials; where
+    the map's columns don't meet the ray near the field's surface (under a crown, in a cave) the field's surface is
+    drawn. Shading: `matOf` at the pixel's footprint (its texture fades to its far look like the window's), sun through a shadow height field (per brick column: the max over the columns toward
     the sun of their ground's top, seen from below, less the sun ray's drop; crowns don't cast: as pillars they
     shaded whole forests and beaches), sky ambient with a two-tap field AO, glow; liquids with Fresnel
     to the sky and the sun's glint and a Beer–Lambert body down to the bed; aerial perspective from the sky model
