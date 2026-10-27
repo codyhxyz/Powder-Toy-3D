@@ -1,13 +1,13 @@
 import { Matrix4, Vector3 } from 'three/webgpu';
 import { BRICK } from '../shaders/common.js';
 import {
-  farLayout, FAR_SCENE, FAR_FORMATS, occupancyWords,
-  farClearFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farFrag,
+  farLayout, FAR_SCENE, FAR_FORMATS, FAR_GROUND, farBufferWords, groundLevelDispatch,
+  farClearFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farColumnsFrag, ColumnParams, farFrag,
   RegionParams, regionDispatch, ShadowParams, columnDispatch, nodeDispatch,
   FAR_CLEAR_LAYOUT, FAR_BOOST_LAYOUT, FAR_MIP1_LAYOUT, FAR_MIP2_LAYOUT, FAR_TOP_LAYOUT,
   FAR_SHADOW_LAYOUT, FAR_VIEW_FRAME, FAR_VIEW_FRAME_MIXED, FarViewParams, FarViewParamsMixed, farViewPipeline,
 } from '../shaders/far.js';
-import { farCopyFrag, FAR_COPY_LAYOUT } from '../shaders/world/farFromCopy.js';
+import { farCopyFrag, FAR_COPY_LAYOUT, farGroundFrag, FAR_GROUND_LAYOUT } from '../shaders/world/farFromCopy.js';
 import { WORLD_COPY_LAYOUT } from '../shaders/world/copy.js';
 import { frameUniformsOf } from '../gfx/uniforms.js';
 import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
@@ -131,7 +131,8 @@ export class FarField {
     this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)
     this.top = tex2('far tops', FAR_FORMATS.top);
     this.shadow = tex2('far shadow heights', FAR_FORMATS.shadow);
-    this.occ = gpu.createBuffer({ label: 'far occupancy', size: occupancyWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
+    // the occupancy levels, then the ground map (shaders/far.js FAR_GROUND: a word a cell column, its mips and skip tops)
+    this.occ = gpu.createBuffer({ label: 'far occupancy + ground map', size: farBufferWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
     this.views = {
       grid: this.grid.createView({ label: 'far grid', dimension: '3d' }),
       field: this.field.createView({ label: 'far field', dimension: '3d' }),
@@ -168,6 +169,8 @@ export class FarField {
       mip2: kernel('farMip2', farMip2Frag(g, L), layout('far mip2', FAR_MIP2_LAYOUT)),
       top: kernel('farTop', farTopFrag(g, L), layout('far top', FAR_TOP_LAYOUT)),
       shadow: kernel('farShadow', farShadowFrag(g, L), layout('far shadow', FAR_SHADOW_LAYOUT), ShadowParams),
+      ground: kernel('farGround', farGroundFrag(g, L), layout('far ground', FAR_GROUND_LAYOUT), RegionParams, layout('WORLD_COPY', WORLD_COPY_LAYOUT)),
+      columns: kernel('farColumns', farColumnsFrag(g, L), layout('far mip1', FAR_MIP1_LAYOUT), ColumnParams),
     };
     // the bind groups (the copy's own, group 1, is read from it at each dispatch: it is made again when its pool grows)
     const v = this.views, b = (buffer) => ({ buffer });
@@ -180,6 +183,8 @@ export class FarField {
       mip2: group(this.k.mip2, [[1, b(this.occ)]], 'far mip2'),
       top: group(this.k.top, [[0, v.field], [1, v.top]], 'far top'),
       shadow: group(this.k.shadow, [[0, v.top], [1, gpu._volumeSamplers?.clamp ?? gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' })], [2, v.shadow]], 'far shadow'),
+      ground: group(this.k.ground, [[1, b(this.occ)]], 'far ground'),
+      columns: group(this.k.columns, [[0, v.field], [1, b(this.occ)]], 'far columns'),
     };
 
     // the view: its pipeline built the first time drawBehind wants it
@@ -263,6 +268,11 @@ export class FarField {
   // around them (their neighbours changed). Needs the copy built (its bindGroup).
   summarizeBox(lo, size) {
     this.box(this.k.copy, this.groupsFixed.copy, lo, size, { g1: this.copy.bindGroup });
+    // the ground map's columns over the same bricks (a column's ground is its own cells': no reach around)
+    const cells = [lo[0] * BRICK, 0, lo[2] * BRICK], span = [size[0] * BRICK, 1, size[2] * BRICK];
+    this.k.ground.dispatch(this.gpu.frame, regionDispatch(span), {
+      bind: [this.sim.tables, this.copy.bindGroup, this.groupsFixed.ground], params: { lo: cells, size: span, chunkLo: [0, 0] },
+    });
     const n = this.L.bricks.n, a = lo.map((v) => Math.max(v - 1, 0)), b = lo.map((v, i) => Math.min(v + size[i] + 1, n[i]));
     this.box(this.k.boost, this.groupsFixed.boost, a, b.map((v, i) => v - a[i]));
   }
@@ -407,6 +417,9 @@ export class FarField {
       this.k.mip1.dispatch(f, nodeDispatch(this.L.l1), { bind: [t, null, F.mip1] });
       this.k.mip2.dispatch(f, nodeDispatch(this.L.l2), { bind: [t, null, F.mip2] });
       this.k.top.dispatch(f, columnDispatch(this.L), { bind: [t, null, F.top] });
+      // the ground map's mips and the skip tops (FAR_GROUND), finer first: each level reads the one under it
+      for (let k = 1; k <= FAR_GROUND.MIPS; k++) this.k.columns.dispatch(f, groundLevelDispatch(this.L, 0, k), { bind: [t, null, F.columns], params: { kind: 0, level: k } });
+      for (let k = 1; k <= FAR_GROUND.SKIPS; k++) this.k.columns.dispatch(f, groundLevelDispatch(this.L, 1, k), { bind: [t, null, F.columns], params: { kind: 1, level: k } });
       this.dirty = false;
       this.shadowStale = true;
       what++;

@@ -18,7 +18,7 @@
 // copy (WORLD_COPY_LAYOUT), group 2 the grid (written). tools/far-from-copy-cpu-check.mjs holds its JS
 // twin (farCopyTexel below) against the per-cell formula and runs naga on it.
 import { prelude, BRICK, LAYOUT } from '../common.js';
-import { farLayout, farLayoutGLSL, FAR, FAR_FORMATS, FAR_COUNT_GLSL, farRegionMain, RegionParams, regionDispatch, WORLD_SIZE } from '../far.js';
+import { farLayout, farLayoutGLSL, FAR, FAR_FORMATS, FAR_COUNT_GLSL, farRegionMain, farOccupancyGLSL, RegionParams, regionDispatch, WORLD_SIZE } from '../far.js';
 import { worldCopyWGSL, WORLD_COPY_LAYOUT } from './copy.js';
 import { WC_MIXED, WC_AUX_MAX, WC_BRICK } from './cellWord.js';
 import { STAGE } from '../../gpu/kernels.js';
@@ -34,12 +34,8 @@ if (LO > BRICK) throw new Error('farFromCopy: a cube reaching past the bricks ne
 // Group 2: the far grid, written.
 export const FAR_COPY_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, storageTexture: { access: 'write-only', format: FAR_FORMATS.grid, viewDimension: '3d' } }];
 
-export const farCopyFrag = (g, L) => /* wgsl */ `
-${prelude(g, { state: false })}
-${farLayoutGLSL(L)}
-${worldCopyWGSL()}
-${FAR_COUNT_GLSL}
-@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
+// A cell as the summaries read it (farCopyFrag, farGroundFrag).
+const FC_CELL_GLSL = /* wgsl */ `
 const FC_FULL_Q: u32 = 65536u;   // (copy.js WC_FULL_Q: a whole cell's fill, the dither's scale)
 // a liquid at partial fill: wcA dithers it cell by cell
 fn fcDithered(w: u32) -> bool { return KIND(wcId(w)) == K_LIQUID && ((w >> 24u) & 127u) < WC_AUX_WHOLE; }
@@ -49,7 +45,15 @@ fn fcId(w: u32, c: vec3i) -> i32 {
   if (id == E_EMPTY || KIND(id) == K_EMPTY) { return E_EMPTY; }
   if (fcDithered(w) && ((w >> 24u) & 127u) * FC_FULL_Q / WC_AUX_WHOLE <= (seedWorld(c, 0u, 4243u) >> 16u)) { return E_EMPTY; }
   return id;
-}
+}`;
+
+export const farCopyFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
+${farLayoutGLSL(L)}
+${worldCopyWGSL()}
+${FAR_COUNT_GLSL}
+@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
+${FC_CELL_GLSL}
 // world cell c as the summary reads it: below the world rock, above it air, past its sides the edge column
 fn fcCol(c: vec3i) -> vec3i { return vec3i(clamp(c.x, 0, WORLD_X - 1), c.y, clamp(c.z, 0, WORLD_Z - 1)); }
 fn fcWord(c: vec3i) -> u32 {
@@ -113,6 +117,58 @@ ${farRegionMain(/* wgsl */ `
     }
   }
   textureStore(farOut, b, farPack(&c));`)}
+`;
+
+// The ground map's level 0 (shaders/far.js FAR_GROUND) from the world copy: a thread per cell column of the
+// region P.lo.xz + [0, P.size.xz) (cells; y unused), its top run of opaque matter, cells [B, H), and its top
+// cell's material word, read as the summary reads cells (fcId: a K_EMPTY kind is air, a partial liquid
+// dithered). Uniform bricks are crossed a brick at a time (the summary's one-step neighbours).
+// Group 1 the world copy, group 2 the occupancy buffer (FAR_GROUND_LAYOUT; its ground map written).
+export const FAR_GROUND_LAYOUT = [{ binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+export const farGroundFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
+${farLayoutGLSL(L)}
+${worldCopyWGSL()}
+${FAR_COUNT_GLSL}
+${farOccupancyGLSL('read_write', L)}
+${RegionParams.wgsl}
+@group(3) @binding(1) var<uniform> P: RegionParams;
+${FC_CELL_GLSL}
+// whether cell c is opaque, as the summary reads it
+fn fgOpaqueAt(c: vec3i) -> bool { return farOpaque(fcId(wcCell(c), c)); }
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldId(wg, nwg) * 64u + li;
+  let s = vec2u(P.size.xz);
+  if (i >= s.x * s.y) { return; }
+  let c = P.lo.xz + vec2i(vec2u(i % s.x, i / s.x));
+  if (any(c < vec2i(0)) || any(c >= vec2i(WORLD_X, WORLD_Z))) { return; }
+  // the top: down from the world's top a brick at a time, cell by cell in a brick that isn't uniform
+  var h = -1;
+  for (var by = WBY - 1; by >= 0 && h < 0; by--) {
+    let e = wcTable[wcBrickIndex(vec3i(c.x / FAR_BRICK, by, c.y / FAR_BRICK))];
+    if ((e & WC_MIXED) == 0u && !fcDithered(e)) {
+      if (farOpaque(fcId(e, vec3i(0)))) { h = by * FAR_BRICK + FAR_BRICK - 1; }
+      continue;
+    }
+    for (var ly = FAR_BRICK - 1; ly >= 0; ly--) {
+      if (fgOpaqueAt(vec3i(c.x, by * FAR_BRICK + ly, c.y))) { h = by * FAR_BRICK + ly; break; }
+    }
+  }
+  var word = 0u;
+  var b = 0;
+  if (h >= 0) {
+    let q = vec3i(c.x, h, c.y);
+    let w = wcCell(q);
+    let id = fcId(w, q);
+    word = u32(materialWord(id, appearanceOf(id, f32(wcCtype(w)))));
+    // the run's bottom: down to the first cell that isn't opaque, FG_RUN_SCAN cells at most (then the floor)
+    for (var y = h - 1; y >= max(h - FG_RUN_SCAN, 0); y--) {
+      if (!fgOpaqueAt(vec3i(c.x, y, c.y))) { b = y + 1; break; }
+    }
+  }
+  farOcc[fgAt0(c)] = fgPack(u32(h + 1), u32(b), word);
+}
 `;
 
 // ---------------------------------------------------------------- JS twin
@@ -234,4 +290,7 @@ const Lw = farLayout(WORLD_SIZE);
 export const WGSL_CHECK = () => [{
   name: 'farCopy', kind: 'compute', grids: ['128'], warm: false, code: (g) => farCopyFrag(g, Lw),
   layouts: () => [LAYOUT.TABLES, WORLD_COPY_LAYOUT, FAR_COPY_LAYOUT], params: RegionParams, dispatch: () => regionDispatch([16, Lw.bricks.n[1], 16]),
+}, {
+  name: 'farGround', kind: 'compute', grids: ['128'], warm: false, code: (g) => farGroundFrag(g, Lw),
+  layouts: () => [LAYOUT.TABLES, WORLD_COPY_LAYOUT, FAR_GROUND_LAYOUT], params: RegionParams, dispatch: () => regionDispatch([Lw.size[0], 1, Lw.size[2]]),
 }];
