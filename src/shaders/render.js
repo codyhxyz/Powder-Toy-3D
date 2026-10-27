@@ -1617,7 +1617,7 @@ ${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stop
     // through the hit's one shadeHit call (gfx/surface.js; it meets one or the other)
     var floorLit = false;
     var floorHp = vec3f(0.0);
-    var floorFw = vec2f(0.0);
+    var floorFw = vec4f(0.0);   // the floor's footprint (gfx/surface.js floorFoot)
     if (sp == 0 && !stop) {${curved ? `
       var floorP: vec3f;
       var floorT: f32;
@@ -1629,7 +1629,7 @@ ${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stop
         rd = normalize(warpSlope(walk.ray, tf));` : ''}
         if (!anyHit) { anyHit = true; hitPos = floorHp; }
         floorLit = true;
-        floorFw = floorFwidth(floorHp, rd);
+        floorFw = floorFoot(floorHp, rd);
       }
     }
     var c = vec3f(0.0);
