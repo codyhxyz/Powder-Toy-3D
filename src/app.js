@@ -229,6 +229,11 @@ const linkShot = shotLink?.shotParams(params) ?? null;
 const testMode = params.get('test') ?? window.__TPT_TEST_MODE__;
 if (testMode != null && !['manual', 'preview', 'ui', 'visual'].includes(testMode)) throw new Error(`Unknown test mode: ${testMode}`);
 let testParked = testMode === 'manual';
+// ?truth=1: the reference picture the look is judged against (research/detail-loss, tools/look-score.py): on a
+// big map the world march draws the whole world at full detail instead of keeping to physics' window and
+// leaving the rest to the far view (marchBoxed). Test only, not persisted; the run's settings carry the rest
+// (native resolution, Detail Full: tools/profile.mjs --truth)
+const truthView = params.get('truth') === '1';
 const PREVIEW_HZ = 10;
 const knownSize = (s) => s in SIZES || s in WORLDS;
 if (knownSize(params.get('size'))) settings.size = params.get('size');
@@ -2634,7 +2639,7 @@ let frameBoxed = false;
 // the box it draws at full detail: where physics' window comes to rest (world/window.js drawOrigin), latched with it
 let frameDrawLo = null;
 function marchBoxed(view, curved) {
-  return !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
+  return !truthView && !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
 }
 // A big map's far view (world/far.js drawPass): its own pass, 'far view', after three's opaque meshes and
 // the world march's stages, before the scene pass, into the scene target with its depth (drew: the meshes

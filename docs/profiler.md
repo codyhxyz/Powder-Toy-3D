@@ -20,6 +20,8 @@ One action shows what is wrong with performance, in one run.
 
 `--gpufeatures core` (or a list such as `subgroups`) boots with only those optional shader features (gpu/features.js), so one feature can be A/B'd on one machine: `--gpufeatures subgroups` against the default is f16 off, everything else equal. The setup line names them (`shaders f16+subgroups`), and `--compare` counts them as a setup difference.
 
+`--upscale native|quality|balanced|performance` boots with that Upscaling preset (performance is the menu's Fast; it also takes the page-sized canvas, app.js outputRatio). `--truth` takes the reference picture the look is judged against: native, Detail Full, and on a big map the world march over the whole world instead of physics' window plus the far view (app.js `?truth=1`). With `--shot`, `tools/look-score.py TRUTH.png CANDIDATE.png` scores a build's frames against it with NVIDIA FLIP (research/detail-loss/README.md).
+
 `--chrome-arg SWITCH` (repeatable) launches the browser with one more Chrome switch, to price it: `--chrome-arg --enable-dawn-features=disable_robustness` against the default prices Dawn's bounds checks. Chrome keeps only the last copy of a switch, so list switches (`--enable-dawn-features`, `--disable-dawn-features`, `--enable-features`, `--disable-features`) are merged with the counters' own (`COUNTER_CHROME_ARGS`, the pass labels Metal needs) into one switch. The setup line names them (`chrome --enable-dawn-features=…`), and `--compare` counts them as a setup difference.
 
 `--compare old/profile.json` prints the per-pass deltas. It says "NOT comparable" with the reasons when the setups differ.
