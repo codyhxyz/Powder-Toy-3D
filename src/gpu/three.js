@@ -384,7 +384,8 @@ export function reserveTemporalJitter(node, camera, w, h) {
  *   SMAA", SIGGRAPH; UE4's and FSR 2's history filter), not one bilinear tap,
  *   which re-blurred it every frame the camera moved by a fraction of a
  *   pixel (view bob). Its overshoot is clamped to the taps' range (as UE4
- *   clamps its history: the thin-feature lock skips the variance clip).
+ *   clamps its history: the thin-feature lock skips the variance clip), and
+ *   while the view moves it holds FSR 2's shorter history (TAAU_MOTION).
  * Only outside a RenderPipeline (the jitter's view-offset hooks are
  * createTemporalUpscaler's). updateBefore and setup are the node's own
  * (TAAUNode.js:377-489, :491-702) but for those changes.
@@ -401,6 +402,13 @@ export const TAAU_KERNEL = {
   EPS: 1e-5,         // the taps' weight below which the pixel has no sample (FSR 2's FSR2_EPSILON): history only
   MEAN_GRID: 32,     // sub-pixel positions per axis lanczosMeanWeight averages over
 };
+// FSR 2's history length in motion (ffx_fsr2_accumulate.h ComputeBaseAccumulationWeight): once the
+// view moves (its in-motion ramp: full at 0.1 output pixels a frame, × MOVE_RAMP) the history holds
+// about 10 frames' samples (its "upsample weight × 10"), not the still view's 1 / currentFrameWeight:
+// every frame of history re-reads it at a fraction of a pixel, and 40 such reads smear it
+// (2026-10-26, a CPU model of this resolve at 2× and a 0.15 px/frame pan: the image's detail
+// 70% → 89% of the truth's, its error 0.057 → 0.031).
+export const TAAU_MOTION = { WEIGHT: 0.1, RAMP: 10 };
 // FSR 2's Lanczos2ApproxSq of the squared offset x²: (25/16 (2/5 x² - 1)² - (25/16 - 1)) (1/4 x² - 1)²
 const LANCZOS_A = 2 / 5, LANCZOS_B = 1 / 4, LANCZOS_C = 25 / 16;
 export function lanczos2ApproxSq(x2) {
@@ -618,6 +626,9 @@ class PingPongTAAUNode extends TAAUNode {
       const lock = max(gatedThinFeature, float(0)).saturate();
       const lockedHistoryColor = mix(clippedHistoryColor, historyColor, lock);
       const currentWeight = float(this.currentFrameWeight).toVar();
+      // (FSR 2's in-motion history: the still weight rises to TAAU_MOTION.WEIGHT with the output pixels moved)
+      const movedPx = uvNode.sub(historyUV).mul(historySize).length();
+      currentWeight.assign(mix(currentWeight, float(TAAU_MOTION.WEIGHT), movedPx.mul(TAAU_MOTION.RAMP).saturate()));
       currentWeight.assign(hasValidHistory.select(currentWeight.add(motionFactor).mul(sampleShare).saturate(), 1));
       const output = flickerReduction(currentColor, lockedHistoryColor, currentWeight);
       colorOutput.assign(output);
