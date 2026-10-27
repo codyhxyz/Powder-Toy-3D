@@ -820,9 +820,26 @@ fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, keep: f
 // three blended by the surface normal. The normal map tilts the normal in each
 // projection's own frame (u, v and the axis), and the blend of those tilts
 // bends the normal as matOf's bumps do (Golus's UDN blend). There are no
-// implicit derivatives after the march: the mip level is the pixel's footprint
-// in texels (fp, which carries FU.pixScale: surfView), the mipmap rule
-// gfx/lodFade.js's fades follow, read with textureSampleLevel.
+// implicit derivatives after the march, so each read takes its gradients
+// analytically (textureSampleGrad), from the pixel's footprint on the surface
+// (texFoot): a ray differential (Igehy 1999, "Tracing Ray Differentials",
+// SIGGRAPH) taken to the hit's tangent plane. The pixel's cone, fp across
+// (which carries FU.pixScale: surfView), meets the plane as an ellipse fp wide
+// across the view and fp / |cos θ| long along it, θ the angle between the view
+// and the normal; each projection reads that ellipse's two axes in its own uv.
+// The sampler filters anisotropically (gfx/materialTextures.js MAT_TEX_ANISO):
+// as every GPU's anisotropic filter (the EXT_texture_filter_anisotropic
+// footprint), it takes the mip of the ellipse's minor axis and up to that many
+// taps along the major, so ground seen at a grazing angle keeps the detail
+// across the view a face-on footprint has, without aliasing along it (an
+// isotropic read of fp kept the mip and aliased; one of the major axis blurs).
+// Past MAT_TEX_ANISO : 1 (θ over ~86°) the GPU coarsens the mip to cover the
+// major axis with its taps. gfx/lodFade.js's fades stay on fp, the minor axis:
+// it is the mip the texture keeps up to that ratio, and a procedural detail's
+// one sample a pixel is spread along the major axis by TAA's jitter, which
+// averages it over the ellipse as the taps do (Karis 2014, "High Quality
+// Temporal Supersampling"); fading by the major axis would blur all grazing
+// detail, the softness this replaces.
 const TEX_LAYERS: i32 = ${TEX_LAYERS};
 const TEX_TRI_SHARP: f32 = 4.0;     // the blend: weights ∝ |n|^this, so a face reads one projection and the seams between them stay narrow (Golus's 4-8)
 const TEX_TRI_MIN: f32 = 0.02;      // a projection weighted under this share is skipped (two reads saved) and the rest renormalised
@@ -855,9 +872,40 @@ const TEX_SRGB_GAMMA: f32 = 2.4;
 fn texSrgb(c: vec3f) -> vec3f {
   return select(pow((c + TEX_SRGB_OFFSET) / (1.0 + TEX_SRGB_OFFSET), vec3f(TEX_SRGB_GAMMA)), c / TEX_SRGB_SLOPE, c <= vec3f(TEX_SRGB_LINEAR_MAX));
 }
-// The mip level of a photo drawn at tiles (per cell) over footprint fp (one texel a pixel).
+// The mip level of a photo drawn at tiles (per cell) over footprint fp (one
+// texel a pixel): the level the anisotropic filter reads up to its ratio
+// (texFoot), which texFarKeep follows.
 fn matTexLod(tiles: f32, fp: f32) -> f32 {
   return log2(max(fp * tiles * f32(textureDimensions(tMatTex).x), TEX_TEXELS_MIN)) + TEX_LOD_BIAS;
+}
+// The pixel's footprint on the surface at world point p (grid units) with
+// normal n, the pixel fp across (footprint()): the ellipse's axes in the world,
+// .a across the view (fp long: the minor axis) and .b along the view's trace
+// on the surface (fp / |cos θ|: the major axis). The view runs from the eye
+// (gEye, in the world: worldPos) straight to p, as footprint() takes it; a
+// reflected or bent ray's hit, and the curved far view's (its rays are
+// parabolas: shaders/far.js gFarRay), takes the eye's direction too, so every
+// caller passes only p, n and fp. Face-on (or fp 0: albedoOf) it is a circle,
+// any two axes in the plane.
+const TEX_COS_MIN: f32 = 1e-3;      // floor on |cos θ| (a surface seen edge-on stretches the footprint without end)
+const TEX_TRACE_MIN: f32 = 1e-4;    // the view's trace on the surface under this (face-on): no direction of its own
+struct TexFoot { a: vec3f, b: vec3f }
+fn texFoot(p: vec3f, n: vec3f, fp: f32) -> TexFoot {
+  let nn = normalize(n);
+  let v = p - worldPos(gEye);
+  let vl = length(v);
+  let vd = select(-nn, v / vl, vl > 0.0);
+  let c = dot(vd, nn);
+  var along = vd - nn * c;
+  let al = length(along);
+  if (al < TEX_TRACE_MIN) {
+    // face-on: the plane's axis least along n, made tangent
+    let ax = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), abs(nn.x) > abs(nn.z));
+    along = ax - nn * dot(ax, nn);
+  }
+  let e2 = normalize(along);
+  let e1 = cross(nn, e2);
+  return TexFoot(e1 * fp, e2 * (fp / max(abs(c), TEX_COS_MIN)));
 }
 // Where a photo's tile shrinks to a few texels a pixel its low mips hold only
 // the tile's broad blotches, which repeat across a meadow or a floor as
@@ -891,7 +939,7 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
     ob = sin(TEX_VARY_OFFSET * (ia + 1.0));
     fade = smoothstep(TEX_VARY_EDGE.x, TEX_VARY_EDGE.y, k - ia);
   }
-  let lod = matTexLod(tm.y, fp);
+  let ft = texFoot(p, n, fp * tm.y * exp2(TEX_LOD_BIAS));   // in tiles, as q
   var w = pow(abs(n), vec3f(TEX_TRI_SHARP)) * planes;
   w = select(vec3f(0.0), w, w >= vec3f(TEX_TRI_MIN * (w.x + w.y + w.z)));
   w /= max(w.x + w.y + w.z, TEX_TEXELS_MIN);
@@ -910,15 +958,19 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
     if (k == 0) { t = vec3f(0.0, 0.0, -sg.x); }
     else if (k == 1) { t = vec3f(1.0, 0.0, 0.0); b = vec3f(0.0, 0.0, sg.y); }
     let uv = vec2f(dot(q, t), dot(q, b));
+    // the footprint's axes in this projection's uv (texFoot): the plane's
+    // parallel projection along axis k takes them as it takes q
+    let ga = vec2f(dot(ft.a, t), dot(ft.a, b));
+    let gb = vec2f(dot(ft.b, t), dot(ft.b, b));
     var a = vec4f(0.0);
     var sf = vec4f(0.0);
     if (fade < 1.0) {
-      a = (1.0 - fade) * textureSampleLevel(tMatTex, matTexSampler, uv + oa, layer, lod);
-      sf = (1.0 - fade) * textureSampleLevel(tMatTex, matTexSampler, uv + oa, layer + 1, lod);
+      a = (1.0 - fade) * textureSampleGrad(tMatTex, matTexSampler, uv + oa, layer, ga, gb);
+      sf = (1.0 - fade) * textureSampleGrad(tMatTex, matTexSampler, uv + oa, layer + 1, ga, gb);
     }
     if (fade > 0.0) {
-      a += fade * textureSampleLevel(tMatTex, matTexSampler, uv + ob, layer, lod);
-      sf += fade * textureSampleLevel(tMatTex, matTexSampler, uv + ob, layer + 1, lod);
+      a += fade * textureSampleGrad(tMatTex, matTexSampler, uv + ob, layer, ga, gb);
+      sf += fade * textureSampleGrad(tMatTex, matTexSampler, uv + ob, layer + 1, ga, gb);
     }
     alb += wk * a.rgb;
     metalMask += wk * a.a;
@@ -2213,12 +2265,12 @@ fn digMark(s: ptr<function, Surf>) {
 
 ${SOURCE_APPEARANCE_ENABLED && sourceAppearance === true ? sourceShadeWGSL : sourceShadeFallbackWGSL}
 // Lighting of a hit (shadeSurf), or (onFloor) of the box's floor at fhp, its
-// grid lines fw wide (shadeFloorFw): one call site of each light the two take
+// footprint fd (floorFoot: shadeFloorFw): one call site of each light the two take
 // (the sun's shadow, the probes, the near field, AO, the glow volume, the
 // lamps), since a GPU compiler inlines every call and the view's shading pass
 // meets one or the other (render.js traceView). Each light reads the floor's
 // own arguments there; what only a surface takes is left out for it.
-fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fw: vec2f) -> vec3f {
+fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fd: vec4f) -> vec3f {
   var s = s0;
   if (!onFloor) {
     digMark(&s);
@@ -2348,11 +2400,11 @@ fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fw: vec2f) -> vec3f 
   var shaded = c + s.emit;
   if (onFloor) {
     // the floor: its grid's albedo, lit by the sun from straight overhead's share and the rest as above
-    shaded = floorAlb(fhp, fw) * (FU.sunCol * max(FU.sun.y, 0.0) * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT) + lamps);
+    shaded = floorAlb(fhp, fd) * (FU.sunCol * max(FU.sun.y, 0.0) * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT) + lamps);
   }
   return shaded;
 }
-fn shadeSurf(s: Surf, rd: vec3f) -> vec3f { return shadeHit(s, rd, false, vec3f(0.0), vec2f(0.0)); }
+fn shadeSurf(s: Surf, rd: vec3f) -> vec3f { return shadeHit(s, rd, false, vec3f(0.0), vec4f(0.0)); }
 
 // The size of a pixel on the floor (y = 0) at hp, seen along rd: world cells
 // per pixel along x and z, what fwidth(worldPos(hp).xz) * uPixScale was in
@@ -2368,8 +2420,11 @@ fn shadeSurf(s: Surf, rd: vec3f) -> vec3f { return shadeHit(s, rd, false, vec3f(
 // A render-only change: within a pixel of the GLSL's except where the floor
 // meets other geometry, where the derivative across the edge was meaningless.
 const FLOOR_FW_SIN_MIN: f32 = 1e-3;   // floor on |rd.y| (a ray along the floor sees it infinitely stretched)
-// t: the ray's path from the eye; dx, dy: its direction's change per pixel
-fn floorFwidthRay(t: f32, rd: vec3f, dx: vec3f, dy: vec3f) -> vec2f {
+// t: the ray's path from the eye; dx, dy: its direction's change per pixel.
+// The floor point's change (x, z) a pixel to the side and a pixel up, as
+// (ex.xz, ey.xz): the floor's footprint, which its photo reads as gradients
+// (floorGround) and whose fwidth (floorFw) the grid lines take.
+fn floorFootRay(t: f32, rd: vec3f, dx: vec3f, dy: vec3f) -> vec4f {
   let ry = select(-1.0, 1.0, rd.y > 0.0) * max(abs(rd.y), FLOOR_FW_SIN_MIN);
   if (dot(dx, dx) + dot(dy, dy) == 0.0) {
     // No derivatives (surfViewAng): the pixel's footprint across the ray,
@@ -2381,13 +2436,17 @@ fn floorFwidthRay(t: f32, rd: vec3f, dx: vec3f, dy: vec3f) -> vec2f {
     let lh = length(rd.xz);
     var h = vec2f(1.0, 0.0);   // looking straight down: any heading
     if (lh > 1e-6) { h = rd.xz / lh; }
-    return t * gPixAng * (abs(h.yx) + abs(h) / abs(ry));
+    let tp = t * gPixAng;
+    return vec4f(tp * vec2f(-h.y, h.x), (tp / abs(ry)) * h);
   }
   let ex = t * (dx - rd * (dx.y / ry));
   let ey = t * (dy - rd * (dy.y / ry));
-  return (abs(ex.xz) + abs(ey.xz)) * FU.pixScale;
+  return vec4f(ex.xz, ey.xz) * FU.pixScale;
 }
-fn floorFwidth(hp: vec3f, rd: vec3f) -> vec2f { return floorFwidthRay(distance(hp, gEye), rd, gRdDx, gRdDy); }
+fn floorFw(d: vec4f) -> vec2f { return abs(d.xy) + abs(d.zw); }
+fn floorFwidthRay(t: f32, rd: vec3f, dx: vec3f, dy: vec3f) -> vec2f { return floorFw(floorFootRay(t, rd, dx, dy)); }
+fn floorFoot(hp: vec3f, rd: vec3f) -> vec4f { return floorFootRay(distance(hp, gEye), rd, gRdDx, gRdDy); }
+fn floorFwidth(hp: vec3f, rd: vec3f) -> vec2f { return floorFw(floorFoot(hp, rd)); }
 // The same for a ray a mirror at m turned into rd (reflectTrace's floor). A
 // plane mirror reflects the whole path: hp is the mirror image of a point on
 // the eye's straight ray as far as eye → m → hp, and the ray's derivatives
@@ -2395,7 +2454,7 @@ fn floorFwidth(hp: vec3f, rd: vec3f) -> vec2f { return floorFwidthRay(distance(h
 // the plane form above holds. nm lies along the difference of the two
 // directions, the incoming one taken straight from the eye. A ripple's
 // curvature, which spread the GLSL's quad difference too, is left out.
-fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f {
+fn floorFootMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec4f {
   let v = m - gEye;
   let k = rd - v / max(length(v), 1e-6);
   var dx = gRdDx;
@@ -2405,51 +2464,57 @@ fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f {
     dx -= 2.0 * dot(nm, dx) * nm;
     dy -= 2.0 * dot(nm, dy) * nm;
   }
-  return floorFwidthRay(length(v) + distance(m, hp), rd, dx, dy);
+  return floorFootRay(length(v) + distance(m, hp), rd, dx, dy);
 }
+fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f { return floorFw(floorFootMirror(hp, rd, m)); }
 
 // (FLOOR_LINE_ALB, the grid's seams: gfx/sky.js, which the backdrop's grid shares)
 const FLOOR_LINE_CELLS: f32 = 8.0;   // cells between the floor's grid lines
-fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFwidth(hp, rd)); }
+fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFoot(hp, rd)); }
 // The floor's scanned concrete (gfx/materials.js FLOOR_TEX), its albedo alone
 // (the floor is lit flat), read from above at the scan's real size and scaled
-// to the floor's mean (GROUND_ALB); the mip from the pixel's footprint, as
-// matTextured's. The flat GROUND_ALB until the photo is in (FU.floorTex).
+// to the floor's mean (GROUND_ALB); read with the floor's footprint fd
+// (floorFoot) as gradients, anisotropically as matTextured's (texFoot). The
+// flat GROUND_ALB until the photo is in (FU.floorTex).
 const FLOOR_TEX_TILES: f32 = ${f(FLOOR_TEX.tiles)};   // tiles per cell
 // The scuffs and stains calm sooner than the grass's blotches (texFarKeep): from
 // ~3 m to ~10 m, so the grid's seams, a pixel or two wide there, aren't lost among them.
 const FLOOR_TEX_FAR_LOD: vec2f = vec2f(1.0, 3.5);
 const FLOOR_TEX_MEAN: vec3f = vec3f(${FLOOR_TEX.mean.map(f).join(', ')});   // the photo's mean albedo, linear
-fn floorGround(hp: vec3f, fw: vec2f) -> vec3f {
+fn floorGround(hp: vec3f, fd: vec4f) -> vec3f {
   if (FU.floorTex < 0.0 || !matTexReady()) { return GROUND_ALB; }
   let uv = worldPos(hp).xz * FLOOR_TEX_TILES;
+  let g = fd * (FLOOR_TEX_TILES * exp2(TEX_LOD_BIAS));
+  let a = textureSampleGrad(tMatTex, matTexSampler, uv, i32(FU.floorTex), g.xy, g.zw).rgb;
+  // (the calm keeps the level of the footprint's wider fwidth, as the grid's seams take it)
+  let fw = floorFw(fd);
   let lod = matTexLod(FLOOR_TEX_TILES, max(fw.x, fw.y));
-  let a = textureSampleLevel(tMatTex, matTexSampler, uv, i32(FU.floorTex), lod).rgb;
   let alb = min(texSrgb(a) * (GROUND_ALB / FLOOR_TEX_MEAN), vec3f(TEX_ALB_MAX));
   return mix(GROUND_ALB, alb, texFarKeepOver(lod, FLOOR_TEX_FAR_LOD));   // (the scuffs calm down with distance, so the grid's seams still read)
 }
-// fw: the grid lines' fwidth there (floorFwidth, or floorFwidthMirror in a reflection)
-// the floor's albedo at hp: concrete with grid lines (fw: their fwidth there)
+// the floor's albedo at hp: concrete with grid lines (fd: its footprint there,
+// floorFoot, or floorFootMirror in a reflection; the lines take its fwidth)
 // The grid's seams are at least this wide up close, so they read over the
 // photo's scuffs and stains (a 1.5 cm joint), and FLOOR_LINE_PX pixels wide
 // past that (the open ground's seams beyond the box are one-pixel lines on a
 // plain colour; these lie over the photo).
 const FLOOR_LINE_MIN_CELLS: f32 = 0.05;
 const FLOOR_LINE_PX: f32 = 1.5;
-fn floorAlb(hp: vec3f, fw: vec2f) -> vec3f {
+fn floorAlb(hp: vec3f, fd: vec4f) -> vec3f {
+  let fw = floorFw(fd);
   let q = worldPos(hp).xz / FLOOR_LINE_CELLS;
   let gq = abs(fract(q - 0.5) - 0.5) / max(max(fw * FLOOR_LINE_PX, vec2f(FLOOR_LINE_MIN_CELLS)) / FLOOR_LINE_CELLS, vec2f(1e-4));
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line);
+  return mix(floorGround(hp, fd), FLOOR_LINE_ALB, line);
 }
-// The floor of the box at hp, its grid lines fw wide: Lambert, its own probes
+// The floor of the box at hp, its footprint fd (floorFoot): Lambert, its own probes
 // and lights at hp (shadeHit, onFloor). The view's tracer calls shadeHit itself.
 fn floorHit() -> Surf {
   var s: Surf;
   s.cav = 1.0;
   return s;
 }
-fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f { return shadeHit(floorHit(), vec3f(0.0, -1.0, 0.0), true, hp, fw); }
+fn shadeFloorFw(hp: vec3f, fd: vec4f) -> vec3f { return shadeHit(floorHit(), vec3f(0.0, -1.0, 0.0), true, hp, fd); }
 `;
 };
 

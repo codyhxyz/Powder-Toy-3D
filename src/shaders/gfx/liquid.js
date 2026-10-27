@@ -377,7 +377,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     // the floor, its grid lines as wide as the whole path from the eye makes
     // them, lit as every other reflected hit is (hitLight), not as the view lights it
     let hp = ro - rd * (ro.y / rd.y);
-    return hitLight(vec3f(hp.x, IFACE_PROBE, hp.z), vec3f(0.0, 1.0, 0.0), floorAlb(hp, floorFwidthMirror(hp, rd, ro)), vec3f(0.0));
+    return hitLight(vec3f(hp.x, IFACE_PROBE, hp.z), vec3f(0.0, 1.0, 0.0), floorAlb(hp, floorFootMirror(hp, rd, ro)), vec3f(0.0));
   }
   return env;
 }

@@ -5,7 +5,7 @@
 //                 one array holds both kinds of layer, so it can't be an -srgb format);
 //                 a: metal mask (1 where the look's metalness holds: opaque photos are all 1)
 //   layer 2k + 1  normal x and y (OpenGL convention), roughness
-// bound at L.LIGHTING's MAT_TEX_BINDING with a repeating trilinear sampler
+// bound at L.LIGHTING's MAT_TEX_BINDING with a repeating anisotropic sampler
 // (shaders/bindings.js), read by shaders/gfx/surface.js matTextured.
 //
 // Only what is wanted downloads: a map's photos once the census sees their
@@ -41,6 +41,15 @@ const MIP_QUALITY = 'high';
 // The image as stored: no colour management (the normals and roughness are
 // data; the albedo is decoded in the shader) and no premultiplying.
 const DECODE = { colorSpaceConversion: 'none', premultiplyAlpha: 'none' };
+// The sampler's anisotropic filtering: up to this many taps along a pixel's
+// footprint where it lies stretched across a surface seen at an angle (the
+// ground ahead, a wall alongside), each tap at the mip of its narrow axis.
+// The read's gradients are that footprint, worked out analytically after the
+// march (shaders/gfx/surface.js texFoot, floorFoot). 16 is the most WebGPU
+// (and every GPU since 2004's) offers, and what games set as "16x AF"; it
+// covers a surface to ~86° from face-on, past which the GPU coarsens the mip.
+// WebGPU takes it only with linear min, mag and mipmap filters.
+export const MAT_TEX_ANISO = 16;
 // An array a new one replaced is destroyed this long after (frames recorded
 // before the swap may still bind it until they are submitted).
 const RETIRE_MS = 5000;
@@ -88,7 +97,7 @@ export function materialTextures(gpu) {
   let loading = null;        // the batch in flight (a promise)
   const sampler = device.createSampler({
     label: 'material textures', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
-    addressModeU: 'repeat', addressModeV: 'repeat',
+    addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: MAT_TEX_ANISO,
   });
 
   // The element tables on this device (the simulation's, and the render's own
