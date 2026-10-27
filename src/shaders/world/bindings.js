@@ -7,7 +7,7 @@
 //                    Physics-window indexed like flow: read only inside sim.origin .. + window
 //                    (march.js inPhys), zero elsewhere.
 //   22 tMatTex       the scanned material textures (gfx/materialTextures.js: one 2d array) ...
-//   23 matTexSampler ... and their repeating trilinear sampler, at L.LIGHTING's own numbers
+//   23 matTexSampler ... and their repeating anisotropic sampler, at L.LIGHTING's own numbers
 //                    (shaders/bindings.js MAT_TEX_BINDING), read by shaders/gfx/surface.js matTextured
 // Each list entry is [binding, WGSL name, WGSL type, layout entry body] (F's FIELDS_BINDINGS and
 // L's LIGHT_BINDINGS have the same shape). A resource that's missing binds a dummy, never a gap.

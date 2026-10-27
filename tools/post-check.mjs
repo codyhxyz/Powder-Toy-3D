@@ -50,7 +50,7 @@
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
-import { SKY, ADAPT, POST_DEFAULTS, NV_PHOSPHOR, MIPS } from '../src/gfx/post.js';
+import { SKY, ADAPT, POST_DEFAULTS, NV_PHOSPHOR, MIPS, sharpenAt } from '../src/gfx/post.js';
 import { halfToFloat } from '../src/gpu/readback.js';
 
 const argv = process.argv.slice(2);
@@ -215,17 +215,27 @@ function compositeAt(hist, bloom, s, x, y, noise = ign(x, y)) {
   const u = (x + 0.5) / hist.w, v = (y + 0.5) / hist.h;
   const c = sanitize(texelAt(hist, x, y));
   let rad = c.slice(0, 3);
-  const sharpen = s.taa && !s.raw ? s.sharpen : 0;
-  if (sharpen > 0) {   // CAS: cross taps in c / (1 + luma) space
-    const tm = (q) => { const l = 1 + luma(q); return q.slice(0, 3).map((z) => z / l); };
+  // (at the preset's ratio: the rounding of the scene's size moves the strength by < 1e-3)
+  const sharpen = s.taa && !s.raw ? sharpenAt(s.sharpen, 1 / Math.min(1, s.upscale ?? 1)) : 0;
+  if (sharpen > 0) {   // RCAS (FSR 1's FsrRcasF, denoised): cross taps in c / (1 + max3(c)) space
+    const max3 = (q) => Math.max(q[0], q[1], q[2]);
+    const tm = (q) => { const l = 1 + max3(q); return q.slice(0, 3).map((z) => z / l); };
     const e = tm(c), n = tm(sanitize(texelAt(hist, x, y + 1))), so = tm(sanitize(texelAt(hist, x, y - 1)));
     const w = tm(sanitize(texelAt(hist, x - 1, y))), r = tm(sanitize(texelAt(hist, x + 1, y)));
-    const ls = [e, n, so, w, r].map(luma);
-    const mn = Math.min(...ls), mx = Math.max(...ls);
-    const amp = Math.sqrt(clamp(Math.min(mn, 1 - mx) / Math.max(mx, 1e-4), 0, 1));
-    const k = -amp / mix(8, 5, sharpen);
-    const t = e.map((z, i) => Math.max((z + k * (n[i] + so[i] + w[i] + r[i])) / (1 + 4 * k), 0));
-    const lt = Math.max(1 - luma(t), 1e-3);
+    const L = (t) => t[2] * 0.5 + (t[0] * 0.5 + t[1]);
+    const ls = [n, so, w, r].map(L), le = L(e);
+    const range = Math.max(...ls, le) - Math.min(...ls, le);
+    const nz = 1 - 0.5 * clamp(Math.abs(0.25 * ls.reduce((a, b) => a + b, 0) - le) / Math.max(range, 1e-5), 0, 1);
+    const ring = [n, so, w, r];
+    const lobeC = [0, 1, 2].map((i) => {
+      const mn4 = Math.min(...ring.map((q) => q[i])), mx4 = Math.max(...ring.map((q) => q[i]));
+      const hitMin = Math.min(mn4, e[i]) / (4 * Math.max(mx4, 1e-5));
+      const hitMax = (1 - Math.max(mx4, e[i])) / Math.min(4 * mn4 - 4, -1e-5);
+      return Math.max(-hitMin, hitMax);
+    });
+    const lobe = Math.max(-(0.25 - 1 / 16), Math.min(Math.max(...lobeC), 0)) * 2 ** (2 * (sharpen - 1)) * nz;
+    const t = e.map((z, i) => Math.max((lobe * (n[i] + so[i] + w[i] + r[i]) + z) / (4 * lobe + 1), 0));
+    const lt = Math.max(1 - max3(t), 1e-3);
     rad = t.map((z) => z / lt);
   }
   if (s.bloom > 0 && !s.raw) {
@@ -422,7 +432,7 @@ try {
           }
         }
       }
-      // how much the CAS and bloom terms move pixels (the check is only as strong as they are), every 5th pixel
+      // how much the RCAS and bloom terms move pixels (the check is only as strong as they are), every 5th pixel
       for (let k = 0; k < (r.canvas.w / 5) * (r.canvas.h / 5); k++) {
         const x = 5 * (k % (r.canvas.w / 5)), y = 5 * Math.floor(k / (r.canvas.w / 5));
         const base = compositeAt(hist, bloom, { ...s, sharpen: 0, bloom: 0 }, x, y), withCas = compositeAt(hist, bloom, { ...s, bloom: 0 }, x, y), all = compositeAt(hist, bloom, s, x, y);
@@ -431,7 +441,7 @@ try {
       }
       const n = r.canvas.w * r.canvas.h * 3;
       check(max <= 0.75 && sharpened > 2 && bloomed > 1 && partial > 100,
-        `${label}: every canvas pixel against the composite in JS: max |Δ| ${max.toFixed(2)} at ${JSON.stringify(at)}, mean ${(sum / n).toFixed(3)} (8-bit rounding: ≤ ½); ${partial} partly covered pixels; CAS moves values by up to ${sharpened.toFixed(1)}, the bloom term by ${bloomed.toFixed(1)} (every 5th pixel)`);
+        `${label}: every canvas pixel against the composite in JS: max |Δ| ${max.toFixed(2)} at ${JSON.stringify(at)}, mean ${(sum / n).toFixed(3)} (8-bit rounding: ≤ ½); ${partial} partly covered pixels; RCAS moves values by up to ${sharpened.toFixed(1)}, the bloom term by ${bloomed.toFixed(1)} (every 5th pixel)`);
     }
   }
 

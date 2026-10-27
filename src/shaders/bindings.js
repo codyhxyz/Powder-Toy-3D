@@ -191,7 +191,7 @@ const LIGHTING_BINDINGS = [
 ];
 const FAR_BINDINGS = new Set([11, 12, 13]);
 // L.LIGHTING's own: the material textures (one 2d array: gfx/materialTextures.js)
-// and their sampler (repeat, trilinear). Past every variant's additions (20, 21),
+// and their sampler (repeat, trilinear, 16x anisotropic). Past every variant's additions (20, 21),
 // so no variant's number means two things.
 export const MAT_TEX_BINDING = 22;
 export const MAT_TEX_SAMPLER_BINDING = 23;

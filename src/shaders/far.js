@@ -16,7 +16,7 @@ import { reachWGSL } from './world/reach.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
-  FAR, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
+  FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
 } from './farShared.js';
 import { glf } from '../glsl.js';
 export {
@@ -707,13 +707,92 @@ export const nodeDispatch = (level) => fold(Math.ceil(level.n[0] * level.n[1] * 
 // The occupancy levels live in one buffer, a word a node (1: set), L1's
 // nodes then L2's, each x fastest, then y, then z (a buffer: the view's
 // fragment stage has no sampled texture left for them, W14's 16).
-/** Words of the occupancy buffer for layout L (L1's nodes, then L2's). */
+/** Words of the occupancy levels for layout L (L1's nodes, then L2's): the buffer's first words. */
 export const occupancyWords = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];
-const occupancyGLSL = (access) => /* wgsl */ `
+
+// ---- the ground map (in the occupancy buffer, after the levels: the view's fragment stage has no sampled
+// texture left, and this needs no binding of its own) ----
+// A 2D map over the world's columns at CELL resolution, a word a cell column (x fastest): the column's top
+// run of opaque matter, cells [B, H) (H: its highest opaque cell + 1, 0 none; B: where the run below it
+// stops, 0 when it reaches FAR_GROUND.RUN_SCAN cells or the floor) and the material word of its top cell.
+// It is what the far view draws a far surface at: the far grid's march finds the hit (its brick-wide field
+// has every shape: caves, overhangs, crowns, liquids), then farGroundHit walks the map's columns across it
+// and puts the hit on the cells themselves, with their own material (shaders/far.js farFrag). The rule is
+// the heightfield's of voxel terrain renderers ("Voxel Space", NovaLogic's Comanche, 1992; Minecraft's
+// height map of each chunk's topmost blocks), a column at a time, with the run's bottom so a crown, a roof
+// or an overhang is the box [B, H), and the air under it stays open.
+// Two mip chains follow (FAR_GROUND.MIPS, SKIPS levels; level k is 4^k cells a side, as the far grid's
+// own occupancy nodes go up by FAR_NODE):
+//   ground mips: the highest top of the 4^k columns and their dominant material word (the colour a pixel
+//                that wide draws: a texture's mip is its texels' mean; a material word can't be averaged, so
+//                its vote, as the far grid's dominant element is);
+//   skip tops:   the height (cells) above which the far field is zero over the region: a maximum mipmap
+//                (Tevs, Ihrke & Seidel 2008, "Maximum mipmaps for fast, accurate, and scalable dynamic
+//                height field rendering") the far march crosses the air above the land with (farColumnSkip).
+//                Level 1 is a brick column's: the field at p is the trilinear blend of the bricks whose
+//                centres are within a brick of p, so above the centre of the highest brick of the 3 × 3
+//                columns around it with any matter, plus a brick, it is zero: exact, no blur reaches past it.
+export const FAR_GROUND = {
+  H_BITS: 10,            // a level-0 word: H in the low bits, then B, then the material word (id + 256 · appearance)
+  B_BITS: 10,
+  WORD_BITS: 12,
+  RUN_SCAN: 32,          // cells under a column's top its run is followed; a deeper run reads as solid to the floor
+  MIPS: 3,               // ground mips: a brick column (4²), 16², 64² cells
+  SKIPS: 4,              // skip levels: 4², 16², 64², 256² cells
+  REFINE_UP: BRICK * 2,  // cells above the coarse hit the walk starts (the summary's cube, FAR.CUBE: its blur's reach)...
+  REFINE_DOWN: BRICK * 2,   // ...and below it the walk ends
+  REFINE_SPAN: 64,       // cells along the ray, at most, either way (a grazing ray's window)
+  REFINE_COLS: 40,       // brick columns the walk crosses, at most (2 · REFINE_SPAN / BRICK + their ends)
+  NORMAL_MAX: 16,        // cells: widest step of a smooth surface's normal (the footprint's, at least a cell)
+};
+if (Object.values(FAR_GROUND).some((v) => !Number.isFinite(v))) throw new Error('FAR_GROUND: a number missing');
+if (FAR_GROUND.H_BITS + FAR_GROUND.B_BITS + FAR_GROUND.WORD_BITS > 32) throw new Error('FAR_GROUND: a word holds 32 bits');
+/** The ground map's words in the occupancy buffer for layout L: where each level starts and its size in columns. */
+export function groundLayout(L) {
+  const [wx, , wz] = L.size;
+  const dims = (k) => [Math.ceil(wx / 4 ** k), Math.ceil(wz / 4 ** k)];
+  let at = occupancyWords(L);
+  const g0 = { at, n: dims(0) };
+  at += wx * wz;
+  const mips = [], skips = [];
+  for (let k = 1; k <= FAR_GROUND.MIPS; k++) { const n = dims(k); mips.push({ at, n, k }); at += n[0] * n[1]; }
+  for (let k = 1; k <= FAR_GROUND.SKIPS; k++) { const n = dims(k); skips.push({ at, n, k }); at += n[0] * n[1]; }
+  if (L.size[1] >= 1 << FAR_GROUND.H_BITS) throw new Error(`far ground: a world ${L.size[1]} cells tall overflows its ${FAR_GROUND.H_BITS}-bit heights`);
+  return { g0, mips, skips, words: at };
+}
+/** Words of the whole occupancy buffer for layout L: the levels, then the ground map (groundLayout). */
+export const farBufferWords = (L) => groundLayout(L).words;
+// level k's (1-based) constant, picked by k from the list: a select chain (no private array in the loops)
+const pick = (list, f, type) => list.reduceRight((acc, v, i) => (acc === null ? `${type}(${f(v)})` : `select(${acc}, ${type}(${f(v)}), k == ${i + 1})`), null);
+const groundGLSL = (L) => {
+  const G = groundLayout(L), F = FAR_GROUND;
+  return /* wgsl */ `
+const FG0_AT: i32 = ${G.g0.at};   // the ground map's level 0 (FAR_GROUND): a word a cell column
+const FG_H_MASK: u32 = ${(1 << F.H_BITS) - 1}u;
+const FG_B_SHIFT: u32 = ${F.H_BITS}u;
+const FG_WORD_SHIFT: u32 = ${F.H_BITS + F.B_BITS}u;
+const FG_RUN_SCAN: i32 = ${F.RUN_SCAN};
+const FG_MIPS: i32 = ${F.MIPS};
+const FG_SKIPS: i32 = ${F.SKIPS};
+fn fgPack(h: u32, b: u32, word: u32) -> u32 { return min(h, FG_H_MASK) | (min(b, FG_H_MASK) << FG_B_SHIFT) | (word << FG_WORD_SHIFT); }
+fn fgH(w: u32) -> f32 { return f32(w & FG_H_MASK); }
+fn fgB(w: u32) -> f32 { return f32((w >> FG_B_SHIFT) & FG_H_MASK); }
+fn fgWord(w: u32) -> i32 { return i32(w >> FG_WORD_SHIFT); }
+// level 0 at cell column c (held to the world)
+fn fgAt0(c: vec2i) -> i32 { let q = clamp(c, vec2i(0), vec2i(WORLD_X, WORLD_Z) - 1); return FG0_AT + q.x + WORLD_X * q.y; }
+// ground mip k (1..FG_MIPS) and skip level k (1..FG_SKIPS): the word of region r (4^k columns a side), held to the level
+fn fgMipN(k: i32) -> vec2i { return ${pick(G.mips, (m) => m.n.join(', '), 'vec2i')}; }
+fn fgMipAt(k: i32, r: vec2i) -> i32 { let n = fgMipN(k); let q = clamp(r, vec2i(0), n - 1); return ${pick(G.mips, (m) => m.at, 'i32')} + q.x + n.x * q.y; }
+fn fgSkipN(k: i32) -> vec2i { return ${pick(G.skips, (m) => m.n.join(', '), 'vec2i')}; }
+fn fgSkipAt(k: i32, r: vec2i) -> i32 { let n = fgSkipN(k); let q = clamp(r, vec2i(0), n - 1); return ${pick(G.skips, (m) => m.at, 'i32')} + q.x + n.x * q.y; }`;
+};
+const occupancyGLSL = (access, L) => /* wgsl */ `
 @group(${access === 'read' ? 0 : 2}) @binding(${access === 'read' ? 3 : 1}) var<storage, ${access}> farOcc: array<u32>;
 const FAR_OCC2_AT: i32 = F1X * F1Y * F1Z;   // L2's first word
 fn farOcc1At(n: vec3i) -> i32 { return n.x + F1X * (n.y + F1Y * n.z); }
-fn farOcc2At(n: vec3i) -> i32 { return FAR_OCC2_AT + n.x + F2X * (n.y + F2Y * n.z); }`;
+fn farOcc2At(n: vec3i) -> i32 { return FAR_OCC2_AT + n.x + F2X * (n.y + F2Y * n.z); }
+${groundGLSL(L)}`;
+export { occupancyGLSL as farOccupancyGLSL };
 
 // L1 occupancy: is FAR.ISO reached by a brick in the node or next to it?
 // Group 2: the field (read), the occupancy buffer (written).
@@ -722,7 +801,7 @@ export const farMip1Frag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
 @group(2) @binding(0) var tFar: texture_3d<f32>;
-${occupancyGLSL('read_write')}
+${occupancyGLSL('read_write', L)}
 fn occupied(n: vec3i) -> bool {
   let lo = max(n * FAR_NODE - 1, vec3i(0));
   let hi = min(n * FAR_NODE + FAR_NODE + 1, WB);
@@ -745,7 +824,7 @@ export const FAR_MIP2_LAYOUT = [buf(1, 'storage')];
 export const farMip2Frag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
-${occupancyGLSL('read_write')}
+${occupancyGLSL('read_write', L)}
 fn occupied(n: vec3i) -> bool {
   for (var z = 0; z < FAR_NODE; z++) {
     for (var y = 0; y < FAR_NODE; y++) {
@@ -758,6 +837,88 @@ fn occupied(n: vec3i) -> bool {
   return false;
 }
 ${nodeMain(L.l2.n, '  farOcc[farOcc2At(n)] = select(0u, 1u, occupied(n));')}
+`;
+
+// The ground map's mips and the skip tops (FAR_GROUND), one level a dispatch, coarser after finer: P.kind 0 a
+// ground mip (P.level 1..FG_MIPS: each region's highest top and its 16 children's dominant material word, a
+// level-0 column voting only where it has ground), 1 a skip level (1 from the field: the centre of the
+// highest brick with matter of the 3 × 3 brick columns around, plus a brick; 2..FG_SKIPS the maximum of the
+// 16 children). Level 0 is the world copy's (shaders/world/farFromCopy.js farGroundFrag).
+// Group 2: the field (read), the occupancy buffer (the ground map's levels read and written): FAR_MIP1_LAYOUT.
+export const ColumnParams = uniformStruct('FarColumnParams', { kind: 'u32', level: 'i32' });
+/** A ground mip's (kind 0) or skip level's (1) dispatch, level k (1-based), for layout L. */
+export const groundLevelDispatch = (L, kind, k) => {
+  const G = groundLayout(L), m = (kind ? G.skips : G.mips)[k - 1];
+  return fold(Math.ceil(m.n[0] * m.n[1] / 64));
+};
+export const farColumnsFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
+${farLayoutGLSL(L)}
+@group(2) @binding(0) var tFar: texture_3d<f32>;
+${occupancyGLSL('read_write', L)}
+${ColumnParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FarColumnParams;
+const FG_KIDS: i32 = ${FAR_NODE};   // children per side of a region (4^k cells: 4 of level k - 1)
+// child i (of 16) of region r at level k - 1: its word as a mip's, (top, material word)
+fn fgChild(k: i32, r: vec2i, i: i32) -> vec2u {
+  let c = r * FG_KIDS + vec2i(i % FG_KIDS, i / FG_KIDS);
+  if (k == 1) {
+    if (any(c >= vec2i(WORLD_X, WORLD_Z))) { return vec2u(0u); }
+    let w = farOcc[fgAt0(c)];
+    return vec2u(w & FG_H_MASK, w >> FG_WORD_SHIFT);
+  }
+  if (any(c >= fgMipN(k - 1))) { return vec2u(0u); }
+  let w = farOcc[fgMipAt(k - 1, c)];
+  return vec2u(w & FG_H_MASK, w >> FG_WORD_SHIFT);
+}
+fn groundMip(k: i32, r: vec2i) -> u32 {
+  var top = 0u;
+  var best = 0u;
+  var bestN = 0;
+  for (var i = 0; i < FG_KIDS * FG_KIDS; i++) {
+    let a = fgChild(k, r, i);
+    top = max(top, a.x);
+    if (a.x == 0u) { continue; }
+    var n = 0;   // the votes for a's word (ties: the first child's)
+    for (var j = 0; j < FG_KIDS * FG_KIDS; j++) {
+      let b = fgChild(k, r, j);
+      if (b.x != 0u && b.y == a.y) { n++; }
+    }
+    if (n > bestN) { bestN = n; best = a.y; }
+  }
+  return fgPack(top, 0u, best);
+}
+fn skipTop1(bc: vec2i) -> u32 {
+  for (var y = WBY - 1; y >= 0; y--) {
+    for (var dz = -1; dz <= 1; dz++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        let q = clamp(vec3i(bc.x + dx, y, bc.y + dz), vec3i(0), WB - 1);
+        let v = textureLoad(tFar, q, 0);
+        if (v.r + v.g > 0.0) { return u32((f32(y) + 1.5) * f32(FAR_BRICK) + 1.0); }   // (+1: past a rounding)
+      }
+    }
+  }
+  return 0u;
+}
+fn skipTop(k: i32, r: vec2i) -> u32 {
+  if (k == 1) { return skipTop1(r); }
+  var top = 0u;
+  for (var i = 0; i < FG_KIDS * FG_KIDS; i++) {
+    let c = r * FG_KIDS + vec2i(i % FG_KIDS, i / FG_KIDS);
+    if (all(c < fgSkipN(k - 1))) { top = max(top, farOcc[fgSkipAt(k - 1, c)]); }
+  }
+  return top;
+}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = i32(foldId(wg, nwg) * 64u + li);
+  let k = P.level;
+  let n = select(fgMipN(k), fgSkipN(k), P.kind == 1u);
+  if (i >= n.x * n.y) { return; }
+  let r = vec2i(i % n.x, i / n.x);
+  if (P.kind == 0u) { farOcc[fgMipAt(k, r)] = groundMip(k, r); }
+  else { farOcc[fgSkipAt(k, r)] = skipTop(k, r); }
+}
 `;
 
 // Brick-column tops: the height (cells) of each column's ground, seen from
@@ -1029,7 +1190,7 @@ ${surfaceGLSL({}, { sourceAppearance })}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
-${occupancyGLSL('read')}
+${occupancyGLSL('read', L)}
 ${farSkyGLSL}
 ${(mixed ? FarViewParamsMixed : FarViewParams).wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;${mixed ? farMixedGLSL : ''}
@@ -1090,6 +1251,112 @@ fn farExit(ro: vec3f, inv: vec3f, lo: vec3f, size: f32, t: f32) -> f32 {${curved
   return min(tf.x, min(tf.y, tf.z));`}
 }
 
+// ---- the ground map (FAR_GROUND) ----
+const FG_EPS: f32 = 1e-3;          // cells a column walk looks past a boundary to pick the column it enters
+const FG_INSET: f32 = 0.5;         // cells a hit's column is read inside its face
+const FG_FACE_F: f32 = 1.0;        // cycles per cell of a crisp voxel's faces (one face a cell), for their fade
+const FG_REFINE_UP: f32 = ${glf(FAR_GROUND.REFINE_UP)};
+const FG_REFINE_DOWN: f32 = ${glf(FAR_GROUND.REFINE_DOWN)};
+const FG_REFINE_SPAN: f32 = ${glf(FAR_GROUND.REFINE_SPAN)};
+const FG_REFINE_COLS: i32 = ${FAR_GROUND.REFINE_COLS};
+const FG_NORMAL_MAX: f32 = ${glf(FAR_GROUND.NORMAL_MAX)};
+// The skip (Tevs, Ihrke & Seidel 2008): at t (point p) the ray is above a region's skip top: the far field is
+// zero there, so it goes on to where it leaves the region or comes down to its top, whichever is first; the
+// coarsest region it is above goes farthest (a finer one inside it can't leave it later), else a finer one,
+// whose top is lower. Returns t when no region skips.
+fn farColumnSkip(ro: vec3f, rd: vec3f, inv: vec3f, p: vec3f, t: f32) -> f32 {
+  var best = t;
+  for (var k = FG_SKIPS; k >= 1; k--) {
+    let size = f32(1 << (2u * u32(k)));
+    let r = vec2i(floor(p.xz / size));
+    let top = f32(farOcc[fgSkipAt(k, r)]);
+    if (p.y < top) { continue; }
+    let e = ((vec2f(r) + step(vec2f(0.0), rd.xz)) * size - ro.xz) * inv.xz;
+    let tx = min(e.x, e.y);
+    var tn = tx;
+    if (rd.y < 0.0) { tn = min(tn, (top - ro.y) * inv.y); }
+    best = max(best, tn);
+    if (tn >= tx) { break; }
+  }
+  return best;
+}
+// The cell-resolution hit near a coarse one: the ray through pc along d (its local line), walked across the
+// ground map's columns from where it is FG_REFINE_UP cells above pc to FG_REFINE_DOWN below (FG_REFINE_SPAN
+// cells along it at most), a brick column at a time (over a brick column's highest top, ground mip 1, in one
+// step), cell by cell in one it comes down into. The first column whose run [B, H) it meets is the hit:
+// through its top, its bottom or its side; one it starts inside isn't (the ground lies above the window:
+// under an overhang, a crown's lee), nor one past the walk: then the field's surface is drawn (ok false).
+// s: the hit's distance from pc along d.
+struct FarGround { s: f32, n: vec3f, word: i32, ok: bool }
+fn farGroundHit(pc: vec3f, d: vec3f) -> FarGround {
+  var r: FarGround;
+  r.ok = false;
+  let dy = max(abs(d.y), FAR_FLAT_EPS);
+  let sA = -min(FG_REFINE_UP / dy, FG_REFINE_SPAN);
+  let sB0 = min(FG_REFINE_DOWN / dy, FG_REFINE_SPAN);
+  let inv = 1.0 / d.xz;
+  let up = step(vec2f(0.0), d.xz);
+  // held to the world's columns (a walk that starts past its edge comes in through an edge column's side)
+  let wa = (vec2f(0.0) - pc.xz) * inv;
+  let wb = (vec2f(WORLD.xz) - pc.xz) * inv;
+  let sB = min(sB0, min(max(wa.x, wb.x), max(wa.y, wb.y)));
+  var s = max(sA, max(min(wa.x, wb.x), min(wa.y, wb.y)));
+  for (var i = 0; i < FG_REFINE_COLS; i++) {
+    if (s >= sB) { break; }
+    let q = pc + d * (s + FG_EPS);
+    let bc = vec2i(floor(q.xz / f32(BS)));
+    if (any(bc < vec2i(0)) || any(bc >= WB.xz)) { break; }
+    let eb = ((vec2f(bc) + up) * f32(BS) - pc.xz) * inv;
+    let sb = min(min(eb.x, eb.y), sB);
+    if (min(pc.y + d.y * s, pc.y + d.y * sb) >= fgH(farOcc[fgMipAt(1, bc)])) { s = sb; continue; }
+    for (var j = 0; j < 2 * BS; j++) {
+      if (s >= sb) { break; }
+      let qc = pc + d * (s + FG_EPS);
+      let c = vec2i(floor(qc.xz));
+      let ec = ((vec2f(c) + up) - pc.xz) * inv;
+      let se = min(min(ec.x, ec.y), sb);
+      let w = farOcc[fgAt0(c)];
+      let H = fgH(w);
+      let B = fgB(w);
+      let ya = pc.y + d.y * s;
+      let yb = pc.y + d.y * se;
+      if (H > 0.0 && min(ya, yb) < H && max(ya, yb) > B) {
+        if (ya >= H) { r.s = s + (ya - H) / dy; r.n = vec3f(0.0, 1.0, 0.0); }
+        else if (ya <= B) { r.s = s + (B - ya) / dy; r.n = vec3f(0.0, -1.0, 0.0); }
+        else {
+          if (s <= sA) { return r; }
+          // through its side: the axis whose boundary s is on
+          let ei = ((vec2f(c) + 1.0 - up) - pc.xz) * inv;
+          r.s = s;
+          r.n = select(vec3f(0.0, 0.0, -sign(d.z)), vec3f(-sign(d.x), 0.0, 0.0), ei.x >= ei.y);
+        }
+        r.word = fgWord(w);
+        r.ok = true;
+        return r;
+      }
+      s = se;
+    }
+    s = sb;
+  }
+  return r;
+}
+// A smooth surface's normal at p: the columns' slope over the footprint fp (a cell at least: the mip a pixel
+// reads), central differences of their tops.
+fn fgNormal(p: vec3f, fp: f32) -> vec3f {
+  let h = clamp(fp, 1.0, FG_NORMAL_MAX);
+  let gx = fgH(farOcc[fgAt0(vec2i(floor(p.xz + vec2f(h, 0.0))))]) - fgH(farOcc[fgAt0(vec2i(floor(p.xz - vec2f(h, 0.0))))]);
+  let gz = fgH(farOcc[fgAt0(vec2i(floor(p.xz + vec2f(0.0, h))))]) - fgH(farOcc[fgAt0(vec2i(floor(p.xz - vec2f(0.0, h))))]);
+  return normalize(vec3f(-gx, 2.0 * h, -gz));
+}
+// The material word a pixel of footprint fp draws at column c: the column's own (w0) up to a brick column's
+// width, then the dominant word of the ground mip as wide as the pixel.
+fn fgWordAt(c: vec2i, fp: f32, w0: i32) -> i32 {
+  let k = clamp(i32(floor(0.5 * log2(max(fp, 1.0)))), 0, FG_MIPS);
+  if (k == 0) { return w0; }
+  let w = farOcc[fgMipAt(k, c >> vec2u(2u * u32(k)))];
+  return select(w0, fgWord(w), fgH(w) > 0.0);
+}
+
 // Where the ray meets the plane y = level going down (never: NO_HIT, curved WARP_INF), its
 // point *ps there and whether that lies past the world's columns (*past).
 fn farSeaHit(ro: vec3f, rd: vec3f, level: f32, ps: ptr<function, vec3f>, past: ptr<function, bool>) -> f32 {
@@ -1148,7 +1415,10 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
     if (!o2) { t = farExit(ro, inv, vec3f(n2 * FAR_L2_CELLS), f32(FAR_L2_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
     let n1 = c / FAR_L1_CELLS;
     if (any(n1 != n1Last)) { n1Last = n1; o1 = farOcc1(n1); }
-    if (!o1) { t = farExit(ro, inv, vec3f(n1 * FAR_L1_CELLS), f32(FAR_L1_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
+    if (!o1) { t = farExit(ro, inv, vec3f(n1 * FAR_L1_CELLS), f32(FAR_L1_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }${curved ? '' : `
+    // over the land, in a node the ground sets: the skip tops (a straight ray's: the curved one keeps the nodes)
+    let tj = farColumnSkip(ro, rd, inv, p, t);
+    if (tj > t + FAR_NUDGE) { t = tj + FAR_NUDGE; f = -1.0; continue; }`}
     if (!farNear(c / BS)) { t = farExit(ro, inv, vec3f(c / BS * BS), f32(BS), t) + FAR_NUDGE; f = -1.0; continue; }
     var te = min(farExit(ro, inv, vec3f(c / BS * BS), f32(BS), t), t1);${curved ? `
     if (t < gFarWindow.z) { te = min(te, gFarWindow.z); }
@@ -1210,20 +1480,45 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
   return select(AMBIENT, INCAND_T0 + a * FAR_GLOW_SPAN, a > 0.0);
 }
 
-// A lit opaque far surface, kept coarse: the view runs on every pixel before
-// the WORLD volume overdraws nearly all of them (drawBehind), so its land is
-// the element's flat albedo (an imported map's own colour where it has one),
-// the sun through the shadow heights, the sky over its open share and its own
-// glow: no material texture, bump or specular. A coarse LOD level shades
-// coarsely (UE's HLOD proxies bake to flat-shaded materials the same way).
-fn farShadeCoarse(p: vec3f, n: vec3f, sunVis: f32, word: i32) -> vec3f {
-  let id = materialId(word);
-  var alb = ALBEDO(id);
-  let src = sourceMaterial(id, p, n);
-  if (src.kind != 0u) { alb = src.albedo; }
-  let sun = FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0);
-  let sky = skyAmbient(n) * farAO(p, n) * farSkyOpen(p + n * FAR_SKY_LIFT);
-  return alb * (sun + sky) + cellEmission(id, farGlowT(p, n), appearanceCtype(id, 0.0, materialAppearance(word)));
+// A far surface's look is the material library's (matOf: the scanned textures, matMacro's patches, the
+// cells' glow, an imported map's own material), at the pixel's footprint, so its mips and lodFades are the
+// level of detail (the mipmap rule: gfx/lodFade.js), as the window's surfaces are drawn. Every far surface
+// the pixel shows, land or a liquid's bed, asks for it once, at the end of fs (FarMat, gFarMat): Metal
+// inlines every call site, and the library is most of the module (farLiquid's note). The light is a linear
+// form in the material's albedo (FarLin: a + k · albedo), so a liquid's surface, body and bed are worked out
+// before the albedo is known; land is lit with the material's bumped normal.
+struct FarLin { a: vec3f, k: vec3f }
+struct FarMat {
+  on: bool,     // a material is asked for...
+  land: bool,   // ...for land (lit here, with its bump), else a liquid's bed (FarLin's k)
+  word: i32,    // its material word, the point, the normal, its temperature (glow)
+  p: vec3f,
+  n: vec3f,
+  T: f32,
+  sun: f32,     // land's sunlight (farSunLit) and open sky (farAO × farSkyOpen)
+  sky: f32,
+}
+var<private> gFarMat: FarMat;
+// Land at p, normal n, material word: its material asked for, lit by sun and sky.
+fn farLand(p: vec3f, n: vec3f, sunVis: f32, word: i32) {
+  gFarMat.on = true;
+  gFarMat.land = true;
+  gFarMat.word = word;
+  gFarMat.p = p;
+  gFarMat.n = n;
+  gFarMat.T = farGlowT(p, n);
+  gFarMat.sun = sunVis;
+  gFarMat.sky = farAO(p, n) * farSkyOpen(p + n * FAR_SKY_LIFT);
+}
+// The pixel's colour: lin (the sky, a liquid), and the material it asked for (gFarMat), once.
+fn farShadeMat(lin: FarLin) -> vec3f {
+  let q = gFarMat;
+  if (!q.on) { return lin.a; }
+  let id = materialId(q.word);
+  let m = matOf(id, q.p, q.n, q.T, appearanceCtype(id, 0.0, materialAppearance(q.word)), footprint(q.p));
+  if (!q.land) { return lin.a + lin.k * m.alb; }
+  let nb = bumpNormal(q.n, m.g);
+  return m.alb * (FU.sunCol * q.sun * max(dot(nb, FU.sun), 0.0) + skyAmbient(nb) * q.sky) + m.emit;
 }
 
 // Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume);
@@ -1233,23 +1528,28 @@ fn farInScatter(lid: i32, sunVis: f32, sky: f32) -> vec3f {
 }
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
+// Returns the light on it (× its albedo: farShadeMat), its material asked for.
 fn farShadeBed(word: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
-let id = materialId(word);
-let alb = matOf(id, p, n, AMBIENT, appearanceCtype(id, 0.0, materialAppearance(word)), footprint(p)).alb;
+gFarMat.on = true;
+gFarMat.land = false;
+gFarMat.word = word;
+gFarMat.p = p;
+gFarMat.n = n;
+gFarMat.T = AMBIENT;
 let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
 // The same world-anchored sunlight pattern as the simulated bed.
 var focus = 1.0;
 if (FU.caustics != 0u && depth > 0.0 && FU.sun.y > 0.0) {
 focus = causticGain(p, depth / max(FU.sun.y, FAR_SUN_Y_MIN));
 }
-return alb * (FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down * focus + skyAmbient(n) * sky * exp(-SIGMA(lid) * depth));
+return FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down * focus + skyAmbient(n) * sky * exp(-SIGMA(lid) * depth);
 }
 // Liquid lid's body seen from p along rt, under its surface: down to the bed
 // (the opaque field along rt when bedY < 0, else the plane y = bedY), dimmed
 // by the liquid on the way, plus the light it scatters toward the eye.
-// bedOnly: just the bed at p itself (normal up, no depth: the open plain beyond the world), so that
-// farShadeBed (matOf, the whole material library) has this one call site (farLiquid's note).
-fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32, bedOnly: bool) -> vec3f {${curved ? `
+// bedOnly: just the bed at p itself (normal up, no depth: the open plain beyond the world).
+// Linear in the bed's albedo (FarLin), its material asked for (farShadeBed).
+fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32, bedOnly: bool) -> FarLin {${curved ? `
   // the ray, displayed straight: a parabola under the surface too
   let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
   var s = -1.0;
@@ -1284,11 +1584,11 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32, bedO
   if (s >= 0.0) {
     bed = farShadeBed(bedId, bedPoint, bedNormal, p.y - bedPoint.y, lid, bedSun, sky);
   }
-  if (bedOnly) { return bed; }
+  if (bedOnly) { return FarLin(vec3f(0.0), bed); }
 ${curved ? `  // optical distance is in flat material space, not display-ray t
   if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
 ` : ''}  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
-  return bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
+  return FarLin((1.0 - att) * farInScatter(lid, sunVis, sky), bed * att);
 }
 // Geometry proximity from the coarse opaque field; do not clamp the world's
 // boundary into foam on the open ocean beyond it.
@@ -1311,13 +1611,14 @@ fn cozyFarShore(p: vec3f) -> f32 {
 // mode FAR_LQ_BODY: only the body seen from p along rd (under its surface), in sky share skyIn;
 // FAR_LQ_BED: only the bed at p (farBody's bedOnly), in sky share skyIn.
 // Every liquid, body and bed the view draws goes through this one call (fs), so it and
-// farBody, farShadeBed and the material library under them are compiled once: Metal
+// farBody and farShadeBed are compiled once (and the bed's material library is asked for at fs's
+// end, with land's: farShadeMat, its one call site): Metal
 // inlines every call site, and those were 5 copies of matOf, 93% of the module. One
 // site is also one copy for a SIMD group whose lanes reach liquid from different
 // branches (sea, a lake hit, water past the window) to run, not one each (the
 // "uber shader" divergence cost: Laine, Karras & Aila, "Megakernels Considered
 // Harmful", HPG 2013, sec. 1; research/gpu-architecture/KNOWLEDGE.md).
-fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32, mode: i32, skyIn: f32) -> vec3f {
+fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32, mode: i32, skyIn: f32) -> FarLin {
   let geometric = vec3f(0.0, 1.0, 0.0);
   var original: SourceMaterial;
   var sky = skyIn;
@@ -1351,13 +1652,13 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32, mode: i32, s
   }
   let body = farBody(p, rt, lid, sunVis, sky, bedY, mode == FAR_LQ_BED);
   if (mode != FAR_LQ_SURFACE) { return body; }
-  if (original.kind != 0u) { return col + trans * body; }
+  if (original.kind != 0u) { return FarLin(col + trans * body.a, trans * body.k); }
   if (cartoon) {
     let paint = cozyWaterPaint(p, footprint(p), cozyFarShore(p));
     let light = skyAmbient(geometric) * sky + FU.sunCol * sunVis * max(FU.sun.y, 0.0);
-    return paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * COZY_WATER_REFLECT + (1.0 - F) * body);
+    return FarLin(paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * COZY_WATER_REFLECT + (1.0 - F) * body.a), (1.0 - paint.a) * (1.0 - F) * body.k);
   }
-  return F * refl + (1.0 - F) * body;
+  return FarLin(F * refl + (1.0 - F) * body.a, (1.0 - F) * body.k);
 }
 
 // The sky toward rd from ro, with the key light's disc (sun, or the moon at
@@ -1481,6 +1782,8 @@ struct FarOut {
     hit = true; tAt = tSea; pAt = ps;
   } else if (tHit < NO_HIT) {
     let p = farPath(ro, rd, tHit);
+    var pHit = p;   // the hit drawn (the ground map's cells, or the field's surface)
+    var tH = tHit;
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
     let v = farSample(p);
     // (the world march's frames: a ray that comes out of the window inside opaque coarse ground, where the
@@ -1503,15 +1806,34 @@ struct FarOut {
       let sunVis = farSunLit(p, 0);
       if (v.g > v.r) { lq = FAR_LQ_SURFACE; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y); lqSun = sunVis; }
       else {
-        let n = farNormal(p, 0);
-        col = farShadeCoarse(p, n, sunVis, farElement(p, n));
+        // the cells themselves (the ground map: farGroundHit), where its columns agree with the field's
+        // surface and the hit stays out of the window's stretch; else the field's surface
+        let gh = farGroundHit(p, localRd);
+        let tE = tHit + gh.s;
+        if (gh.ok && (tE < w0 || tE >= tw.y) && tE > t0) {
+          pHit = p + localRd * gh.s;
+          tH = tE;
+          let fp = footprint(pHit);
+          let word = fgWordAt(vec2i(floor(pHit.xz - gh.n.xz * FG_INSET)), fp, gh.word);
+          // a crisp voxel keeps its face while a cell is wider than a pixel, fading to its columns' slope as it
+          // shrinks under one (the mipmap rule: lodFade, gfx/lodFade.js); a smooth surface (grains, soil,
+          // grass) has its columns' slope
+          let slope = fgNormal(pHit, fp);
+          let n = select(slope, normalize(mix(slope, gh.n, lodFade(FG_FACE_F, fp))), isCrisp(materialId(word)));
+          farLand(pHit, n, farSunLit(pHit, 0), word);
+        } else {
+          let n = farNormal(p, 0);
+          farLand(p, n, sunVis, farElement(p, n));
+        }
       }
     }
-    hit = true; tAt = tHit; pAt = p;
+    hit = true; tAt = tH; pAt = pHit;
   } else {
     col = farSky(ro, rd);
   }
-  if (lq != FAR_LQ_NONE) { col = farLiquid(lqP, lqRd, lqId, lqSun, lqBedY, lq, lqSky); }
+  var lin = FarLin(col, vec3f(0.0));
+  if (lq != FAR_LQ_NONE) { lin = farLiquid(lqP, lqRd, lqId, lqSun, lqBedY, lq, lqSky); }
+  col = farShadeMat(lin);
   if (hit) {
     col = farHaze(col, rd, tAt, farAirLit(ro - winLo, pAt - winLo));
     o.depth = farDepth(pAt);
@@ -1578,6 +1900,7 @@ export const WGSL_CHECK = () => [
   { name: 'farBoost', kind: 'compute', grids: ['128'], warm: false, code: (g) => farBoostFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_BOOST_LAYOUT), params: RegionParams, dispatch: () => regionDispatch([18, Lw.bricks.n[1], 18]) },
   { name: 'farMip1', kind: 'compute', grids: ['128'], warm: false, code: (g) => farMip1Frag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP1_LAYOUT), dispatch: () => nodeDispatch(Lw.l1) },
   { name: 'farMip2', kind: 'compute', grids: ['128'], warm: false, code: (g) => farMip2Frag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP2_LAYOUT), dispatch: () => nodeDispatch(Lw.l2) },
+  { name: 'farColumns', kind: 'compute', grids: ['128'], warm: false, code: (g) => farColumnsFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP1_LAYOUT), params: ColumnParams, dispatch: () => groundLevelDispatch(Lw, 0, 1) },
   { name: 'farTop', kind: 'compute', grids: ['128'], warm: false, code: (g) => farTopFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_TOP_LAYOUT), dispatch: () => columnDispatch(Lw) },
   { name: 'farShadow', kind: 'compute', grids: ['128'], warm: false, code: (g) => farShadowFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_SHADOW_LAYOUT), params: ShadowParams, dispatch: () => columnDispatch(Lw) },
   { name: 'farTreeBand', kind: 'compute', grids: ['128'], warm: false, code: (g) => farTreeBandFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_TREE_BAND_LAYOUT), dispatch: () => columnDispatch(Lw) },

@@ -130,11 +130,12 @@ export const POST_DEFAULTS = {
   resolutionScale: 1, // automatic multiplier under an upscaling preset (never at native); output and history stay full size
   adaptive: null, // resolutionScale applies; null: under an upscaling preset (upscale < 1). The app's Fast draws 1:1 on a page-sized canvas and still adapts
   floor: null, // lowest render scale it may take, of the output's pixels; null: UPSCALE_FLOOR
+  present: 1, // share of the canvas's pixels per axis post and TAA work at (app.js: Fast on Retina, ½); the canvas pass upscales the rest (EASU)
   bloom: 0.3, // fraction of above-threshold light scattered into the halo (0..1)
   // EV stops. +0.7 with look 0.5 reproduces the mean brightness and saturation of the
   // old in-shader ACES (measured on the lab and volcano presets).
   exposure: 0.7,
-  sharpen: 0.25, // CAS-style post-TAA sharpen (0..1)
+  sharpen: 0.5, // post-TAA RCAS at native, as FSR 2's sharpness (0..1; 0 = off); upscaled frames get more (sharpenAt)
   sprintBlur: 0, // transient 0..1 speed effect, set by the POV shell; never stored or used in stills
   cruelty: false, // transient gamemode treatment; original PaletteLimiter + screenmat (crueltyDisplay.js)
   look: 0.5, // 0 = AgX base, 1 = Blender's AgX "Punchy" look
@@ -197,6 +198,16 @@ export const MIPS = 6;
 // Upscaling presets: render scale per axis of the output's (the device's) pixels,
 // AMD FSR 2's quality modes (FidelityFX Super Resolution 2 docs, "Quality modes").
 export const UPSCALE = { native: 1, quality: 1 / 1.5, balanced: 1 / 1.7, performance: 1 / 2 };
+// RCAS's strength (FSR 2's sharpness, 0..1) at an upsample ratio r (output ÷ scene pixels per axis):
+// settings.sharpen at native, + PER_RATIO for each pixel of ratio past 1, up to MAX. At FSR 2's
+// Performance (2×) the default lands on 0.8, the sharpness FSR 2's own sample ships with; the
+// fewer pixels TAA had, the softer its reconstruction and the more it takes back.
+export const SHARPEN_RATIO = { PER_RATIO: 0.3, MAX: 0.9 };
+export const sharpenAt = (sharpen, ratio) => (sharpen > 0
+  ? Math.max(sharpen, Math.min(SHARPEN_RATIO.MAX, sharpen + SHARPEN_RATIO.PER_RATIO * Math.max(0, ratio - 1))) : 0);
+// The smallest settings.present (post's working share of the canvas's pixels per axis): FSR 1's EASU
+// is made for up to 2× per axis (its 12-tap window holds a 2× footprint).
+export const PRESENT_MIN = 1 / 2;
 // The lowest render scale automatic resolution may take under an upscaling preset:
 // FSR 2's Ultra Performance mode, 3× per axis. At native it never lowers the scale.
 export const UPSCALE_FLOOR = 1 / 3;
@@ -279,7 +290,9 @@ const MipParams = uniformStruct('MipParams', {
 });
 const ReduceParams = uniformStruct('ReduceParams', { dt: 'f32', adapt: 'bool', meter: 'bool', slot: 'u32', packed: 'bool', reuseTarget: 'bool' });
 const CompositeParams = uniformStruct('CompositeParams', {
-  size: 'vec2f', thresh: 'vec2f', hot: 'vec2f',
+  size: 'vec2f',     // the output's pixels (the canvas or a still's target)
+  srcSize: 'vec2f',  // the resolved frame's (post's working size): size, or below it on the canvas under settings.present
+  thresh: 'vec2f', hot: 'vec2f',
   bloom: 'f32', exposure: 'f32', sharpen: 'f32', look: 'f32',
   raw: 'bool', adapt: 'bool', night: 'f32', nightGain: 'f32',
   nightSeed: 'u32', opaque: 'bool', viewmodel: 'bool', glow: 'bool',
@@ -792,18 +805,131 @@ fn display(c: vec3f) -> vec3f {
   return tonemap(c) * hdrGain(c);
 }
 
-// The reversible tone map CAS works in, t = c / (1 + luma(c)): t, and its luma in w
-// (luma(c) / (1 + luma(c)): one luma and one reciprocal a tap)
-fn tmL(c: vec3f) -> vec4f {
-  let l = luma(c);
-  let r = 1.0 / (1.0 + l);
-  return vec4f(c * r, l * r);
+// RCAS (AMD FidelityFX FSR 1's robust contrast-adaptive sharpening, ffx_fsr1.h FsrRcasF with
+// FSR_RCAS_DENOISE, the pass FSR 2 runs after its upscale) on the cross taps, in the reversible
+// max-channel tone map t = c / (1 + max3(c)) (AMD's advice for HDR input: RCAS wants [0, 1)).
+fn max3(c: vec3f) -> f32 { return max(c.r, max(c.g, c.b)); }
+fn tmMax(c: vec3f) -> vec3f { return c / (1.0 + max3(c)); }
+const RCAS_INV_FLOOR: f32 = 1e-3;   // 1 - max3(t) at or below which the inverse tone map holds (t → 1: c → ∞)
+fn itmMax(t: vec3f) -> vec3f { return t / max(1.0 - max3(t), RCAS_INV_FLOOR); }
+const RCAS_LIMIT: f32 = 0.25 - 1.0 / 16.0;   // FSR_RCAS_LIMIT: the strongest lobe, short of a 4-tap blur's inverse
+const RCAS_STOPS: f32 = 2.0;   // FSR 2's remap of its sharpness s (0..1) to RCAS's 2 - 2s stops: s 1 is RCAS at full
+const RCAS_EPS: f32 = 1e-5;    // keeps RCAS's reciprocals finite on black taps
+// FSR's luma × 2 (b·½ + r·½ + g)
+fn rcasLuma(t: vec3f) -> f32 { return t.b * 0.5 + (t.r * 0.5 + t.g); }
+fn rcas(e: vec3f, n: vec3f, s: vec3f, w: vec3f, r: vec3f, sharpness: f32) -> vec3f {
+  let lE = rcasLuma(e);
+  let lN = rcasLuma(n);
+  let lS = rcasLuma(s);
+  let lW = rcasLuma(w);
+  let lR = rcasLuma(r);
+  // noise: a lone pixel against its ring sharpens less (FSR_RCAS_DENOISE)
+  let range = max(max(max(lN, lS), max(lW, lR)), lE) - min(min(min(lN, lS), min(lW, lR)), lE);
+  let nz = 1.0 - 0.5 * saturate(abs(0.25 * (lN + lS + lW + lR) - lE) / max(range, RCAS_EPS));
+  let mn4 = min(min(n, s), min(w, r));
+  let mx4 = max(max(n, s), max(w, r));
+  // the largest negative lobe that keeps every channel inside [0, 1] (FSR's peakC = (1, -4))
+  let hitMin = min(mn4, e) / (4.0 * max(mx4, vec3f(RCAS_EPS)));
+  let hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3f(-RCAS_EPS));
+  let lobeC = max(-hitMin, hitMax);
+  let lobe = max(-RCAS_LIMIT, min(max3(lobeC), 0.0)) * sharpness * nz;
+  return (lobe * (n + s + w + r) + e) / (4.0 * lobe + 1.0);
 }
-fn itm(c: vec3f) -> vec3f { return c / max(1.0 - luma(c), 1e-3); }
 
-// AMD CAS: the cross taps get the negative lobe -amp / mix(SOFT, HARD, sharpen).
-const CAS_LOBE_SOFT: f32 = 8.0;
-const CAS_LOBE_HARD: f32 = 5.0;
+// EASU (AMD FidelityFX FSR 1's edge-adaptive spatial upsampling, ffx_fsr1.h FsrEasuF): the resolved
+// frame (srcSize) up to the canvas (size) when settings.present puts it below the canvas. Its 12
+// taps around the output pixel's position, in the max-channel tone map (tmMax), a Lanczos-2 window
+// stretched along the local edge, deringed to the 2×2 nearest. Coverage (alpha) goes the same way.
+// It also returns RCAS's ring for the pass's sharpen, the cross 1 source pixel off the position
+// (bilinear from the same taps), as FSR 1 runs RCAS after EASU at the source's pixel scale.
+//    b c
+//  e f g h
+//  i j k l
+//    n o
+const EASU_DIR_MIN: f32 = 1.0 / 32768.0;   // FsrEasuF: a squared direction below this is no edge (axis-aligned)
+const EASU_EPS: f32 = 1e-5;                // keeps EASU's reciprocals finite on flat taps (FSR's approximate rcp)
+const EASU_LOB_EDGE: f32 = 1.0 / 4.0 - 0.04;   // the window's negative-lobe end on a full edge (FsrEasuF: 0.5 flat)
+const EASU_LOB_FLAT: f32 = 0.5;
+struct Easu { pix: vec4f, n: vec3f, s: vec3f, w: vec3f, r: vec3f, }
+fn easuTap(q: vec2i, hi: vec2i) -> vec4f {
+  let t = sanitize(radiance(textureLoad(tColor, clamp(q, vec2i(0), hi), 0), P.packed));
+  return vec4f(tmMax(t.rgb), t.a);
+}
+// FsrEasuSetF: one of the 4 nearest taps' direction and edge length, by its bilinear weight w
+fn easuSet(w: f32, lA: f32, lB: f32, lC: f32, lD: f32, lE: f32) -> vec3f {
+  let lenX = saturate(abs(lD - lB) / max(max(abs(lD - lC), abs(lC - lB)), EASU_EPS));
+  let lenY = saturate(abs(lE - lA) / max(max(abs(lE - lC), abs(lC - lA)), EASU_EPS));
+  return vec3f(lD - lB, lE - lA, lenX * lenX + lenY * lenY) * w;
+}
+// FsrEasuTapF: a tap's Lanczos-2 weight at offset off, rotated onto the edge and stretched (len2)
+fn easuWeight(off: vec2f, dir: vec2f, len2: vec2f, lob: f32, clp: f32) -> f32 {
+  let v = vec2f(off.x * dir.x + off.y * dir.y, off.y * dir.x - off.x * dir.y) * len2;
+  let d2 = min(dot(v, v), clp);
+  let wB0 = 2.0 / 5.0 * d2 - 1.0;
+  let wA0 = lob * d2 - 1.0;
+  return (25.0 / 16.0 * wB0 * wB0 - (25.0 / 16.0 - 1.0)) * (wA0 * wA0);
+}
+fn easu(px: vec2f, hi: vec2i) -> Easu {
+  let pp0 = (px + 0.5) * (P.srcSize / P.size) - 0.5;
+  let fp = floor(pp0);
+  let pp = pp0 - fp;
+  let o = vec2i(fp);
+  let b = easuTap(o + vec2i(0, -1), hi);
+  let c = easuTap(o + vec2i(1, -1), hi);
+  let e = easuTap(o + vec2i(-1, 0), hi);
+  let f = easuTap(o, hi);
+  let g = easuTap(o + vec2i(1, 0), hi);
+  let h = easuTap(o + vec2i(2, 0), hi);
+  let i = easuTap(o + vec2i(-1, 1), hi);
+  let j = easuTap(o + vec2i(0, 1), hi);
+  let k = easuTap(o + vec2i(1, 1), hi);
+  let l = easuTap(o + vec2i(2, 1), hi);
+  let n = easuTap(o + vec2i(0, 2), hi);
+  let oo = easuTap(o + vec2i(1, 2), hi);
+  let lb = rcasLuma(b.rgb); let lc = rcasLuma(c.rgb); let le = rcasLuma(e.rgb); let lf = rcasLuma(f.rgb);
+  let lg = rcasLuma(g.rgb); let lh = rcasLuma(h.rgb); let li = rcasLuma(i.rgb); let lj = rcasLuma(j.rgb);
+  let lk = rcasLuma(k.rgb); let ll = rcasLuma(l.rgb); let ln = rcasLuma(n.rgb); let lo = rcasLuma(oo.rgb);
+  let acc = easuSet((1.0 - pp.x) * (1.0 - pp.y), lb, le, lf, lg, lj)
+    + easuSet(pp.x * (1.0 - pp.y), lc, lf, lg, lh, lk)
+    + easuSet((1.0 - pp.x) * pp.y, lf, li, lj, lk, ln)
+    + easuSet(pp.x * pp.y, lg, lj, lk, ll, lo);
+  var dir = acc.xy;
+  let dir2 = dot(dir, dir);
+  let noEdge = dir2 < EASU_DIR_MIN;
+  dir = select(dir * inverseSqrt(max(dir2, EASU_DIR_MIN)), vec2f(1.0, 0.0), noEdge);
+  var len = acc.z * 0.5;
+  len *= len;
+  // the kernel stretches along the edge (1 on axes, √2 on diagonals) and narrows across it
+  let stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+  let len2 = vec2f(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+  let lob = EASU_LOB_FLAT + (EASU_LOB_EDGE - EASU_LOB_FLAT) * len;
+  let clp = 1.0 / lob;
+  var aC = vec4f(0.0);
+  var aW = 0.0;
+  var w = easuWeight(vec2f(0.0, -1.0) - pp, dir, len2, lob, clp); aC += b * w; aW += w;
+  w = easuWeight(vec2f(1.0, -1.0) - pp, dir, len2, lob, clp); aC += c * w; aW += w;
+  w = easuWeight(vec2f(-1.0, 1.0) - pp, dir, len2, lob, clp); aC += i * w; aW += w;
+  w = easuWeight(vec2f(0.0, 1.0) - pp, dir, len2, lob, clp); aC += j * w; aW += w;
+  w = easuWeight(vec2f(0.0, 0.0) - pp, dir, len2, lob, clp); aC += f * w; aW += w;
+  w = easuWeight(vec2f(-1.0, 0.0) - pp, dir, len2, lob, clp); aC += e * w; aW += w;
+  w = easuWeight(vec2f(1.0, 1.0) - pp, dir, len2, lob, clp); aC += k * w; aW += w;
+  w = easuWeight(vec2f(2.0, 1.0) - pp, dir, len2, lob, clp); aC += l * w; aW += w;
+  w = easuWeight(vec2f(2.0, 0.0) - pp, dir, len2, lob, clp); aC += h * w; aW += w;
+  w = easuWeight(vec2f(1.0, 0.0) - pp, dir, len2, lob, clp); aC += g * w; aW += w;
+  w = easuWeight(vec2f(1.0, 2.0) - pp, dir, len2, lob, clp); aC += oo * w; aW += w;
+  w = easuWeight(vec2f(0.0, 2.0) - pp, dir, len2, lob, clp); aC += n * w; aW += w;
+  let mn4 = min(min(f, g), min(j, k));
+  let mx4 = max(max(f, g), max(j, k));
+  var r: Easu;
+  r.pix = clamp(aC / max(aW, EASU_EPS), mn4, mx4);
+  // RCAS's ring: the position ±1 source pixel, bilinear from the taps
+  r.w = mix(mix(e.rgb, f.rgb, pp.x), mix(i.rgb, j.rgb, pp.x), pp.y);
+  r.r = mix(mix(g.rgb, h.rgb, pp.x), mix(k.rgb, l.rgb, pp.x), pp.y);
+  r.n = mix(mix(b.rgb, c.rgb, pp.x), mix(f.rgb, g.rgb, pp.x), pp.y);
+  r.s = mix(mix(j.rgb, k.rgb, pp.x), mix(n.rgb, oo.rgb, pp.x), pp.y);
+  return r;
+}
+
 // Output dither: interleaved gradient noise (Jimenez 2014), ±½ of one 8-bit step.
 const IGN: vec3f = vec3f(0.06711056, 0.00583715, 52.9829189);
 const DITHER_LEVELS: f32 = 255.0;  // output code values above 0
@@ -850,23 +976,30 @@ ${sprintBlurWGSL()}
 ${crueltyDisplayWGSL()}
 @fragment fn fs(in: FullScreen) -> @location(0) vec4f {
   let p = vec2i(in.position.xy);
-  let hi = vec2i(P.size) - 1;
+  let hi = vec2i(P.srcSize) - 1;
   let uv = (vec2f(p) + 0.5) / P.size;
-  var c = sanitize(radiance(textureLoad(tColor, p, 0), P.packed));
-  var rad = c.rgb;
-
+  var c: vec4f;
+  var rad: vec3f;
+  if (any(P.srcSize != P.size)) {
+    // the resolved frame is smaller than the canvas (settings.present): EASU up, RCAS on its ring
+    let up = easu(vec2f(p), hi);
+    c = vec4f(itmMax(up.pix.rgb), up.pix.a);
+    rad = c.rgb;
+    if (P.sharpen > 0.0) {
+      rad = itmMax(max(rcas(up.pix.rgb, up.n, up.s, up.w, up.r, exp2(RCAS_STOPS * (P.sharpen - 1.0))), vec3f(0.0)));
+    }
+  } else {
+  c = sanitize(radiance(textureLoad(tColor, p, 0), P.packed));
+  rad = c.rgb;
   if (P.sharpen > 0.0) {
-    // contrast-adaptive sharpening (AMD CAS, cross taps, luma-driven) in tone-mapped space
-    let e = tmL(c.rgb);
-    let n = tmL(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
-    let s = tmL(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
-    let w = tmL(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
-    let r = tmL(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
-    let mnL = min(e.w, min(min(n.w, s.w), min(w.w, r.w)));
-    let mxL = max(e.w, max(max(n.w, s.w), max(w.w, r.w)));
-    let amp = sqrt(clamp(min(mnL, 1.0 - mxL) / max(mxL, 1e-4), 0.0, 1.0));
-    let k = -amp / mix(CAS_LOBE_SOFT, CAS_LOBE_HARD, P.sharpen);
-    rad = itm(max((e.rgb + k * (n.rgb + s.rgb + w.rgb + r.rgb)) / (1.0 + 4.0 * k), vec3f(0.0)));
+    // RCAS (above) at FSR 2's sharpness P.sharpen (sharpenAt in gfx/post.js: more the fewer pixels TAA had)
+    let e = tmMax(c.rgb);
+    let n = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
+    let s = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(0, 1), vec2i(0), hi), 0), P.packed)).rgb);
+    let w = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p - vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
+    let r = tmMax(sanitize(radiance(textureLoad(tColor, clamp(p + vec2i(1, 0), vec2i(0), hi), 0), P.packed)).rgb);
+    rad = itmMax(max(rcas(e, n, s, w, r, exp2(RCAS_STOPS * (P.sharpen - 1.0))), vec3f(0.0)));
+  }
   }
 
   // Blur world radiance and coverage together, after sharpening, before the unblurred hands/HUD.
@@ -1205,6 +1338,11 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const STORE = TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | COPY;
 
   const settingsOf = () => crueltyFrameSettings({ ...POST_DEFAULTS, ...post.settings });
+  // post's working size on a canvas of w × h: settings.present of its pixels (the canvas pass upscales to it)
+  const workSize = (w, h) => {
+    const k = Math.min(1, Math.max(PRESENT_MIN, settingsOf().present ?? 1));
+    return k === 1 ? [w, h] : [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))];
+  };
   const ready = Promise.all(allPipes().map((p) => p.ready)).then(() => post);
   ready.catch(() => {});
 
@@ -1285,7 +1423,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       if (w === undefined) {
         const canvas = presenter?.canvas;
         if (!canvas) throw new Error('post.setSize: no size and no presenter canvas');
-        w = canvas.width; h = canvas.height;
+        [w, h] = workSize(canvas.width, canvas.height);
       }
       const z = postSizes(w, h, scale);
       if (z.size[0] === size[0] && z.size[1] === size[1] && z.inSize[0] === inSize[0] && z.inSize[1] === inSize[1] && main.color) return;
@@ -1583,8 +1721,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const rp = f.render({ colorAttachments: [out.attachment] }, out.canvas ? 'canvas' : 'composite');
       pipe.draw(rp, {
         bind: [, , bind],
-        params: compositeParams(s, size, {
-          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? s.sharpen : 0,
+        params: compositeParams(s, [out.width, out.height], {
+          // (the strength for the whole way from the scene's pixels to the output's: TAAU's, then EASU's)
+          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? sharpenAt(s.sharpen, out.width / Math.max(1, inSize[0])) : 0, srcSize: size,
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
           peak: out.canvas && presenter?.hdrActive && !s.raw && !s.cruelty ? HDR_OUT.PEAK : 1, packed,
@@ -1807,7 +1946,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     // Fallible snapshots precede publication ownership transfer.
     const projection = camera.projectionMatrix.clone(), inverse = camera.projectionMatrixInverse.clone();
     const view = camera.view ? {...camera.view} : null, aspect = camera.aspect;
-    const sizes = postSizes(out.width,out.height,scale);
+    const sizes = postSizes(...(out.canvas ? workSize(out.width,out.height) : [out.width,out.height]),scale);
     slot.target.resize(...sizes.inSize);slot.target.refresh();slot.busy = true;
     const t = {slot, publication:options.publication, feedbackIdentity:options.feedbackIdentity, identity:sceneIdentity,
       generation:sceneGeneration, id:++sceneSequence, status:'recorded', retired:false, uses:[submitted], copies:[], completion:null,
@@ -1886,7 +2025,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         t.reservation?.commit(t.camera);
         let out = t.out;
         if (out.canvas) {
-          image = {texture:gpu.createTexture({label:'last admitted scene',size:t.sizes.size,format:out.format,usage:TEX.RENDER_ATTACHMENT|TEX.TEXTURE_BINDING|TEX.COPY_SRC}),
+          image = {texture:gpu.createTexture({label:'last admitted scene',size:[out.width,out.height],format:out.format,usage:TEX.RENDER_ATTACHMENT|TEX.TEXTURE_BINDING|TEX.COPY_SRC}),
             width:out.width,height:out.height,uses:[finished],retired:false};
           out = {...out,attachment:{view:viewOf(image.texture),loadOp:'clear',storeOp:'store',clearValue:CLEAR}};
         }
@@ -1966,7 +2105,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
   function compositeParams(s, outSize, o, frameSky = sky) {
     return {
-      size: outSize, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
+      size: outSize, srcSize: o.srcSize ?? outSize, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
       bloom: o.bloom, exposure: 2 ** s.exposure, sharpen: o.sharpen, look: s.look,
       raw: s.raw, adapt: o.adapt, night: o.night, nightGain: s.nightGain,
       cruelty: s.cruelty, crueltyTime,

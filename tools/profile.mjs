@@ -64,15 +64,15 @@ const DEPS_FRAMES = 2;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--detail off|balanced|full] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--capture] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--frozen] [--shot] [--knockout N|"pass,pass"] [--knock "pass,pass"] [--no-cost] [--setup JS] [--detail off|balanced|full] [--upscale native|quality|balanced|performance] [--truth] [--gpufeatures core|LIST] [--chrome-arg SWITCH]… [--gpu-state min|med|max] [--capture] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, capture: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, detail: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
-  const flags = { '--capture': 'capture', '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup', 'gpu-state', 'detail'];
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, frozen: false, truth: false, capture: false, compare: null, target: null, knockout: 0, knockoutNames: null, cost: true, setup: null, detail: null, upscale: null, gpufeatures: null, gpuState: null, chromeArgs: [], shot: false, allowBattery: false, selfTest: false, help: false };
+  const flags = { '--capture': 'capture', '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--frozen': 'frozen', '--truth': 'truth', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'knock', 'gpufeatures', 'setup', 'gpu-state', 'detail', 'upscale'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -98,6 +98,11 @@ export function parseArgs(argv) {
   // layer and xctrace in one GPU process were not tried together: the capture run records no Metal trace
   if (o.capture) o.counters = false;
   if (o.detail !== null && !['off', 'balanced', 'full'].includes(o.detail)) throw new Error('--detail: off, balanced or full');
+  // --upscale: Settings -> Upscaling (app.js settings.upscale; post.js UPSCALE keys: performance is the menu's Fast)
+  // --truth: the reference picture (app.js ?truth=1: a big map's world march draws the whole world) at native
+  // resolution and Detail Full, auto resolution off; with --shot its frames are what tools/look-score.py scores against
+  if (o.truth) { if ((o.upscale ?? 'native') !== 'native' || (o.detail ?? 'full') !== 'full') throw new Error('--truth draws native at Detail Full'); o.upscale = 'native'; o.detail = 'full'; }
+  if (o.upscale !== null && !['native', 'quality', 'balanced', 'performance'].includes(o.upscale)) throw new Error('--upscale: native, quality, balanced or performance (Fast)');
   if (!Number.isSafeInteger(o.frames) || o.frames < 10 || o.frames > 240) throw new Error('--frames must be 10–240 (the median and spread need 10; the profiler keeps 240)');
   if (!Number.isSafeInteger(o.warmup) || o.warmup < 0 || o.warmup > 240) throw new Error('--warmup must be 0–240');
   if (!(o.dpr > 0 && o.dpr <= 3)) throw new Error('--dpr must be in (0, 3]');
@@ -302,6 +307,7 @@ async function main() {
     url.searchParams.set('map', o.map);
     url.searchParams.set('view', o.view);
     url.searchParams.set('profile', '1');
+    if (o.truth) url.searchParams.set('truth', '1');
     if (o.frozen) url.searchParams.set('paused', '1');
     // only these optional shader features (gpu/features.js): `core`, or a list such as `subgroups` (f16 off), to A/B one feature
     if (o.gpufeatures !== null) url.searchParams.set('gpufeatures', o.gpufeatures);
@@ -322,6 +328,13 @@ async function main() {
       await page.addInitScript(([key, sw]) => {
         try { localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), ...sw })); } catch { /* storage unavailable */ }
       }, [DETAIL_STORE, Object.fromEntries(DETAIL.map((f) => [settingKey(f), sw[settingKey(f)]]))]);
+    }
+    // --upscale: the Upscaling preset from boot, stored where app.js loads it (so the canvas and scene size
+    // are the preset's from the first frame: Fast also takes the page-sized canvas, app.js outputRatio)
+    if (o.upscale) {
+      await page.addInitScript(([key, upscale]) => {
+        try { localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), upscale })); } catch { /* storage unavailable */ }
+      }, [DETAIL_STORE, o.upscale]);
     }
     page.on('pageerror', (e) => errors.push(String(e)));
     // exceptions and GPU failures make the capture untrusted; other console errors (a failed fetch) are notes

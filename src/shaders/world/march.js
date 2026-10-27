@@ -285,7 +285,7 @@ const decoWorld = () => rewrite(decoViewGLSL, [
 // The floor's grid lines are a small map's (mapKind.boxFrame); under a big map's sea the world's
 // floor is plain ground (Same look as the box era: its floor lines were never drawn on a big map).
 const floorWorld = (code) => rewrite(code, [
-  ['return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line);', 'return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line * f32(P.floorLines));'],
+  ['return mix(floorGround(hp, fd), FLOOR_LINE_ALB, line);', 'return mix(floorGround(hp, fd), FLOOR_LINE_ALB, line * f32(P.floorLines));'],
 ], 'gfx/surface.js floorAlb');
 // The tracer picks F's level at every brick with something in it it enters (and keys its bricks by
 // coordinate), and stops at physics' window's far face (marchSpan: gMarchExit) as it stops at the meshes'

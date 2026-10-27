@@ -229,6 +229,11 @@ const linkShot = shotLink?.shotParams(params) ?? null;
 const testMode = params.get('test') ?? window.__TPT_TEST_MODE__;
 if (testMode != null && !['manual', 'preview', 'ui', 'visual'].includes(testMode)) throw new Error(`Unknown test mode: ${testMode}`);
 let testParked = testMode === 'manual';
+// ?truth=1: the reference picture the look is judged against (research/detail-loss, tools/look-score.py): on a
+// big map the world march draws the whole world at full detail instead of keeping to physics' window and
+// leaving the rest to the far view (marchBoxed). Test only, not persisted; the run's settings carry the rest
+// (native resolution, Detail Full: tools/profile.mjs --truth)
+const truthView = params.get('truth') === '1';
 const PREVIEW_HZ = 10;
 const knownSize = (s) => s in SIZES || s in WORLDS;
 if (knownSize(params.get('size'))) settings.size = params.get('size');
@@ -358,28 +363,30 @@ if (launch.startupError) { gpu.fail(launch.startupError); throw launch.startupEr
 // presets are shares of these real pixels, as AMD FSR 2 defines its modes
 // (gfx/post.js UPSCALE): Off renders every one of them. Phones stay at 1
 // (their GPUs pay for every output pixel of post).
-// The canvas takes the screen's pixels only while the preset draws the scene
-// with more pixels than the page has (Off, Quality and Balanced on Retina).
-// Fast draws it at the page's size, where a Retina canvas adds output pixels
-// and nothing for them to show but TAAU's still-camera build-up, and post pays
-// for every one: 14.1 ms at the Retina canvas against 3.8 ms at the page's
-// size for the same 1.3 MP scene, measured on the M5 (2026-10-13). Fast keeps
-// the page-sized canvas, the scene 1:1 on it, and auto resolution still works
-// under it (post.settings.adaptive) from the same floor of the screen.
+// Post and TAAU work at the screen's pixels only while the preset draws the
+// scene with more pixels than the page has (Off, Quality and Balanced on
+// Retina). Fast works at the page's size (pixelRatio 1): at the Retina size
+// post costs ~2 ms more, TAAU ~1.2 of it (three:TAAU 1.58 ms at 3024×1890
+// against 0.41 at 1512×945, Metal, M5, 2026-10-26; post 14.1 against 3.8 ms
+// on 2026-10-13, before TAAU's ping-pong history), and the canvas pass takes that frame up to
+// the Retina canvas with FSR 1's EASU and RCAS (gfx/post.js settings.present),
+// as FSR 1 upscales a frame, instead of the browser stretching a page-sized
+// canvas 2× bilinearly. Auto resolution still works under it
+// (post.settings.adaptive) from the same floor of the screen.
 const RETINA_MAX = 2;
 const DEVICE_RATIO = MOBILE ? 1 : Math.min(devicePixelRatio, RETINA_MAX);
 const presetOf = () => UPSCALE[settings.upscale] ?? UPSCALE.native;
 const outputRatio = () => (presetOf() * DEVICE_RATIO > 1 ? DEVICE_RATIO : 1);
+// post's pixels per CSS pixel; the canvas is always DEVICE_RATIO's
 let pixelRatio = outputRatio();
-renderer.setPixelRatio(pixelRatio);
+renderer.setPixelRatio(DEVICE_RATIO);
 renderer.setSize(innerWidth, innerHeight);
-// The canvas follows the Upscaling preset (Settings), however it was set: at a
+// Post's size follows the Upscaling preset (Settings), however it was set: at a
 // frame's start, before it draws anything (tick), as the resize does between frames.
 function applyOutputRatio() {
   if (outputRatio() === pixelRatio) return;
   pixelRatio = outputRatio();
-  renderer.setPixelRatio(pixelRatio);
-  renderer.setSize(innerWidth, innerHeight);
+  post.settings.present = pixelRatio / DEVICE_RATIO;
 }
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
@@ -451,6 +458,8 @@ post.settings = new Proxy(post.settings, {
     return true;
   },
 });
+post.settings.present = pixelRatio / DEVICE_RATIO;   // (applyOutputRatio keeps it)
+
 // the floor grid and the box's edges, and the brush cursor: pipelines of ours in the scene pass (F1)
 const overlays = createOverlays(gpu);
 const brush = createBrushCursor(gpu);
@@ -2365,7 +2374,8 @@ const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = sto
   onCost: () => prof.cost?.show(),
   fullReport: () => (prof.landed.length ? prof.report().text : null) });
 const prof = createProfiler(gpu, {
-  describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
+  // (renderScale: the scene's share of the canvas's pixels, post's present share included: Fast on Retina works at ½)
+  describe: () => ({ sim, renderScale: post.renderScale * (post.settings.present ?? 1), canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
     // (the HUD's old line) steps/s as the simulation runs them, preview's draw rate apart; a big map's
     // whole world beside its window; auto resolution's share of the screen's pixels across, as the presets
     stepsPerSec: settings.paused || mp.isGuest ? 0 : stepRate, world: mapKind.streamed ? win.size : null,
@@ -2392,7 +2402,7 @@ const prof = createProfiler(gpu, {
     // the physics governor: game speed, its stages' GPU costs (v2/host.js)
     physics: { ticksPerSec: settings.paused || mp.isGuest ? 0 : stepRate / LEGACY_STEPS_PER_TICK, hz: HOST_HZ, stages: physicsGovernor.costs,
       budgetMs: PHYSICS_BUDGET_MS, inFlight: !!physicsV2?.tickInFlight },
-    sceneTarget: [Math.max(1, Math.round(canvas.width * post.renderScale)), Math.max(1, Math.round(canvas.height * post.renderScale))],
+    sceneTarget: post.inSize ? [...post.inSize] : null,
   }),
   buildReport: (input) => { const r = buildProfileReport(input); r.text = formatProfileReport(r); return r; },
 });
@@ -2639,7 +2649,7 @@ let frameBoxed = false;
 // the box it draws at full detail: where physics' window comes to rest (world/window.js drawOrigin), latched with it
 let frameDrawLo = null;
 function marchBoxed(view, curved) {
-  return !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
+  return !truthView && !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
 }
 // A big map's far view (world/far.js drawPass): its own pass, 'far view', after three's opaque meshes and
 // the world march's stages, before the scene pass, into the scene target with its depth (drew: the meshes
