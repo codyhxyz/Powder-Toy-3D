@@ -68,15 +68,28 @@ export function createHud({ onTogglePause }) {
   };
 }
 
-// Keyboard shortcut sheet.
+// Controls sheet: the basics a first-time player needs, then every shortcut.
 export function createHelp(onClose) {
   const k = (...keys) => h('span', {}, keys.map((x) => h('kbd', { text: x })));
   const row = (label, ...keys) => h('div.key', {}, h('span', { text: label }), k(...keys));
   const el = h('div.modal-scrim', { on: { click: (e) => { if (e.target === el) onClose(); } } },
-    h('div.help.panel', { role: 'dialog', 'aria-label': 'Keyboard shortcuts' },
-      h('header', {}, h('h2', { text: 'Shortcuts' }),
+    h('div.help.panel', { role: 'dialog', 'aria-label': 'Controls' },
+      h('header', {}, h('h2', { text: 'Controls' }),
         h('button.icon-btn', { type: 'button', 'aria-label': 'Close', html: ICON.close, on: { click: onClose } })),
       h('div.cols', {},
+        h('h3', { text: 'Basics' }),
+        row('Paint', 'Left drag'),
+        row('Erase', 'Right click'),
+        row('Brush size', '[', ']'),
+        row('Find an element', '/'),
+        row('Look around', 'Right drag'),
+        row('Fly', 'W', 'A', 'S', 'D'),
+        row('Fly up / down', 'E', 'Q'),
+        row('Pause or resume', 'Space'),
+        row('Undo', '⌘', 'Z'),
+        row('Walk around in first person', 'V'),
+        row('This sheet', '?'),
+        row('Close menus; with none open, the map menu', 'Esc'),
         h('h3', { text: 'Painting' }),
         row('Paint', 'Left drag'),
         row('Erase on release (drag instead to look around)', 'Right click'),

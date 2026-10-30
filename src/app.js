@@ -1578,7 +1578,11 @@ const actions = {
   },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
   openShaders: () => setShadersOpen(!shaderPanel.isOpen),
-  toggleHelp: () => help.setOpen(!help.isOpen),
+  toggleHelp: () => {
+    const open = !help.isOpen;
+    if (open) { setSettingsOpen(false); setShadersOpen(false); }
+    help.setOpen(open);
+  },
   // the start menu over the game (src/main.js), the way Garry's Mod's Esc brings up its menu
   openMenu: () => { painting = false; launch.openMenu?.(); },
   setView,

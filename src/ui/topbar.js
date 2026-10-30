@@ -28,8 +28,12 @@ export function createToolbar({ actions, available = {} }) {
   shader.setAttribute('aria-expanded', 'false');
   shader.addEventListener('keydown', e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); });
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
+  // the controls sheet, basics first (ui/hud.js createHelp)
+  const help = btn('help', 'Controls (?)', actions.toggleHelp);
+  help.classList.add('help-btn');
+  help.setAttribute('aria-haspopup', 'dialog');
   const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
-    camera, build, undo, shader, gear);
+    camera, build, undo, shader, gear, help);
   document.body.append(bar);
 
   let industryVisible = false, industryOpen = false;

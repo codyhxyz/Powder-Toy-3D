@@ -677,6 +677,7 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 /* touch-first devices: no keyboard, so no key hints or keyboard-only buttons */
 @media (hover: none) and (pointer: coarse) {
   kbd, .keys-only { display: none !important; }
+  .toolbar .help-btn { display: none; }   /* the controls sheet is keys, hidden above */
   .material-find .search { padding-right: 8px; }
 }
 

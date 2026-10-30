@@ -45,6 +45,7 @@ try {
         setCamera: id => calls.push(id),
         toggleIndustryBuild: () => calls.push('build'),
         undo: () => calls.push('undo'),
+        toggleHelp: () => calls.push('controls'),
         openShaders: () => { panel.setOpen(false); toolbar.setSettingsOpen(false); shaders.setOpen(!shaders.isOpen); },
         toggleSettings: () => { shaders.setOpen(false); panel.setOpen(!panel.isOpen); toolbar.setSettingsOpen(panel.isOpen); },
       } });
@@ -74,7 +75,7 @@ try {
       });
     });
     const bar = page.locator('.toolbar');
-    assert.equal(await bar.locator('button').count(), 4, 'build (hidden), undo, shader and settings');
+    assert.equal(await bar.locator('button').count(), 5, 'build (hidden), undo, shader, settings and controls');
     assert.equal(await bar.locator('select').count(), 1, 'one camera selector');
     assert.equal(await bar.locator('.pause-btn, .view-btn, .cam-seg, .keys-only').count(), 0);
     const pause = page.locator('.stats .pause-btn');
@@ -126,6 +127,12 @@ try {
     assert.equal(await page.evaluate(() => fixture.panel.isOpen), false, 'palette closes Settings');
     await page.getByRole('button', { name: 'Close shaders', exact: true }).click();
     assert.equal(await page.evaluate(() => fixture.shaders.isOpen), false);
+    const controls = bar.getByRole('button', { name: 'Controls (?)', exact: true });
+    if (touch) assert.equal(await controls.isVisible(), false, 'no keyboard sheet button on touch');
+    else {
+      await controls.click();
+      assert.equal(await page.evaluate(() => fixture.calls.at(-1)), 'controls', '? button opens the controls sheet');
+    }
     await bar.getByRole('button', { name: 'Settings (,)', exact: true }).click();
     await page.getByRole('button', { name: 'Save game', exact: true }).click();
     await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
