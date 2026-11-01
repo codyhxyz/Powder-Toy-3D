@@ -40,6 +40,23 @@ walls draw over nearer coarse ground. The new design splits the three jobs apart
    rule the project already uses for geometry (gfx/lodFade.js GEOM_ERR_PX, 4 px) licenses level-1 geometry
    past ~300 cells and level 2 past ~600; distant water and the shading tail need distance paths of their
    own (sky-only reflection, analytic depth, no traced near field) close enough to the near look to show no line.
+   Round 3 (2026-11-01, branch at aae5b5bc, `tools/profile.mjs --frozen`, scratch builds served by vite preview;
+   the GPU was shared with the player for part of it, so spans move ±8 ms, the cost view's work counts are exact):
+   Island god view 72.8 ms here against 21.7 for the split (origin/main de7b4937); the horizon pose 47-50 against
+   13.7. Knockout with dependants (shared GPU, base 84.9): the lean march's own cost 38.7 ms, the reflection's
+   1.2; with round 2's liquid kernel ~17 and shading ~15 and the fat event stage and re-gate ~2, the cost is
+   spread over every pixel, not in a distant band. Tried and dropped, each measured: (1) F's level by the
+   screen-space error rule (fieldPickAt: fieldLevelFor(footprint · 2 · GEOM_ERR_PX_NONE)): the horizon pose's
+   counts unchanged to 0.1 % (march 163.2 → 163.1 trips a pixel, field taps 250.6 → 250.5), because past
+   ~300 cells the clipmap's own regions (level k holds about 64 · 2^k cells round the focus) already read the
+   levels the rule allows; at the god pose nothing lies past ~250 cells. (2) The liquid kernel keeping every
+   rich body (no aborts to the fat stage): span 80.2 on a shared GPU, no gain; the fat stage costs ~2 ms, so
+   aborts are rare. What the numbers say for the next round: the split's 21 ms came from drawing about two
+   thirds of the god view (everything 20-80 m out, not just the far distance) at 4 cells a texel, which is the
+   seam; a distance tier at the error rule's distances (300+ cells) can't reach it at this pose. The one
+   renderer needs about 3x less work a pixel everywhere: the lean march (23 trips, 88 field taps a pixel,
+   ~11 cubic reads), the sea (about 80 trips and 250 taps a sea pixel, the surface's cubic root finding), and
+   the shading tail (~15 ms over 1.8 M pixels with few counted taps: its material textures, not counted).
 5. **Physics region (P).** The 128³ window stays, for physics only. A move touches nothing the picture reads: its
    new slab is filled from the world copy plus the exact-state store, and nothing on screen changes when it moves.
 
