@@ -1031,6 +1031,8 @@ export const FAR_VIEW = {
   OVERLAP: BRICK,          // the march's span past the window's near face before it is left out: one far brick, so
                            // where the coarse ground stands off the fine one at the face, the far hit fills the pixel
                            // the world march leaves (it draws nothing that comes in through the ground: march.js)
+  SEA_SNAP: BRICK,         // cells off the sea's level a liquid hit of the far field (its bricks' iso: a stepped,
+                           // blobby surface) is taken for the sea, drawn flat at its level where the ray meets it
   SEA_SLIVER: 2.0,         // cells under the flat sea a ray may leave the window and still have crossed the window's
                            // water surface just past its face (that surface's top cell part filled, its field's iso):
                            // the world march stops at the face, so the sea it crossed fills the pixel (farFrag)
@@ -1092,6 +1094,8 @@ const FAR_VIEW_FIELDS = {
   eye: 'vec3f',             // the camera in world cells
   sea: 'f32',               // sea level (cells): the open sea beyond the world (0: none, a plain instead)
   winLo: 'vec3i',           // the window's low corner (world cells): the volume draws [winLo, winLo + GRID)
+  cutLo: 'vec3f',           // the world march's full-detail box (world/window.js cutBox), [cutLo, cutHi), on its frames
+  cutHi: 'vec3f',
   floor: 'f32',             // the sea floor beyond the world, or the plain (cells)
   // the rolling log (gfx/presentation.js parameters: world cells; k 0: flat): the view's curved variant reads it
   warpK: 'f32',
@@ -1211,6 +1215,7 @@ const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
 const FAR_OVERLAP_CELLS: f32 = ${glf(FAR_VIEW.OVERLAP)};
 const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
 const FAR_SEA_SLIVER: f32 = ${glf(FAR_VIEW.SEA_SLIVER)};
+const FAR_SEA_SNAP: f32 = ${glf(FAR_VIEW.SEA_SNAP)};
 const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
@@ -1676,6 +1681,16 @@ fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
 fn farDepth(p: vec3f) -> f32 {
   return clipDepth(P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0));   // (curved: where it is displayed)
 }
+// The transition band (shaders/world/reach.js CUT_BAND), on the world march's frames: the depth this pixel's
+// hit at t along the ray (point p) writes. Where the dither gives the world march the pixel (its share cutNear
+// against ign, the march's same test: march.js marchKeeps) the hit is pushed FAR_CUT_PUSH cells back, so the
+// march's own hit there (the same ground, at full detail) draws over it; where the two hits sit apart and the
+// march drew nothing, its colour stays, at about its own depth (for TAA's reprojection and what draws after).
+const FAR_CUT_PUSH: f32 = 2.0 * CUT_BAND;
+fn farCutDepth(ro: vec3f, rd: vec3f, t: f32, p: vec3f) -> f32 {
+  if (P.march == 0u || ign(gFragCoord, f32(FU.frame)) >= cutNear(p, P.cutLo, P.cutHi, vec3f(WORLD))) { return farDepth(p); }
+  return farDepth(farPath(ro, rd, t + FAR_CUT_PUSH));
+}
 
 struct FarVarying {
   @builtin(position) position: vec4f,
@@ -1721,14 +1736,19 @@ struct FarOut {
     if (tMax <= tMin * (1.0 + FAR_MIX_DEPTH_TOL)) {
       var r: FarOut;
       r.color = vec4f(lowCol, 1.0);
-      r.depth = select(farDepth(farPath(ro, rd, tMax * (1.0 + FAR_MIX_T_ROUND))), 1.0, tMax >= FAR_MIX_SKY_T);
+      let tFar = tMax * (1.0 + FAR_MIX_T_ROUND);
+      r.depth = select(farCutDepth(ro, rd, tFar, farPath(ro, rd, tFar)), 1.0, tMax >= FAR_MIX_SKY_T);
       return r;
     }
   }` : ''}
   let inv = 1.0 / rd;
   let winLo = vec3f(P.winLo);
-  // the window's stretch, left out (the world march's or the box volume's), as the world march spans it
-  var tw = windowSpan(ro, rd, winLo, winLo + vec3f(GRID)).xy;
+  // the full detail's stretch, left out, as the world march spans it: on its frames (P.march) its box less the
+  // band (shaders/world/reach.js CUT_BAND: across the band both draw, farCutDepth), else the box volume's window
+  var cutLo = winLo;
+  var cutHi = winLo + vec3f(GRID);
+  if (P.march != 0u) { cutLo = cutInnerLo(P.cutLo); cutHi = cutInnerHi(P.cutHi, vec3f(WORLD)); }
+  var tw = windowSpan(ro, rd, cutLo, cutHi).xy;
   if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
   let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
   var t0 = max(tb.x, 0.0);
@@ -1804,13 +1824,24 @@ struct FarOut {
       else { lq = FAR_LQ_BODY; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p).y); lqSun = farSunLit(p, 0); lqSky = farSkyOpen(p); }
     } else {
       let sunVis = farSunLit(p, 0);
-      if (v.g > v.r) { lq = FAR_LQ_SURFACE; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y); lqSun = sunVis; }
+      // The sea (FAR_SEA_SNAP): a hit at the sea's level is the sea's flat surface where the ray meets its plane
+      // (ps, tSea), drawn as the open sea past the world is, not the far bricks' stepped liquid; and land where
+      // the ground map's cell column there stands above the sea, so the shore is at cell resolution.
+      let nearSea = !plain && tSea < NO_HIT && !seaWin && tSea > t0 && abs(p.y - level) <= FAR_SEA_SNAP;
+      let seaShore = fgH(farOcc[fgAt0(vec2i(floor(ps.xz)))]) > level;
+      let water = v.g > v.r && !(nearSea && seaShore);
+      if (water && nearSea) { lq = FAR_LQ_SURFACE; lqP = ps; lqRd = farDirection(rd, tSea); lqSun = farSunLit(ps, 0); pHit = ps; tH = tSea; }
+      else if (water) { lq = FAR_LQ_SURFACE; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y); lqSun = sunVis; }
       else {
         // the cells themselves (the ground map: farGroundHit), where its columns agree with the field's
         // surface and the hit stays out of the window's stretch; else the field's surface
         let gh = farGroundHit(p, localRd);
         let tE = tHit + gh.s;
-        if (gh.ok && (tE < w0 || tE >= tw.y) && tE > t0) {
+        // ground under the sea's level past where the ray meets the sea, with the sea's water over it there:
+        // the sea's surface in front (the shore's other side)
+        let seaFirst = nearSea && !seaShore && tSea < select(tHit, tE, gh.ok) && farIds(ps - vec3f(0.0, FAR_ID_INSET, 0.0)).y != E_EMPTY;
+        if (seaFirst) { lq = FAR_LQ_SURFACE; lqP = ps; lqRd = farDirection(rd, tSea); lqSun = farSunLit(ps, 0); pHit = ps; tH = tSea; }
+        else if (gh.ok && (tE < w0 || tE >= tw.y) && tE > t0) {
           pHit = p + localRd * gh.s;
           tH = tE;
           let fp = footprint(pHit);
@@ -1836,7 +1867,7 @@ struct FarOut {
   col = farShadeMat(lin);
   if (hit) {
     col = farHaze(col, rd, tAt, farAirLit(ro - winLo, pAt - winLo));
-    o.depth = farDepth(pAt);
+    o.depth = ${mixed ? 'select(farDepth(pAt), farCutDepth(ro, rd, tAt, pAt), P.resolve != 0u)' : 'farCutDepth(ro, rd, tAt, pAt)'};
   }
   o.color = vec4f(col, 1.0);${mixed ? `
   // (the quarter-pixel pass: the hit's distance in alpha for the resolve, FAR_MIX_SKY where there is none)

@@ -9,6 +9,7 @@ import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
+import { CUT_INSET } from '../shaders/world/reach.js';
 import { WorldRenderSource, dropNativeWorldSource, nativePackOf, nativeSourceReady } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
 import { physicsOnlyFor, ringedFor, MOVE_CPU_BUDGET_MS, LeaveQueue, moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap } from './physicsRegion.js';
@@ -233,6 +234,7 @@ export class WorldWindow {
     sim.fieldReset = sim.giReset = true;
     sim.stillFlow();
     this.goal = null;
+    this.focus = null;
     this.loaded = true;
   }
 
@@ -260,6 +262,7 @@ export class WorldWindow {
     sim.dropHistory();
     sim.fieldReset = sim.giReset = true;
     this.goal = null;
+    this.focus = null;
     this.loaded = true;
   }
 
@@ -299,6 +302,7 @@ export class WorldWindow {
   update(fx, fz) {
     if (!this.loaded) return null;
     this.goal = this.goalFor(fx, fz);
+    this.focus = [fx, fz];
     if (this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
     this.far?.tick();   // (the world copy's changes and the far build's chunks: nothing of the window)
     if (this.capturing || this._moveWait || this.sim.deco?.pending) return null;
@@ -341,6 +345,20 @@ export class WorldWindow {
   }
   /** The window's box the picture draws at full detail (world cells, its low corner): where it comes to rest (goalFor), else where it is. */
   get drawOrigin() { const o = this.sim.origin; return this.goal ?? [o.x, o.y, o.z]; }
+  /**
+   * The box the picture draws at full detail ({ lo, hi, centre }, world cells, not whole cells): physics' window's
+   * size less CUT_INSET each side along x and z, centred on the focus itself and held to the world; along y the
+   * window's (it spans the world's height). It slides with the focus, never the WIN_STEP jumps the window makes,
+   * so the fade into the distant land (shaders/world/reach.js CUT_BAND) stays still on the ground; F's level 0
+   * follows its centre (gfx/worldView.js update). Before a focus, round where the window comes to rest.
+   */
+  get cutBox() {
+    const g = this.sim.g, d = this.drawOrigin, n = [g.nx - 2 * CUT_INSET, g.ny, g.nz - 2 * CUT_INSET];
+    const c = [this.focus?.[0] ?? d[0] + g.nx / 2, d[1] + g.ny / 2, this.focus?.[1] ?? d[2] + g.nz / 2];
+    const lo = c.map((v, i) => (i === 1 ? d[1] : Math.min(Math.max(v - n[i] / 2, 0), this.size[i] - n[i])));
+    const hi = lo.map((v, i) => v + n[i]);
+    return { lo, hi, centre: lo.map((v, i) => v + n[i] / 2) };
+  }
 
   // The fill of the move the focus nears, worked out now (world/copyFill.js stage), in a frame without a
   // move, so the move's own frame only writes it (commitStaged): within STAGE_LEAD cells of a move's
