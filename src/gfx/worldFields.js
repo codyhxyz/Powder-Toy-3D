@@ -38,6 +38,23 @@ import { WC_BRICK } from '../shaders/world/cellWord.js';
  * changes. At 64 threads a brick and ~9 passes, 4096 bricks are about 2.4 M thread-passes a frame.
  */
 export const FIELD_BRICKS_PER_FRAME = 4096;
+/**
+ * The budget for a plan: FIELD_BRICKS_PER_FRAME, or more if a level's slab with its ring (a brick-thick face of
+ * its clip, 3 bricks with the ring, the clip's size across) needs it. A slab is filled in one job (the valid box
+ * stays a box), so one that never fits never comes in: a clip that moves loses its faces for good. A world
+ * whose window spans a tall world (Descent's 320 cells, the Giant Volcano's 384) has 3 × 36 × 80 bricks in a
+ * level-0 slab, past 4096: after a move its level 0 never filled again, and once the full-detail box follows
+ * the focus (shaders/world/reach.js) that was every few frames.
+ * @param {{ levels: { clipBricks: number[], worldBricks: number[] }[] }} plan fieldClipPlan's
+ */
+export function fieldBudgetFor(plan) {
+  let most = FIELD_BRICKS_PER_FRAME;
+  for (const { clipBricks: c, worldBricks: w } of plan.levels) {
+    const across = c.map((v, i) => Math.min(v, w[i]));
+    for (let i = 0; i < 3; i++) most = Math.max(most, (2 + 1) * across.reduce((n, v, j) => (j === i ? n : n * v), 1));
+  }
+  return most;
+}
 /** Bricks per side of the box a level grows from when it holds nothing (a load, a teleport). */
 export const FIELD_GROW_SEED = 4;
 /** Jobs a frame may record (each is ~9 dispatches): a frame of small jobs stops here. */
@@ -286,11 +303,12 @@ export class WorldFields {
     // W's WGSL and the element tables' group: opts, the world copy, or set once on the class
     // (WorldFields.copyWGSL = worldCopyWGSL), so (gpu, worldCopy) is enough once wired
     const { copyWGSL = worldCopy?.wgsl ?? worldCopy?.copyWGSL ?? WorldFields.copyWGSL, size = worldCopy?.size,
-      tables = worldCopy?.tables ?? gpu.tables ?? null, smoothing = 1, budget = FIELD_BRICKS_PER_FRAME, texels, rows, transition0 } = opts;
+      tables = worldCopy?.tables ?? gpu.tables ?? null, smoothing = 1, texels, rows, transition0 } = opts;
     if (!copyWGSL) throw new Error('WorldFields: no world copy WGSL (WorldFields.copyWGSL = shaders/world/copy.js worldCopyWGSL)');
     if (!size) throw new Error('WorldFields: no world size (worldCopy.size)');
-    Object.assign(this, { gpu, worldCopy, tables, smoothing, budget, size: [...size] });
+    Object.assign(this, { gpu, worldCopy, tables, smoothing, size: [...size] });
     const plan = (this.plan = fieldClipPlan(this.size, { texels, rows, transition0 }));
+    const budget = (this.budget = opts.budget ?? fieldBudgetFor(plan));
     const lay = (this.layout = fieldWorkLayout(plan, budget));
     this.levels = plan.levels.map((l) => new ClipLevel(l, lay));
     this.frameNo = 0;

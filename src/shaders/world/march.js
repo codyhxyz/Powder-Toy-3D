@@ -37,6 +37,7 @@ import { prelude, LAYOUT, SUPER, SUPER_CELLS, STAGE, BRICK } from '../common.js'
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod } from '../../gpu/wgsl.js';
+import { glf } from '../../glsl.js';
 import { coreGLSL, DDA_SPARE_STEPS } from '../gfx/core.js';
 import { noiseGLSL } from '../gfx/noise.js';
 import { crystalGLSL } from '../gfx/crystal.js';
@@ -75,8 +76,9 @@ export const MarchParams = uniformStruct('MarchParams', {
   physSize: 'vec3i',    // ... its size in cells ...
   physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout ...
   physRing: 'u32',      // ... rotated by its ring, in bricks (shaders/common.js ringOf; sim.g.ring, 0 unringed)
-  boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside physics' window only (marchSpan) ...
-  drawLo: 'vec3i',      // ... where it comes to rest (world/window.js drawOrigin; physOrigin but while it walks there), physSize
+  boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside the full-detail box only (marchSpan) ...
+  cutLo: 'vec3f',       // ... [cutLo, cutHi) (world/window.js cutBox: round the focus, unsnapped)
+  cutHi: 'vec3f',
   sceneRes: 'vec2f',    // the split stages' target in pixels (the beam stage's tiles' rays: shaders/world/beam.js)
 });
 /** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
@@ -109,6 +111,7 @@ export const WORLD_GROUP2 = () => worldGroup2(FIELDS_BINDINGS, LIGHT_BINDINGS);
 // It needs the prelude of physics' window grid (slotOf for the physics-indexed reads), the
 // frame's bindings, brickInfoWGSL and W's module.
 const BRICK_KEY_BITS = { x: 11, y: 10 };   // a brick's key: x | y << 11 | z << 21 (worlds to 8192 × 4096 × 8192 cells)
+const PHYS_FADE_CELLS = 8;   // cells inside physics' window's faces over which its own fields (flow, foam) fade out
 const worldCoreWGSL = () => {
   const dda = ddaWalk();
   const near = 'vec3i(NX, NY, NZ) - 1';
@@ -164,17 +167,32 @@ fn physSlot(c: vec3i) -> u32 {
   let id = (u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) + P.physRing) % n;
   return id * 64u + u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
 }
+// What only physics holds (the flow's drift, the foam) fades out over PHYS_FADE_CELLS inside the window's
+// faces that lie inside the world, so where physics stops shows no line: the full-detail box follows the
+// focus itself (world/window.js cutBox), up to WIN_STEP + WIN_HYSTERESIS cells off the window, so the
+// window's faces can be on screen inside it. (Past them the world is still: no drift, no foam.) A face on
+// the world's edge (a small map's every face; a big map's floor and top) doesn't fade. (Ported from the
+// one-renderer branch, fix/big-map-one-renderer d5999a72.)
+const PHYS_FADE_CELLS: f32 = ${glf(PHYS_FADE_CELLS)};
+fn physFade(c: vec3i) -> f32 {
+  let q = vec3f(c - P.physOrigin) + 0.5;
+  let far = vec3f(PHYS_FADE_CELLS);
+  let lo = select(far, q, P.physOrigin > vec3i(0));
+  let hi = select(far, vec3f(P.physSize) - q, P.physOrigin + P.physSize < WC.size);
+  let d = min(lo, hi);
+  return saturate(min(min(d.x, d.y), d.z) / PHYS_FADE_CELLS);
+}
 fn cellFlow(c: vec3i) -> vec3f {
   if (!inPhys(c)) { return vec3f(0.0); }
   let w = flow[physSlot(c)];
-  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);
+  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x) * physFade(c);
 }
 // a V2 liquid cell's aeration (shaders/common.js fetchNativeAeration), its core's x and y words
 fn fetchNativeAeration(c: vec3i) -> vec3f {
   if (!inPhys(c)) { return vec3f(0.0); }
   let core = aeration[2u * physSlot(c)];
   if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
-  return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
+  return vec3f(f32(core.x >> 24u) / 255.0 * physFade(c), 1.0, 1.0);
 }
 // a V2 cell's core (shaders/common.js fetchNativeCore), its x and y words (id, fill): what the thin
 // films' cell helpers read (gfx/film.js filmLiquid); zero outside physics' window, as the aeration
@@ -334,9 +352,9 @@ const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTr
 // plane (P.meshInv: clip → world cells, the jittered camera's), its footprint (derivatives, at
 // the top in uniform control flow), the world's box, the trace.
 const entryWGSL = () => /* wgsl */ `
-// A big map's frame with its far view (P.boxed): the ray's span through physics' window, live's
-// full-detail box ([physOrigin, physOrigin + physSize): shaders/world/reach.js windowSpan, the far view's
-// own), in place of the world's: (entry t, exit t, entry axis). The tracer cuts at its exit (gMarchExit).
+// A big map's frame with its far view (P.boxed): the ray's span through the full-detail box
+// ([cutLo, cutHi): shaders/world/reach.js windowSpan, the far view's own), in place of the
+// world's: (entry t, exit t, entry axis). The tracer cuts at its exit (gMarchExit).
 var<private> gMarchExit: f32 = MESH_CUT_NONE;
 var<private> gMarchFace: bool = false;   // the span starts at the window's face (the ray came from outside it)
 fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f {
@@ -344,7 +362,7 @@ fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f {
   gMarchExit = MESH_CUT_NONE;
   gMarchFace = false;
   if (P.boxed != 0u) {
-    let w = windowSpan(ro, rd, vec3f(P.drawLo), vec3f(P.drawLo + P.physSize));
+    let w = windowSpan(ro, rd, P.cutLo, P.cutHi);
     if (w.x > bh.x) { bh.x = w.x; bh.z = w.z; gMarchFace = true; }
     bh.y = min(bh.y, w.y);
     gMarchExit = w.y;
@@ -361,6 +379,20 @@ fn marchEnters(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> bool {
   fieldPickAt(p);
   let phi = surfSample(p);
   return surfInsideOpaque(phi) < 0 && phi.x < SURF_ISO;
+}
+// The transition band (shaders/world/reach.js CUT_BAND): whether this pixel keeps the march's hit at world
+// point p, by its share there (cutNear) against the pixel's dither (ign: the far view's same value, so where
+// their hits agree exactly one of the two draws), which TAA resolves into the fade.
+fn marchKeeps(p: vec3f) -> bool {
+  if (P.boxed == 0u) { return true; }
+  return ign(gFragCoord, f32(FU.frame)) < cutNear(p, P.cutLo, P.cutHi, vec3f(WC.size));
+}
+// The point on the eye ray ro + rd t whose clip depth is d (the one-pass march's hit, which keeps only its depth).
+fn marchAtDepth(ro: vec3f, rd: vec3f, d: f32) -> vec3f {
+  let m = FU.viewProj * FU.model;
+  let a = m * vec4f(ro, 1.0);
+  let b = m * vec4f(rd, 0.0);
+  return ro + rd * ((a.z - d * a.w) / (d * b.w - b.z));
 }
 struct MarchVarying {
   @builtin(position) position: vec4f,
@@ -390,7 +422,7 @@ struct MarchFrag {
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }
   let h = traceView(ro, rd, t0, bh);
-  if (!h.hit) { discard; return o; }
+  if (!h.hit || !marchKeeps(marchAtDepth(ro, rd, h.depth))) { discard; return o; }
   o.color = h.color;
   o.depth = meshCutDepth(h.depth);
   return o;
@@ -872,6 +904,7 @@ struct ShadeOut {
   var o: ShadeOut;
   let px = gbPix();
   if ((textureLoad(gbG1, px, 0).w & GB_HIT) == 0u) { discard; return o; }
+  if (!marchKeeps(ro + rd * bitcast<f32>(textureLoad(gbG0, px, 0).w))) { discard; return o; }   // (the band: the far view's pixel)
   let h = shadeView(ro, rd, px);
   o.color = h.color;
   o.depth = meshCutDepth(h.depth);

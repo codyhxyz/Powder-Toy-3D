@@ -73,7 +73,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     throw err;
   });
   if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
-  // F's level 0 is physics' window's box at a texel a cell (fieldClipFor), centred on it (update: fieldFocus)
+  // F's level 0 is physics' window's box at a texel a cell (fieldClipFor), centred on the full-detail box (update)
   const win = [sim.g.nx, sim.g.ny, sim.g.nz];
   const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES, ...fieldClipFor(size, win) });
   const light = new WorldLight(gpu, worldCopy, fields, {
@@ -173,14 +173,14 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       } finally { rp.end(); }
     }
   }
-  // drawLo: the box's low corner when boxed (world/window.js drawOrigin), else physics' window's
+  // cut: the full-detail box ({ lo, hi }, world cells) when boxed (world/window.js cutBox), else physics' window
   // size: the split stages' target (the beam stage's tiles), [w, h]
-  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, boxed = false, drawLo = null, size = null }) => {
+  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, boxed = false, cut = null, size = null }) => {
     const depth = meshDepth ?? dummy.depth, phys = physParams(sim);
     return {
       meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
       deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...phys, boxed: boxed ? 1 : 0,
-      drawLo: drawLo ?? phys.physOrigin, sceneRes: size ?? [1, 1],
+      cutLo: cut?.lo ?? phys.physOrigin, cutHi: cut?.hi ?? phys.physOrigin.map((v, i) => v + phys.physSize[i]), sceneRes: size ?? [1, 1],
     };
   };
   let drawNo = 0;
@@ -353,7 +353,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * @param {object} frame gpu.frame
      * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, floorLines?: boolean, boxed?: boolean, target: GPUTexture }} opts
      */
-    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, drawLo = null, target } = {}) {
+    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null, target } = {}) {
       prepared = false;
       view.lastDraw = { view: v, detail };   // (tests: what the frame draws)
       if (disposed || !view.splits(detail)) return false;
@@ -364,9 +364,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       gbuffer(target.width, target.height);
       meshInv.multiplyMatrices(last.viewProj, last.model).invert();   // clip → world cells, the jittered camera's
       const header = { ...sim.readHeader(), origin: [0, 0, 0] };
-      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo, size: [target.width, target.height] });
+      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, cut, size: [target.width, target.height] });
       recordStages(frame, set.parts, gb, meshDepth ?? dummy.depth, header, params);
-      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
+      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, cut, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
       compositeParams = params;
       prepared = true;
       return true;
@@ -392,20 +392,21 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * The frame's world upkeep, in the contract's order, after physics' step: W writes back the
      * boxes physics changed, then F updates its clip levels and L its lighting for those changes.
      * @param {object} frame gpu.frame
-     * @param {{ boxes?: object[], camera?: object, sun?: number[], drawLo?: number[], phase?: (id: string) => void }} [opts] phase: the
+     * @param {{ boxes?: object[], camera?: object, sun?: number[], drawLo?: number[], cutCentre?: number[], phase?: (id: string) => void }} [opts] phase: the
      *   profiler's (gfx/profiler.js PHASES: worldCopy, worldFields, worldLight), so its CPU and passes say whose they are
      */
-    update(frame, { boxes = [], camera = null, sun = null, drawLo = null, phase = () => {} } = {}) {
+    update(frame, { boxes = [], camera = null, sun = null, drawLo = null, cutCentre = null, phase = () => {} } = {}) {
       const rev = worldCopy.revision ?? 0;
       phase('worldCopy');
       worldCopy.recordWriteback(frame, sim, boxes);
       const changes = worldCopy.changesSince ? worldCopy.changesSince(rev) : [];
       const eye = camera ? camera.position.clone().applyMatrix4(last.model.clone().invert()).toArray() : null;
-      // F follows physics' window, not the eye: the march's full detail is the window's box (a god view's eye
-      // is often past level 0's reach of it, which read the window's thin walls from coarse levels: gone).
-      // drawLo: where the window comes to rest (world/window.js drawOrigin), so level 0 moves once, there,
-      // not a slab behind a window walking WIN_STEP a frame (it refilled for each step, never complete)
-      const focus = fieldFocus(drawLo ?? xyz(sim.origin), win);
+      // F follows the march's full detail, not the eye (a god view's eye is often past level 0's reach of it,
+      // which read thin walls from coarse levels: gone). cutCentre: the full-detail box's centre (world/window.js
+      // cutBox), the focus itself, so level 0 scrolls a brick's slab at a time as the box slides (a slab a
+      // frame: the per-frame budget's, gfx/worldFields.js), never refilling behind a window walking WIN_STEP a frame.
+      // Else where the window comes to rest (drawLo: world/window.js drawOrigin).
+      const focus = cutCentre ?? fieldFocus(drawLo ?? xyz(sim.origin), win);
       phase('worldFields');
       if (!primed && eye && worldCopy.bindGroup) { fields.prime(frame, focus); primed = true; } else if (eye) fields.update(frame, focus, changes);
       // L's writers read the tables and FrameUniforms in world cells (group 0 without the march's extras)
@@ -420,7 +421,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * @param {GPURenderPassEncoder} rp
      * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, boxed?: boolean }} [opts]
      */
-    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, drawLo = null } = {}) {
+    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null } = {}) {
       if (disposed) return false;
       if (view.splits(detail)) {
         // the split march's picture, recorded by prepass this frame, over the sky
@@ -440,10 +441,10 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
         bind: [frameGroup(depth), copy, group2()], header: { ...sim.readHeader(), origin: [0, 0, 0] },
-        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo }),
+        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, cut }),
         count: WORLD_MARCH_VERTICES,
       });
-      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, drawLo, pipe, n: ++drawNo, at: performance.now() };
+      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, cut, pipe, n: ++drawNo, at: performance.now() };
       return true;
     },
 

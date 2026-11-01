@@ -35,6 +35,8 @@ import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, volumeHazeGLSL, WORLD
 //                    nearField) and no cellFlow (the layout drops flow and
 //                    aeration): GI gather writes the bands
 //   LIGHTING_GISRC   everything, beside giSrc (GI source's output)
+//   LIGHTING_FAR     none of the window's light readers (sun map, probes, glow) nor cellFlow: the far
+//                    view pastes the world light's under the same names (shaders/far.js)
 // The two GI variants also build the library with the GI passes' uniforms
 // (giUniforms, lighting.js): what their GLSL left unset (uCaustics, uTime,
 // uFrame) is a literal 0, not the shared FrameUniforms field, so the probes'
@@ -45,6 +47,9 @@ export const LIB_VARIANTS = {
   LIGHTING_SHADOW: { shadowMap: false, probes: true, flow: true, giUniforms: false },
   LIGHTING_GI: { shadowMap: true, probes: false, flow: false, giUniforms: true },
   LIGHTING_GISRC: { shadowMap: true, probes: true, flow: true, giUniforms: true },
+  // the far view on the world march's frames (shaders/far.js): the world light's readers (shaders/world/light.js
+  // farLightReadersWGSL, which the far view pastes) in place of the window's sun map, probes and glow
+  LIGHTING_FAR: { shadowMap: false, probes: false, flow: false, giUniforms: false, worldLight: true },
 };
 
 /**

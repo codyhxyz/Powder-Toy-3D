@@ -195,6 +195,20 @@ const FAR_BINDINGS = new Set([11, 12, 13]);
 // so no variant's number means two things.
 export const MAT_TEX_BINDING = 22;
 export const MAT_TEX_SAMPLER_BINDING = 23;
+// The world light's bindings in LIGHTING_FAR (shaders/world/light.js LIGHT_BINDINGS: the same names and types,
+// there at 8-12, 14, 15): its probes' four bands, its glow, its uniform and its buffer (the cascades and tags).
+// FAR_LIGHT_BINDINGS maps the light's own number to its number here (world/far.js binds light.bindEntries()).
+const FAR_LIGHT_AT = 24;
+const FAR_LIGHT_ENTRIES = [
+  [FAR_LIGHT_AT, 'tGI0', 'texture_3d<f32>', float3d],
+  [FAR_LIGHT_AT + 1, 'tGI1', 'texture_3d<f32>', float3d],
+  [FAR_LIGHT_AT + 2, 'tGI2', 'texture_3d<f32>', float3d],
+  [FAR_LIGHT_AT + 3, 'tGI3', 'texture_3d<f32>', float3d],
+  [FAR_LIGHT_AT + 4, 'tGlow', 'texture_3d<f32>', float3d],
+  [FAR_LIGHT_AT + 5, 'LC', 'LightUniforms', { buffer: { type: 'uniform' } }],
+  [FAR_LIGHT_AT + 6, 'lcBuf', 'array<vec4u>', readBuffer],
+];
+export const FAR_LIGHT_BINDINGS = Object.freeze({ 8: FAR_LIGHT_AT, 9: FAR_LIGHT_AT + 1, 10: FAR_LIGHT_AT + 2, 11: FAR_LIGHT_AT + 3, 12: FAR_LIGHT_AT + 4, 14: FAR_LIGHT_AT + 5, 15: FAR_LIGHT_AT + 6 });
 const storageTex = (format, viewDimension) => ({ storageTexture: { access: 'write-only', format, viewDimension } });
 // The writer variants (docs/webgpu.md F6): the same numbers with the bindings
 // the kernel writes as storage. A texture is never sampled and storage-written
@@ -231,6 +245,17 @@ const VARIANTS = {
   ] },
   // GI source: everything LIGHTING has, and its output giSrc
   LIGHTING_GISRC: { stages: STAGE.COMPUTE, add: [[20, 'giSrc', 'array<vec4u>', { buffer: { type: 'storage' } }]] },
+  // A big map's distance pass on the world march's frames (shaders/far.js farFrag, world/far.js): lit by the
+  // world's light (shaders/world/light.js: its sun cascades, bounce-light probes and glow, which light the
+  // march), so brightness and colour carry on across the band where the two meet. The window's own light
+  // (its glow, probes, sun map: 3-9) and the far field's shadow heights (13), which that light replaces, are
+  // left out, and so are flow and aeration (the window's motion: the distant land has none); in their place
+  // the world light's readers' bindings (FAR_LIGHT_BINDINGS, after every other variant's numbers).
+  LIGHTING_FAR: { stages: STAGE.FRAGMENT | STAGE.COMPUTE, drop: [3, 4, 5, 6, 7, 8, 9, 13, 18, 19], add: [
+    [MAT_TEX_BINDING, 'tMatTex', 'texture_2d_array<f32>', { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
+    [MAT_TEX_SAMPLER_BINDING, 'matTexSampler', 'sampler', { sampler: { type: 'filtering' } }],
+    ...FAR_LIGHT_ENTRIES,
+  ] },
 };
 function variantBindings(variant) {
   const v = VARIANTS[variant];
@@ -258,6 +283,7 @@ export const RENDER_LAYOUT = {
 
 const declare = ([n, name, type, body]) => (type === 'sampler'
   ? `@group(2) @binding(${n}) var ${name}: sampler;`
+  : body.buffer?.type === 'uniform' ? `@group(2) @binding(${n}) var<uniform> ${name}: ${type};`
   : body.buffer
     ? `@group(2) @binding(${n}) var<storage, ${body.buffer.type === 'storage' ? 'read_write' : 'read'}> ${name}: ${type};`
     : `@group(2) @binding(${n}) var ${name}: ${type};`);
@@ -268,7 +294,7 @@ const declare = ([n, name, type, body]) => (type === 'sampler'
  * module may declare fewer:
  *   far       the far field's textures (11-13); false where nothing reads them
  *   aeration  the aeration buffer (19); false where nothing reads it
- *   variant   'LIGHTING' | 'LIGHTING_SHADOW' | 'LIGHTING_GI' | 'LIGHTING_GISRC'
+ *   variant   'LIGHTING' | 'LIGHTING_SHADOW' | 'LIGHTING_GI' | 'LIGHTING_GISRC' | 'LIGHTING_FAR'
  * With the brick map come its record, decoders and brickAt/brickDistAt.
  */
 export function lightingBindings({ far = true, aeration = true, variant = 'LIGHTING' } = {}) {

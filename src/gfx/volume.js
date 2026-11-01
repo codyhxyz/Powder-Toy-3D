@@ -44,7 +44,11 @@ import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView, materialStyleForView } from '../views.js';
 import { costify, costBinding, costLayoutEntry } from '../shaders/costView.js';
-import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING } from '../shaders/bindings.js';
+import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING, FAR_LIGHT_BINDINGS } from '../shaders/bindings.js';
+// the far view's lighting variant's bindings (lightingGroup's farLight), and how many groups lightingGroup keeps:
+// the world light's buffers are made again as it grows, so its keys change
+const FAR_LIGHTING_HAS = new Set(RENDER_LAYOUT.LIGHTING_FAR.map((e) => e.binding));
+const LIGHTING_CACHE_MAX = 64;
 import { materialTextures } from './materialTextures.js';
 import { FLOOR_TEX } from './materials.js';
 import { materialCensus } from './materialCensus.js';
@@ -161,11 +165,15 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   // map, the noise, the far field or its dummies, the samplers) and the sim's
   // (flow, aeration). Derived's entries win where both name a binding. L.LIGHTING
   // alone holds the material textures (made again when they finish loading).
-  function lightingGroup(layout) {
-    const lit = layout === L.LIGHTING;
-    const key = `${layout.label}|${idOf(far)}|${idOf(aeration)}|${lit ? matTex.version : ''}`;
+  // farLight: the far view's variant (shaders/bindings.js LIGHTING_FAR, world/far.js): only the bindings it
+  // has, and the world light's entries (gfx/worldLight.js bindEntries) at their numbers there.
+  function lightingGroup(layout, farLight = null) {
+    const lit = layout === L.LIGHTING || !!farLight;
+    const lightKey = farLight ? farLight.map((e) => idOf(e.resource.buffer ?? e.resource)).join(',') : '';
+    const key = `${layout.label}|${idOf(far)}|${idOf(aeration)}|${lit ? matTex.version : ''}|${lightKey}`;
     let group = lightingCache.get(key);
     if (!group) {
+      if (lightingCache.size > LIGHTING_CACHE_MAX) lightingCache.clear();
       const byBinding = new Map();
       for (const e of [
         { binding: 8, resource: viewOf(shadowMap) }, { binding: 9, resource: viewOf(shadowX) },
@@ -179,8 +187,10 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
         ...derived.lightingEntries(),
         ...(layout === L.LIGHTING_SHADOW_PACKETS ? [{ binding: 20, resource: { buffer: packets.buffer } }] : []),
         ...(lit ? [{ binding: MAT_TEX_BINDING, resource: matTex.view }, { binding: MAT_TEX_SAMPLER_BINDING, resource: matTex.sampler }] : []),
+        ...(farLight ?? []).map((e) => ({ ...e, binding: FAR_LIGHT_BINDINGS[e.binding] })),
       ]) byBinding.set(e.binding, e);
-      lightingCache.set(key, group = gpu.bindGroup(layout, [...byBinding.values()], `${label('lighting')} ${layout.label}`));
+      const entries = farLight ? [...byBinding.values()].filter((e) => FAR_LIGHTING_HAS.has(e.binding)) : [...byBinding.values()];
+      lightingCache.set(key, group = gpu.bindGroup(layout, entries, `${label('lighting')} ${layout.label}`));
     }
     return group;
   }
@@ -517,6 +527,14 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     attachAeration(buffer) { aeration = buffer ?? null; },
     /** The lighting group the volume binds (group 2): the sign probe and others read the same. */
     get lightingGroup() { return lightingGroup(L.LIGHTING); },
+    /**
+     * The far view's lighting group on the world march's frames (shaders/bindings.js LIGHTING_FAR): this one's
+     * resources less the window's light, and the world's light (lightEntries: gfx/worldLight.js bindEntries).
+     */
+    farLightingGroup(lightEntries) {
+      L.LIGHTING_FAR ??= gpu.layout('LIGHTING_FAR', RENDER_LAYOUT.LIGHTING_FAR);
+      return lightingGroup(L.LIGHTING_FAR, lightEntries);
+    },
     /** The volume's pipelines made so far: { key, state, ms }. */
     get pipelines() { return [...pipes].map(([key, p]) => ({ key, state: p.state, ms: p.buildMs })); },
 

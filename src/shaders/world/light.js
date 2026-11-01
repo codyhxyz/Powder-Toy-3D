@@ -382,7 +382,7 @@ fn sunRayClear(ro: vec3f, tLim: f32) -> f32 {
 fn wk0(o: vec2i, w: vec2f) -> f32 {
   return select(1.0 - w.x, w.x, o.x == 1) * select(1.0 - w.y, w.y, o.y == 1);
 }
-${shadow ? shadowReadersWGSL({ frame, causticsOn }) : '// (no shadow readers: this pipeline writes the cascades)'}
+${shadow ? shadowConstsWGSL + shadowReadersWGSL({ frame, causticsOn }) : '// (no shadow readers: this pipeline writes the cascades)'}
 
 // ---- bounce light: the probe cascades ----
 const SH_Y0: f32 = ${SH_Y0.toFixed(6)};
@@ -391,19 +391,8 @@ const SH_COS1: f32 = 2.0 / 3.0;
 const GI_OFFSET: f32 = ${GI_OFFSET_CELLS.toFixed(1)};
 const SKYVIS_MIN: f32 = 0.05;
 const SKYVIS_OPEN_DC: f32 = ${SKYVIS_OPEN_DC.toFixed(6)};
-const PR_LEVELS: u32 = ${PROBE.LEVELS}u;
-const PR_N: i32 = ${PROBE.N};
-const PR_CHUNK: i32 = ${PROBE.CHUNK};
-const PR_CHUNKS: i32 = ${probeChunksSide};
-const PR_EDGE: f32 = ${glf(PROBE.EDGE_BLEND)};
-const PR_TEX: vec3f = vec3f(${clipTexSize(PROBE.LEVELS, PROBE.N).map(glf).join(', ')});
 struct Probe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
-// The open environment as a probe (no occlusion): giIrradiance gives skyAmbient, giSkyVis 1.
-fn lcOpenProbe() -> Probe {
-  let k1 = 0.5 / (SH_COS1 * SH_Y1);
-  return Probe(vec4f(0.5 * (FU.skyUp + FU.ground) / SH_Y0, SKYVIS_OPEN_DC / SH_Y0), vec4f(0.0),
-               vec4f(0.5 * (FU.skyUp - FU.ground) * k1, k1), vec4f(0.0));
-}
+${probeFrameWGSL}
 ${probes ? probeReadersWGSL() : '// (no probe readers: this pipeline writes the bands)'}
 fn giIrradiance(g: Probe, n: vec3f) -> vec3f {
   return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), vec3f(0.0)) + ${writerFrame ? 'vec3f(0.0)' : 'FU.caveAmbient'};
@@ -418,11 +407,7 @@ fn giSkyVis(g: Probe, n: vec3f) -> f32 {
 }
 
 // ---- glow and the wand lights ----
-const GL_LEVELS: u32 = ${GLOW.LEVELS}u;
-const GL_N: i32 = ${GLOW.N};
-const GL_CHUNK: i32 = ${GLOW.CHUNK};
-const GL_CHUNKS: i32 = ${glowChunksSide};
-const GL_TEX: vec3f = vec3f(${clipTexSize(GLOW.LEVELS, GLOW.N).map(glf).join(', ')});
+${glowFrameWGSL}
 fn wandLight(p: vec3f) -> vec3f {
   if (FU.wandLightCount == 0) { return vec3f(0.0); }
   var light = vec3f(0.0);
@@ -442,17 +427,40 @@ ${nearWGSL({ frame, shadow, probes, glow })}
 `;
 }
 
-// The cascades' readers: sunMapShadow / sunMapShadowAt / sunShadow / sunShadowAt, as before.
-const shadowReadersWGSL = ({ frame, causticsOn }) => /* wgsl */ `
+// The probe levels' frame (what their readers and the open environment take).
+const probeFrameWGSL = /* wgsl */ `
+const PR_LEVELS: u32 = ${PROBE.LEVELS}u;
+const PR_N: i32 = ${PROBE.N};
+const PR_CHUNK: i32 = ${PROBE.CHUNK};
+const PR_CHUNKS: i32 = ${probeChunksSide};
+const PR_EDGE: f32 = ${glf(PROBE.EDGE_BLEND)};
+const PR_TEX: vec3f = vec3f(${clipTexSize(PROBE.LEVELS, PROBE.N).map(glf).join(', ')});
+// The open environment as a probe (no occlusion): giIrradiance gives skyAmbient, giSkyVis 1.
+fn lcOpenProbe() -> Probe {
+  let k1 = 0.5 / (SH_COS1 * SH_Y1);
+  return Probe(vec4f(0.5 * (FU.skyUp + FU.ground) / SH_Y0, SKYVIS_OPEN_DC / SH_Y0), vec4f(0.0),
+               vec4f(0.5 * (FU.skyUp - FU.ground) * k1, k1), vec4f(0.0));
+}`;
+// The glow levels' frame.
+const glowFrameWGSL = /* wgsl */ `
+const GL_LEVELS: u32 = ${GLOW.LEVELS}u;
+const GL_N: i32 = ${GLOW.N};
+const GL_CHUNK: i32 = ${GLOW.CHUNK};
+const GL_CHUNKS: i32 = ${glowChunksSide};
+const GL_TEX: vec3f = vec3f(${clipTexSize(GLOW.LEVELS, GLOW.N).map(glf).join(', ')});`;
+// The cascades' readers' constants that the window's (shaders/gfx/lighting.js) share by name and value.
+const shadowConstsWGSL = /* wgsl */ `
 const SHADOW_NORMAL_OFFSET: f32 = 0.002;
 const SHADOW_BIAS_MIN: f32 = 0.8;
-const SHADOW_BIAS_NS_MIN: f32 = 0.25;
-const SHADOW_BIAS_PAD: f32 = 0.1;
 const VOLUME_SHADOW_BIAS: f32 = ${glf(VOLUME_SHADOW_BIAS)};
 const PCSS_TAPS: i32 = ${PCSS_TAPS};
 const PCSS_HARD_TEXELS: f32 = 1.0;
 const PCSS_NS_MIN: f32 = 0.2;
-const PCSS_BIAS: f32 = 0.35;
+const PCSS_BIAS: f32 = 0.35;`;
+// The cascades' readers: sunMapShadow / sunMapShadowAt / sunShadow / sunShadowAt, as before.
+const shadowReadersWGSL = ({ frame, causticsOn }) => /* wgsl */ `
+const SHADOW_BIAS_NS_MIN: f32 = 0.25;
+const SHADOW_BIAS_PAD: f32 = 0.1;
 // The blocker search reaches at most this many cells: the depth reference is the world's top now,
 // far above most receivers, so SUN_TAN_RADIUS * d alone would search tens of cells for nothing.
 const PCSS_SEARCH_MAX: f32 = 6.0;
@@ -1133,3 +1141,25 @@ fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
 }
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f { return lampSum(p, ng, n, true); }
 `;
+
+/**
+ * The world light's readers for a module built on the window's render library instead of the march's
+ * assembly (shaders/gfx/lib.js variant LIGHTING_FAR: the far view on the world march's frames, shaders/far.js),
+ * which brings everything else they call under the same names (sky, clouds, caustics, the SH evaluation,
+ * wandLight). The same readers the march calls, over the same light, bound at shaders/bindings.js
+ * FAR_LIGHT_BINDINGS: sunMapShadow, sunMapShadowAt, sunShadow, sunShadowAt (the cascades), probeAt, surfProbe,
+ * giAirSkyVis, giAirSkyHeld, prInside (the probes), glowClipAt, sampleLight, glowLum (the glow clips).
+ */
+export function farLightReadersWGSL() {
+  return /* wgsl */ `
+// ---- the world's light (shaders/world/light.js farLightReadersWGSL) ----
+${LightUniforms.wgsl}
+${shadowFrameWGSL}
+fn lcTagAt(w: u32) -> u32 { return lcBuf[LC_TAGS_AT + (w >> 2u)][w & 3u]; }
+${shadowReadersWGSL({ frame: 'f32(FU.frame)', causticsOn: 'FU.caustics != 0u' })}
+${probeFrameWGSL}
+${probeReadersWGSL()}
+${glowFrameWGSL}
+${glowReadersWGSL()}
+`;
+}
