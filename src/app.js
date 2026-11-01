@@ -2331,8 +2331,8 @@ addEventListener('keydown', (e) => {
   // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
-  if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
-  else if (k === '.') { stepOnce = true; pacer.wake(); }
+  // Space flies up here (camera.js), as it jumps in the body; Esc pauses (below)
+  if (k === '.') { stepOnce = true; pacer.wake(); }
   else if (k === '[') setRadius(settings.radius - 1);
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
@@ -2343,7 +2343,7 @@ addEventListener('keydown', (e) => {
   else if (Object.hasOwn(MODE_KEYS, k.toLowerCase())) { const key = MODE_KEYS[k.toLowerCase()]; setSimMode(key, nextMode(key, settings[key]), true); }   // TPT's Y, U
   else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
-  // T: the spawn menu (chat when playing together). Q and E fly down and up here (camera.js);
+  // T: the spawn menu (chat when playing together). Q/C and E/Space fly down and up here (camera.js);
   // in the body Q is Garry's Mod's spawn-menu key (pov/index.js)
   else if (k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
@@ -2355,8 +2355,9 @@ addEventListener('keydown', (e) => {
     const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped
     setEyedropper(false); setShadersOpen(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
-    // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
-    if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
+    // nothing open: out of a construction's options, else pause or resume, every game's Esc
+    // (Intentional (user request, 2026-11-01): Esc pauses, not Space; the map menu is the toolbar's button)
+    if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else setPaused(!settings.paused); }
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v && !e.repeat) setView(v.id); }
 });

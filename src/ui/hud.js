@@ -34,7 +34,7 @@ export function createHud({ onTogglePause }) {
   return {
     setPaused(paused) {
       pause.innerHTML = paused ? ICON.play : ICON.pause;
-      pause.title = paused ? 'Resume (Space)' : 'Pause (Space)';
+      pause.title = paused ? 'Resume (Esc)' : 'Pause (Esc)';
       pause.setAttribute('aria-label', pause.title);
       pause.classList.toggle('on', paused);
     },
@@ -84,12 +84,12 @@ export function createHelp(onClose) {
         row('Find an element', '/'),
         row('Look around', 'Right drag'),
         row('Fly', 'W', 'A', 'S', 'D'),
-        row('Fly up / down', 'E', 'Q'),
-        row('Pause or resume', 'Space'),
+        row('Fly up / down', 'Space', 'C'),
+        row('Pause or resume', 'Esc'),
         row('Undo', '⌘', 'Z'),
         row('Walk around in first person', 'V'),
         row('This sheet', '?'),
-        row('Close menus; with none open, the map menu', 'Esc'),
+        row('Close menus; with none open, pause or resume', 'Esc'),
         h('h3', { text: 'Painting' }),
         row('Paint', 'Left drag'),
         row('Erase on release (drag instead to look around)', 'Right click'),
@@ -111,7 +111,7 @@ export function createHelp(onClose) {
         h('h3', { text: 'Camera' }),
         row('Look around (hold; Roblox Studio\'s)', 'Right drag'),
         row('Fly where you look (Garry\'s Mod\'s noclip)', 'W', 'A', 'S', 'D'),
-        row('Fly up / down (Roblox Studio\'s)', 'E', 'Q'),
+        row('Fly up / down (Rust\'s noclip; E and Q too, Roblox Studio\'s)', 'Space', 'C'),
         row('Fly faster', 'Shift'),
         row('Fly speed (Unreal\'s)', 'Hold right', 'Scroll'),
         row('Fly to what\'s under the cursor (Roblox Studio\'s focus)', 'F'),
@@ -141,7 +141,7 @@ export function createHelp(onClose) {
         row('Hide the HUD and hand', 'F1'),
         row('Free the mouse', 'Esc'),
         h('h3', { text: 'Simulation and interface' }),
-        row('Pause or resume', 'Space'),
+        row('Pause or resume', 'Esc'),
         row('Step one frame', '.'),
         row('Air mode: on, pressure off, velocity off, off, no update', 'Y'),
         row('Ambient heat on or off (gravity and edges: Settings)', 'U'),
@@ -154,7 +154,7 @@ export function createHelp(onClose) {
         row('Save the game (in the body, ⌘ only)', '⌘', 'S'),
         row('Saves: load one, export it, open a file', '⌘', 'O'),
         row('Lua console, TPT\'s (scripts run every step: event.register)', '`'),
-        row('Close menus; with none open, the map menu', 'Esc'),
+        row('Close menus; with none open, pause or resume', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
       h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' }),

@@ -50,7 +50,7 @@ Press `?` in the app for the full list.
 |---|---|
 | Hold right mouse and move | look around, as in first person (Roblox Studio's and Unreal's editor camera) |
 | `W` `A` `S` `D` | fly where you look (Garry's Mod's noclip; hold Shift to go faster) |
-| `E` / `Q` | fly up / down (Roblox Studio's keys) |
+| Space / `C` | fly up / down (Rust's noclip keys, and the body's jump and crouch; `E` / `Q`, Roblox Studio's, work too) |
 | Scroll while holding right mouse | fly speed (Unreal's) |
 | `F` | fly to what's under the cursor (Roblox Studio's focus key; in the body `F` kicks) |
 | ⌥ + drag | orbit around the point you click (Blender's and Maya's; also the trackpad orbit) |
@@ -61,7 +61,7 @@ Press `?` in the app for the full list.
 
 | Everything else | |
 |---|---|
-| Space / `.` | pause / step one frame |
+| Esc / `.` | pause or resume (with nothing else open) / step one frame |
 | `Y` / `U` | cycle the air mode / turn ambient heat on or off (The Powder Toy's keys; see Simulation modes) |
 | `1`–`5` | switch view |
 | `T` or the spawn menu's button | hide or show the spawn menu, open by default like The Powder Toy's element bar; in first person `Q` opens it (Garry's Mod's key). In Factory it's Build |
@@ -160,7 +160,7 @@ The site opens on a map menu, Garry's Mod's New Game screen: gamemodes down the 
 preview of each map built for the chosen one, its size tagged in the corner, and Start. Sandbox lists every map. A map is one
 place at one size: the boxes (Lab, Volcano, Islet and Empty at 128³, Dam Valley at 256 × 96 × 128) and the
 worlds (Island, Tinker Creek, Volcano Isles, Lab Complex, Giant Volcano). The game itself only loads once
-you pick one. **Esc** (with nothing else open), the toolbar's map button or **Settings → Map → Change map**
+you pick one. The toolbar's map button or **Settings → Map → Change map**
 brings the menu back over the game. The maps are in `src/maps.js`. `tools/map-thumbs.mjs` renders their previews
 into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A link with a query (`?map=lab`,
 `?preset=…`, an invite) skips the menu.
