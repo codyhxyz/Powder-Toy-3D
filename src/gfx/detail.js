@@ -203,7 +203,8 @@ export function setDetailLevel(settings, level) {
   for (const f of DETAIL) settings[settingKey(f)] = DETAIL_LEVELS[level](f);
 }
 /** Settings saved with a mix of switches (before the levels were the only control) take the nearest level. */
-export const normalizeDetail = (settings) => setDetailLevel(settings, detailLevelOf(settings));
+// (tools/profile.mjs --detail-without sets detailPinned: its one-switch-off mix is the point, not an old save)
+export const normalizeDetail = (settings) => { if (!settings.detailPinned) setDetailLevel(settings, detailLevelOf(settings)); };
 
 // Settings rows (ui/settings.js): the level.
 export const detailRows = (settings, onChange) => [

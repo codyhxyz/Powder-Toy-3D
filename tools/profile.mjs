@@ -337,7 +337,7 @@ async function main() {
       }
       await page.addInitScript(([key, sw]) => {
         try { localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), ...sw })); } catch { /* storage unavailable */ }
-      }, [DETAIL_STORE, Object.fromEntries(DETAIL.map((f) => [settingKey(f), sw[settingKey(f)]]))]);
+      }, [DETAIL_STORE, { ...Object.fromEntries(DETAIL.map((f) => [settingKey(f), sw[settingKey(f)]])), ...(o.detailWithout?.length ? { detailPinned: true } : {}) }]);
     }
     // --upscale: the Upscaling preset from boot, stored where app.js loads it (so the canvas and scene size
     // are the preset's from the first frame: Fast also takes the page-sized canvas, app.js outputRatio)
