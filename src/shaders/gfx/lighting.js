@@ -69,6 +69,10 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  * Options (lib() sets them per L.LIGHTING variant): shadowMap: false leaves
  * out what reads the shadow map (the shadow kernel writes it); probes: false
  * what samples the GI bands (GI gather writes them). nearField needs both.
+ * worldLight: neither, nor the glow volume's readers (sampleLight, glowLum): the
+ * module pastes the world light's under the same names (shaders/world/light.js
+ * farLightReadersWGSL: the far view on the world march's frames), and keeps
+ * nearField, which reads them by name.
  * giUniforms: the GI passes' uniforms. Their GLSL material (sim.js
  * giUniforms) set no uCaustics, uTime, uFrame or uCaveAmbient, so those read
  * 0 there; GI binds the shared FrameUniforms, so here the four are literal
@@ -76,9 +80,9 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  * lookups (sunShadow and sunShadowAt as GI calls them), causticGain at time
  * 0, frame 0 in the per-frame jitter (PCSS, pixRand, the glow candidates), no
  * ambient floor in giIrradiance and giRadiance.
- * @param {{ shadowMap?: boolean, probes?: boolean, giUniforms?: boolean }} [opts]
+ * @param {{ shadowMap?: boolean, probes?: boolean, giUniforms?: boolean, far?: boolean, worldLight?: boolean }} [opts]
  */
-export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false, far = false } = {}) => {
+export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false, far = false, worldLight = false } = {}) => {
   // FU.caustics != 0u, FU.time, f32(FU.frame), or the GI passes' zeros
   const caustics = giUniforms ? 'false' : 'FU.caustics != 0u';
   const time = giUniforms ? '0.0' : 'FU.time';
@@ -559,7 +563,8 @@ fn wandLight(p: vec3f) -> vec3f {
   return light;
 }
 
-// ---- glow volume: blurred emission of lava, fire, hot metal ----
+// ---- glow volume: blurred emission of lava, fire, hot metal ----${worldLight ? `
+// (the world light's glow clips: sampleLight and glowLum are its, shaders/world/light.js)` : /* wgsl */ `
 // The light at grid point gp: the glow volume (tLight, one texel per brick),
 // one hardware trilinear sample held to the edge bricks' centres (the 8
 // manual taps clamped to the edge it replaces), plus the wand lights.
@@ -567,7 +572,7 @@ fn sampleLight(gp: vec3f) -> vec3f {
   let B = vec3f(f32(BX), f32(BY), f32(BZ));
   let q = clamp(gp / f32(BS), vec3f(0.5), B - 0.5);
   return textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb + wandLight(gp);
-}
+}`}
 
 // ---- ambient occlusion (near field; the probes cover the larger scale) ----
 // Whether cell c occludes: the floor below the box does, the outside doesn't,
@@ -817,7 +822,7 @@ fn nearSolid(q: vec3f, hid: ptr<function, i32>, ha: ptr<function, vec4f>) -> f32
   }
   return o;
 }
-${shadowMap && probes ? /* wgsl */ `
+${(shadowMap && probes) || worldLight ? /* wgsl */ `
 // The light a secondary ray sees on the matter it meets at p (normal n, lifted
 // off the face): albedo alb times the sun (shadow-mapped), the lamps (lampSeen,
 // unshadowed), the probes' light and the glow there, plus emit, its own light
@@ -917,12 +922,12 @@ const GLOW_REL_MIN: f32 = 0.05;
 fn glowWorthIt(local: vec3f, irr: vec3f) -> bool {
   return FU.glowLights != 0u && dot(local, LUMA_709) > GLOW_REL_MIN * dot(irr, LUMA_709);
 }
-// The glow volume's luminance at grid point gp (sampleLight's texture, no wand lights).
+${worldLight ? '' : /* wgsl */ `// The glow volume's luminance at grid point gp (sampleLight's texture, no wand lights).
 fn glowLum(gp: vec3f) -> f32 {
   let B = vec3f(f32(BX), f32(BY), f32(BZ));
   let q = clamp(gp / f32(BS), vec3f(0.5), B - 0.5);
   return dot(textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb, LUMA_709);
-}
+}`}
 // The glow's scale at surface point p (geometric normal ng, shading normal n).
 fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
   let ro = p + ng * GLOW_START;

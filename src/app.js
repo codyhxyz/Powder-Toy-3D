@@ -2756,6 +2756,7 @@ const frameHooks = {
     const written = writeFrameUniforms(gpu, fv);
     worldView?.writeUniforms(fv, written);   // (the same values in world cells, the camera and settings shared: gfx/worldView.js)
     // a big map's far view (farPass), its derived levels brought up to date; full or mixed resolution by the detail level
+    if (win?.far) win.far.light = worldView?.light ?? null;   // (the flat far view is lit by the world's light: world/far.js)
     win?.far?.viewBehind(isMaterialView(renderView), !!frameDetail.DETAIL_FAR_FULL);
     frameBoxed = marchBoxed(viewKeyOf(renderView), !!warpNow()?.k);
     frameCut = win?.cutBox ?? null;

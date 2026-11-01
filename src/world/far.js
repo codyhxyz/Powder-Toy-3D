@@ -10,6 +10,7 @@ import {
 import { farCopyFrag, FAR_COPY_LAYOUT, farGroundFrag, FAR_GROUND_LAYOUT } from '../shaders/world/farFromCopy.js';
 import { WORLD_COPY_LAYOUT } from '../shaders/world/copy.js';
 import { frameUniformsOf } from '../gfx/uniforms.js';
+import { RENDER_LAYOUT } from '../shaders/bindings.js';
 import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
 
 // The far field of a big map (docs/scaling.md D11, phase W4; docs/webgpu.md
@@ -47,11 +48,12 @@ import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEA
 // the open sea beyond the world and the far grid, written with its depth,
 // marched past physics' window, which the world march (or the rolling log's box
 // volume) draws in full detail (shaders/world/reach.js windowSpan), as live.
-// Its lighting group is the volume's with the far
-// grid, tops and shadow heights in it (attachVolume): its ground's elements and
-// the sun's shadow on it. Of the window's own light in that group it reads the
-// GI probes on the box volume's frames only (the world march's frames don't
-// keep them: app.js worldLit).
+// Its light is the world's (gfx/worldLight.js, `light`: the sun cascades, the bounce-light probes, the glow
+// clips, the haze's sky share), which lights the world march, so brightness and colour carry on across the
+// band where the two meet: its lighting group is the volume's with the far grid and tops in it
+// (attachVolume), less the window's own light, and the world light's (volume.farLightingGroup: shaders/
+// bindings.js LIGHTING_FAR). The rolling log's curved view is lit by the window's light instead, the box
+// volume's beside it, with the far field's shadow heights (shaders/far.js farFrag).
 //
 // The rolling log (gfx/presentation.js: `presentation`, set by
 // src/wire/world.js): while a gamemode's effect bends the view, the view draws
@@ -155,6 +157,8 @@ export class FarField {
     this.stale = false;          // changes summarized since the levels were last rebuilt for them...
     this.age = 0;                // ...and frames since then
     this.vol = null;             // the volume whose lighting group the view binds (attachVolume)
+    this.light = null;           // the world's light (gfx/worldLight.js), which lights the flat view (app.js sets it each frame)
+    this.lowUniforms = null;     // the FrameUniforms buffer the mixed variant's groups 0 were made with
     this.behind = false;         // drawBehind draws this frame (viewBehind)
 
     // the kernels (built while the window's are: whenReady)
@@ -217,19 +221,33 @@ export class FarField {
     return (this._ready ??= Promise.all(Object.values(this.k).map((k) => k.ready)).then(() => { this.ready = true; return this; }));
   }
 
+  // The FrameUniforms the view reads: the world march's (gfx/worldView.js: in world cells, as the view is, so the
+  // world light's wand lights and lamps are where they are) for the flat view (world: it is lit by the world's
+  // light), else the window's.
+  _uniforms(world) { return (world ? this.gpu._worldFrameUniforms?.buffer : null) ?? this.fu.uniforms.buffer; }
   // The view's group 0: FrameUniforms, the field, the occupancy.
-  _frameGroup() {
-    return (this.viewFrameGroup ??= this.gpu.bindGroup(this.viewFrameLayout, [
-      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
-      { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } },
-    ], 'far view frame'));
+  _frameGroup(world = false) {
+    const u = this._uniforms(world);
+    if (this.viewFrameGroup?.u !== u) {
+      this.viewFrameGroup = { u, group: this.gpu.bindGroup(this.viewFrameLayout, [
+        { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: u } },
+        { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } },
+      ], 'far view frame') };
+    }
+    return this.viewFrameGroup.group;
   }
 
   // The mixed variant's group 0: the frame's, then the low pass's colour (low: the resolve), or a 1×1
   // stand-in (the low pass itself, which renders into it).
-  _frameGroupMixed(low = null) {
+  _frameGroupMixed(low = null, world = false) {
+    const u = this._uniforms(world);
+    if (this.lowUniforms !== u) {
+      this.lowUniforms = u;
+      if (this.low) this.low.group = null;
+      if (this.lowStandIn) { this.sim._retire(this.lowStandIn.color); this.lowStandIn = null; }
+    }
     const entries = (color) => [
-      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
+      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: u } },
       { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } },
       { binding: 4, resource: color.createView() },
     ];
@@ -491,8 +509,11 @@ export class FarField {
     const mixed = pipe === this._pipeline(this.curved, true);
     // (the mixed variant: the low pass, or with resolve its targets read; drawn alone it is the low pass)
     if (mixed) params.resolve = resolve ? 1 : 0;
-    const frameGroup = mixed ? this._frameGroupMixed(resolve ? low : null) : this._frameGroup();
-    pipe.draw(rp, { bind: [frameGroup, this.sim.bindRO, this.vol.lightingGroup], params,
+    const curved = this.curved;
+    const frameGroup = mixed ? this._frameGroupMixed(resolve ? low : null, !curved) : this._frameGroup(!curved);
+    // (the flat view's light is the world's, L: shaders/bindings.js LIGHTING_FAR; the curved one's the window's)
+    const lighting = curved ? this.vol.lightingGroup : this.vol.farLightingGroup(this.light.bindEntries());
+    pipe.draw(rp, { bind: [frameGroup, this.sim.bindRO, lighting], params,
       header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, count: 3 });
     return true;
   }
@@ -532,7 +553,9 @@ export class FarField {
   // the level's pipeline when it isn't built.
   _drawPipeline() {
     if (!this.behind || !this.vol) return null;
-    const curved = this.curved, pipe = this._pipeline(curved, !this.full);
+    const curved = this.curved;
+    if (!curved && !this.light) return null;   // (the flat view is lit by the world's light: it waits for it)
+    const pipe = this._pipeline(curved, !this.full);
     if (pipe.state === 'ready') return pipe;
     if (pipe.state === 'idle') pipe.build().then(() => this.onChange?.(), () => {});
     const other = this[this._pipelineKey(curved, this.full)];
@@ -557,7 +580,8 @@ export class FarField {
     const key = this._pipelineKey(curved, mixed);
     return (this[key] ??= this.gpu.renderPipeline({
       name: `far view behind${curved ? ' curved' : ''}${mixed ? ' mixed' : ''}`, code: farFrag(this.sim.g, this.L, { curved, sourceAppearance: this.sourceAppearance, mixed }),
-      layouts: [mixed ? this.viewFrameLayoutMixed : this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
+      layouts: [mixed ? this.viewFrameLayoutMixed : this.viewFrameLayout, this.sim.L.STATE_RO,
+        curved ? this.gpu.L.LIGHTING : this.gpu.layout('LIGHTING_FAR', RENDER_LAYOUT.LIGHTING_FAR)],
       params: mixed ? FarViewParamsMixed : FarViewParams, ...farViewPipeline(), build: 'manual',
     }));
   }

@@ -143,18 +143,27 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   if (i >= s.x * s.y) { return; }
   let c = P.lo.xz + vec2i(vec2u(i % s.x, i / s.x));
   if (any(c < vec2i(0)) || any(c >= vec2i(WORLD_X, WORLD_Z))) { return; }
-  // the top: down from the world's top a brick at a time, cell by cell in a brick that isn't uniform
+  // the top: down from the world's top a brick at a time, cell by cell in a brick that isn't uniform; and the
+  // top of the liquid over it (lt: its highest cell + 1, 0 none; one under an opaque top, a crown, isn't reached)
   var h = -1;
+  var lt = 0;
   for (var by = WBY - 1; by >= 0 && h < 0; by--) {
     let e = wcTable[wcBrickIndex(vec3i(c.x / FAR_BRICK, by, c.y / FAR_BRICK))];
     if ((e & WC_MIXED) == 0u && !fcDithered(e)) {
-      if (farOpaque(fcId(e, vec3i(0)))) { h = by * FAR_BRICK + FAR_BRICK - 1; }
+      let id = fcId(e, vec3i(0));
+      if (farOpaque(id)) { h = by * FAR_BRICK + FAR_BRICK - 1; }
+      else if (farLiquid(id) && lt == 0) { lt = by * FAR_BRICK + FAR_BRICK; }
       continue;
     }
     for (var ly = FAR_BRICK - 1; ly >= 0; ly--) {
-      if (fgOpaqueAt(vec3i(c.x, by * FAR_BRICK + ly, c.y))) { h = by * FAR_BRICK + ly; break; }
+      let q = vec3i(c.x, by * FAR_BRICK + ly, c.y);
+      let id = fcId(wcCell(q), q);
+      if (farOpaque(id)) { h = q.y; break; }
+      if (farLiquid(id) && lt == 0) { lt = q.y + 1; }
     }
   }
+  // (the brick column's liquid top is its column FG_LAKE_COL's: a lake's are all its level)
+  if (all((c & vec2i(FAR_BRICK - 1)) == vec2i(FG_LAKE_COL))) { farOcc[fgLakeAt(c / FAR_BRICK)] = u32(lt); }
   var word = 0u;
   var b = 0;
   if (h >= 0) {
