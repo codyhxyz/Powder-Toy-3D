@@ -51,11 +51,11 @@ export const bladesWGSL = (detail = {}) => {
 var<private> gBladeSun: f32 = 1.0;   // the sun through the sward above a blade, set around its shadeSurf
 
 const BLADE_Q: f32 = ${cells(0.012)};        // lattice pitch: a site every 1.2 cm
-const BLADE_N: i32 = 2;                        // blades per site (~0.7 blades per cm^2: a lawn's sward)
+const BLADE_N: i32 = 3;                        // blades per site (~2 blades per cm^2: a lawn's sward)
 const BLADE_R: f32 = 0.5 * GRASS_BLADE_M / CELL_M;   // a blade's half-width at its root, cells (5 mm wide)
-const BLADE_TIP_R: f32 = 0.2;                  // its half-width at the tip, as a share of the root's
+const BLADE_TIP_R: f32 = 0.35;                 // its half-width at the tip, as a share of the root's
 const BLADE_H: f32 = ${cells(0.08)};          // the sward's depth under the surface, cells (8 cm)
-const BLADE_H_MIN: f32 = 0.55;                 // the shortest blade, as a share of BLADE_H
+const BLADE_H_MIN: f32 = 0.75;                 // the shortest blade, as a share of BLADE_H
 // where in its site a blade's root and tip may be (lattice units): far enough
 // in that the whole blade stays in its site, so the walk tests only the sites
 // the ray crosses, nearest first
@@ -63,15 +63,20 @@ const BLADE_ROOT_M: f32 = BLADE_R / BLADE_Q;
 const BLADE_TIP_M: f32 = BLADE_R * BLADE_TIP_R / BLADE_Q;
 const BLADE_ROT: f32 = 0.61;                   // the lattice's turn off the grid's axes, radians
 const BLADE_FLAT: f32 = 0.6;                   // a blade's normal: share of the flat ribbon's (vs the round taper's)
+// ... and then bent this far toward the ground's, as Ghost of Tsushima lights its blades (Wohllaib, GDC 2021):
+// a meadow is lit as a surface, each blade only shading its own facing
+const BLADE_GROUND_N: f32 = 0.5;
 const BLADE_STEPS: i32 = 24;                   // sites a ray walks; then it is on the ground among them
 // the ground's slope (the normal's height): blades stand on ground up to 45 degrees
 // steep and are gone by 60 degrees (a grass cliff stays the photo)
 const BLADE_UP_NONE: f32 = 0.5;
 const BLADE_UP_FULL: f32 = 0.7;
-// light in the sward (Monsi & Saeki 1953): k LAI over its depth, for the sun
-// (per unit of path, so divided by the sun's height) and for the sky
-const BLADE_K_SUN: f32 = 1.5;
-const BLADE_K_SKY: f32 = 2.0;
+// light in the sward (Monsi & Saeki 1953): k times the leaf area above a point, over the sward's
+// depth, for the sun (per unit of path, so divided by the sun's height) and for the sky. A lawn's
+// whole LAI (~3) made the visible upper sward near black; the blades a ray meets sit in its top
+// layer, under ~1.2-1.6 of it (k ~ 0.5), and the shots against the photo agreed (2026-11-01)
+const BLADE_K_SUN: f32 = 0.6;
+const BLADE_K_SKY: f32 = 0.8;
 const BLADE_SUN_Y_MIN: f32 = 0.2;              // the sun's lowest height in that path (a long slant)
 // colour: a blade is brighter than the sward's mean (the gaps' dark is in
 // the mean the photo and the far view draw), varies blade to blade, and some
@@ -81,7 +86,7 @@ const BLADE_ALB_VAR: f32 = 0.35;
 const BLADE_HUE_VAR: vec3f = vec3f(0.12, 0.0, -0.1);
 const BLADE_DRY_P: f32 = 0.15;                 // share of blades with dry tips
 const BLADE_DRY_ALB: vec3f = vec3f(0.42, 0.36, 0.2);
-const BLADE_THATCH_ALB: vec3f = vec3f(0.11, 0.085, 0.05);
+const BLADE_THATCH_ALB: vec3f = vec3f(0.16, 0.13, 0.07);
 const BLADE_SALT: u32 = 0x2545f491u;           // spreads the sites' hash streams apart
 
 fn bladeU(h: ptr<function, u32>) -> f32 {
@@ -177,7 +182,7 @@ fn grassBlades(s: ptr<function, Surf>, rd: vec3f, share: f32, bp: ptr<function, 
           var nFlat = cross(ax, side);
           nFlat *= inverseSqrt(max(dot(nFlat, nFlat), 1e-12));
           nFlat = select(-nFlat, nFlat, dot(nFlat, v) >= 0.0);
-          hitN = normalize(mix(nRound, nFlat, BLADE_FLAT));
+          hitN = normalize(mix(normalize(mix(nRound, nFlat, BLADE_FLAT)), ng, BLADE_GROUND_N));
           var alb = ALBEDO(E_PLANT) * BLADE_ALB_GAIN * (1.0 + BLADE_ALB_VAR * (tone - 0.5)) * (1.0 + BLADE_HUE_VAR * (tone - 0.5));
           if (dry < BLADE_DRY_P) { alb = mix(alb, BLADE_DRY_ALB, smoothstep(0.4, 1.0, u)); }
           hitAlb = alb;
