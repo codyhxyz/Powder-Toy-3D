@@ -59,36 +59,49 @@ what a peer chose, not what anything costs.
 | 7 | Every hazard glows | Already: acid, toxic sludge and the magic liquids glow faintly in their own colour (borrowed from Noita) | `src/gfx/materials.js:93-100`, `:291`, `:466-474` |
 | 8 | Glowing cells clustered into point lights + per-chunk light lists + shadow rays | We went another way, and on purpose: a glow light volume read at the surface, its gradient for direction, three occlusion taps. Our comment records that one shadow ray a pixel to a picked emitting brick "used to flicker under TAA" | `src/shaders/gfx/lighting.js:893-955` |
 | 9 | Jittered sun shadow rays + temporal blend | Not applicable: we use cascaded shadow maps with PCSS soft edges sized by the sun's disc | `src/shaders/gfx/lighting.js:162-166`, `src/shaders/world/light.js:460-470` |
-| 10 | Grass blades, leaves, vines built inside the cell | **We don't.** Grass is the meadow photo plus a normal map on the cell's faces, with the blades' tilt widening the highlight; leaves likewise | `src/shaders/gfx/surface.js:1032-1053` |
+| 10 | Grass blades, leaves, vines built inside the cell | **Half.** We already build shapes inside the cell for rubble (seeded chips the march tests, with contact occlusion and a short sun-shadow walk; Full detail only, measured +9 to +17 ms in the worst cameras) and for crystals. Plants are not: grass is the meadow photo plus a normal map on the cell's faces; leaves a per-pixel pattern on a blurred surface. No blade silhouettes, no gaps | `src/shaders/gfx/grains.js`, `src/shaders/gfx/surface.js:1032-1053`, `:1424-1482` |
 | 11 | Black hole bends the ray | **We don't.** Ours is a drawn sphere with a dark heart (premultiplied blend), no lensing | `src/pov/wands/visuals.js:8-16`, `:71` |
-| 12 | 1/9 of the pixels traced + TAA + dither | Similar pipeline (TAAU, dither) but we trace far more: our automatic resolution floor is 1/3 of the pixels, and it steers on a 12 ms GPU budget | `src/gfx/post.js:213` (UPSCALE_FLOOR), `src/gfx/autoResolution.js`, `src/gfx/post.js:933-936` |
+| 12 | 1/9 of the pixels traced + TAA + dither | Same pipeline, and our floor is theirs: 1/3 per axis = 1/9 of the pixels (Quality's 1/1.5 × AUTO_RES.MIN 0.5). Our default (Quality) traces ~44 %, and drops toward the floor only when a view runs over the 12 ms GPU budget | `src/gfx/post.js:213` (UPSCALE_FLOOR), `src/gfx/autoResolution.js:40`, `src/gfx/post.js:933-936` |
 
-## What we missed, ranked
+## What we missed, ranked (after the six comparisons below)
 
-1. **Grass, leaves, flowers and vines as shapes inside the cell (point 10).** The biggest look gain they have
-   that we don't: a meadow or a hedge stops reading as a textured block from up close, with no new data per
-   cell (shape seeded by the cell's position). It fits "nicer shaders = a better raymarched look". Cost risk:
-   foliage pixels are already among our dearest (`src/shaders/world/light.js:466` records ~100 cascade-pick
-   reads a pixel over foliage before the fix), and a per-cell blade test adds work on every plant cell a ray
-   enters. So: only near the camera, faded out by our existing mip rule (`gfx/lodFade.js`, detail
-   Balanced/Full), and the shadow and AO taps must see the same blades or the grass will float. Needs a
-   stated cost estimate before any GPU run.
-2. **Ray-bending lens for the black-hole wand and SING (point 11).** Cheap in a tracer: one ray-sphere test,
-   then a bent direction, the march otherwise unchanged. It would make the black hole read as a black hole
-   (Halo/Noita-grade spectacle) rather than a dark ball. Has to go through the world march and the far field
-   alike, in every map.
-3. **Eyes that glow without lighting (point 6).** Enemies in dark caves could show faint eye glints, an
-   emission-only touch, so you can spot them without them lighting the cave. Small, cheap, a readability win
-   in Descent and the island caves.
+1. **A black-hole lens (point 11).** Best value for the least risk. The march already restarts a ray where
+   glass and liquids bend it (`src/shaders/render.js:840` MAX_BENDS, `:1307`), so the lens is one ray-sphere
+   test per active black hole and a bent direction; pixels that miss pay only the test. Must go through the
+   far view and every map. Applies to the black-hole wand and SING.
+2. **Grass blades as shapes near the camera (point 10).** The biggest look gain, and the pattern exists
+   (rubble's chips in `grains.js`). A Full-detail hook beside the grain test, rooted on the surface crossing so
+   blades can't float, faded by the mip rule (about 1.8 m full, gone by ~3.5 m by `compare-cell-detail.md`'s
+   arithmetic). Cost unknown; rubble's +9 to +17 ms worst case says measure before shipping. Leaves only
+   after grass shows it works.
+3. **Eyes that glow without lighting (point 6).** Small and cheap; readability in dark caves.
+4. **Check, don't fix: the edge of full detail on big maps.** Full detail is drawn inside the physics box and
+   the distant view outside it, the nearer hit winning, with no blend band (`src/shaders/world/reach.js:1-7`,
+   `docs/scaling.md:528`). Grimorium's rings at 2× and 4× don't settle whether ours shows a line; one
+   screenshot looking across the box edge would.
 
-Already ahead or equal: the cost view, the glow lighting (theirs is the approach our own history replaced
-for flicker), shadows, the far field, hazard glow.
+Nothing to borrow for frame time: empty-space skipping, light from glowing cells, shadows, AO and resolution
+are all equal or ahead (each file below says why, with the measurements).
 
-## A data point, not a recommendation
+Possible look nits, only if seen: light from lava leaking through a thin wall right beside it (the glow's
+blocking taps reach 5 cells, `lighting.js` GLOW_TAP_D; retune that first), wand lights cast no shadows, and
+far sun-shadow edges are coarse (the world cascade's 2 cells a texel).
 
-They trace one ninth of the screen's pixels on a laptop RTX 4060 and call that the ceiling. Our floor traces
-three times that share. It says a peer accepts a far chunkier image for frame rate; our recent detail-loss
-work went the other way, so this is context for the resolution floor, not a reason to lower it.
+## The comparisons
+
+| File | Topic | Verdict |
+|---|---|---|
+| `compare-empty-space.md` | Skipping empty space, the cell walk, see-through media | Ahead (3 occupancy levels, beam pre-pass, gas-only bricks in one jump). The cost left is glass/water/smoke pixels, not skipping |
+| `compare-glow-lights.md` | Light from thousands of glowing cells | Ahead on cost and steadiness; their per-light shadow rays are sharper. Ours replaced a random-pick shadow ray that flickered ±20 % (faccbb129, 2026-10-14) |
+| `compare-distance-lod.md` | Lower detail past the simulated area | Different: two passes and a hard cut vs their one walk through 2×/4× rings. A middle level isn't worth it unless measured |
+| `compare-resolution-taa.md` | Fewer pixels, TAA, dither | Same floor (1/9); ahead on automatic steering, history rejection, sharpening |
+| `compare-shadows-ao.md` | Sun and lamp shadows, AO | Ahead: cached shadow cascades (~0.6 ms of a 15.6 ms span), PCSS edges; per-pixel sun rays were tried and removed |
+| `compare-cell-detail.md` | Shapes in the cell, gas fields, materials by ID, lensing | Rubble and crystals already; plants and the lens are the gaps (items 1–2 above) |
+
+## A data point
+
+Their fixed setting, 1/9 of the screen's pixels on a laptop RTX 4060, is our automatic floor. (The first pass
+of these notes said our floor traced three times that share; it was per axis, not per pixel. Corrected.)
 
 ## Open questions the video can't settle
 
