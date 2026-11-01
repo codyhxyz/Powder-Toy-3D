@@ -21,6 +21,12 @@ walls draw over nearer coarse ground. The new design splits the three jobs apart
 4. **The march (M).** One full-screen ray march in world cells over W, F and L, on every map, small and big. It has
    no box-shaped draw and no distance pass. Detail fits the pixel: past the distance where a cell is smaller than
    its pixel, it reads the coarser field and occupancy levels.
+   Status 2026-11-01: done for every flat frame. From 2026-10-25 ("work parity") to 2026-11-01 a big map's march
+   drew only inside physics' window's box and the distance pass (`world/far.js`) drew past it; the seams between
+   the two (geometry, materials, shadows, bounce light, glow, haze, water, gases, depth, and the cut moving with
+   the window) were the user's worst look complaint. Now the march draws the whole world on every map and F's
+   level 0 follows the focus, not the window. The distance pass is left only for the rolling log's bent frames,
+   whose box volume draws physics' window (the march doesn't bend).
 5. **Physics region (P).** The 128³ window stays, for physics only. A move touches nothing the picture reads: its
    new slab is filled from the world copy plus the exact-state store, and nothing on screen changes when it moves.
 

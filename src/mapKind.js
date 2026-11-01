@@ -3,8 +3,8 @@
 // A small map (a box scene: maps.js `preset`) is simulated whole in one grid. A
 // big map (a world scene: maps.js `scene`) is a window of cells that follows the
 // player over a world too big to simulate at once (docs/scaling.md D11). Both
-// draw through app.js's one frame: a big map's window as a small map's grid, and
-// past it the distance pass (world/far.js drawBehind).
+// draw through app.js's one frame and one renderer: the world march over the
+// whole world (shaders/world/march.js), a small map's world being its box.
 // Every tool, element, look and rule not listed here is the same on both
 // (CLAUDE.md, "Same features in every world").
 //

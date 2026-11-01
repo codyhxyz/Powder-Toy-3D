@@ -525,6 +525,8 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     (`matOf`, the short sun ray). The build at world load 40–75 ms GPU-synced; a move's leaving slab ~1.4 ms; a
     sweep frame the same; shadow heights 0.1–0.2 ms. A move changes 6 of the far field's pixels (window masked
     out, frame fixed). The GPU's tree placement agrees with `treesIn` (350 of 350 trees over a region).
+  - Superseded 2026-11-01 (docs/seamless-world.md, point 4): every flat frame of a big map is the world march's
+    alone, over the whole world; the far field draws only on the rolling log's bent frames.
   - Not yet: no blend band at the window's sides; no gases (smoke, steam, fire) in the far field; the far field's own
     ambient sees only a two-tap AO, not distant hills; it isn't drawn in the data views; guests don't get the host's
     edits outside the window (W5).

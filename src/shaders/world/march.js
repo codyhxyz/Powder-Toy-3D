@@ -37,6 +37,7 @@ import { prelude, LAYOUT, SUPER, SUPER_CELLS, STAGE, BRICK } from '../common.js'
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod } from '../../gpu/wgsl.js';
+import { glf } from '../../glsl.js';
 import { coreGLSL, DDA_SPARE_STEPS } from '../gfx/core.js';
 import { noiseGLSL } from '../gfx/noise.js';
 import { crystalGLSL } from '../gfx/crystal.js';
@@ -105,7 +106,8 @@ export const WORLD_GROUP2 = () => worldGroup2(FIELDS_BINDINGS, LIGHT_BINDINGS);
 // What the shading library reads of the grid and the state, over the world copy (see the header).
 // It needs the prelude of physics' window grid (slotOf for the physics-indexed reads), the
 // frame's bindings, brickInfoWGSL and W's module.
-const BRICK_KEY_BITS = { x: 11, y: 10 };   // a brick's key: x | y << 11 | z << 21 (worlds to 8192 × 4096 × 8192 cells)
+const BRICK_KEY_BITS = { x: 11, y: 10 };
+const PHYS_FADE_CELLS = 8;   // cells inside physics' window's faces over which its own fields (flow, foam) fade out   // a brick's key: x | y << 11 | z << 21 (worlds to 8192 × 4096 × 8192 cells)
 const worldCoreWGSL = () => {
   const dda = ddaWalk();
   const near = 'vec3i(NX, NY, NZ) - 1';
@@ -161,17 +163,30 @@ fn physSlot(c: vec3i) -> u32 {
   let id = (u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) + P.physRing) % n;
   return id * 64u + u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
 }
+// What only physics holds (the flow's drift, the foam) fades out over PHYS_FADE_CELLS inside the window's
+// faces that lie inside the world, so where physics stops shows no line: the march draws the whole world,
+// and the window's faces are on screen. (Past them the world is still: no drift, no foam.) A face on the
+// world's edge (a small map's every face; a big map's floor and top) doesn't fade.
+const PHYS_FADE_CELLS: f32 = ${glf(PHYS_FADE_CELLS)};
+fn physFade(c: vec3i) -> f32 {
+  let q = vec3f(c - P.physOrigin) + 0.5;
+  let far = vec3f(PHYS_FADE_CELLS);
+  let lo = select(far, q, P.physOrigin > vec3i(0));
+  let hi = select(far, vec3f(P.physSize) - q, P.physOrigin + P.physSize < GRID);
+  let d = min(lo, hi);
+  return saturate(min(min(d.x, d.y), d.z) / PHYS_FADE_CELLS);
+}
 fn cellFlow(c: vec3i) -> vec3f {
   if (!inPhys(c)) { return vec3f(0.0); }
   let w = flow[physSlot(c)];
-  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);
+  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x) * physFade(c);
 }
 // a V2 liquid cell's aeration (shaders/common.js fetchNativeAeration), its core's x and y words
 fn fetchNativeAeration(c: vec3i) -> vec3f {
   if (!inPhys(c)) { return vec3f(0.0); }
   let core = aeration[2u * physSlot(c)];
   if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
-  return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
+  return vec3f(f32(core.x >> 24u) / 255.0 * physFade(c), 1.0, 1.0);
 }
 // a V2 cell's core (shaders/common.js fetchNativeCore), its x and y words (id, fill): what the thin
 // films' cell helpers read (gfx/film.js filmLiquid); zero outside physics' window, as the aeration
