@@ -22,7 +22,7 @@
 import {
   fieldClipPlan, clipOrigin, FieldClip, FIELDS_BINDINGS, FIELD_FORMATS, FIELD_MAX_LEVELS, FIELD_TRANSITION,
   FIELD_FILTER_MARGIN, FIELD_FAR, FE, packEntry, fieldWorkLayout, DERIVE_LAYOUT, worldFieldKernelWGSL, WorldFieldParams,
-  CERT_LAYOUT, worldFieldCertWGSL,
+  CERT_LAYOUT, worldFieldCertWGSL, FIELD_THIN_LEVELS,
 } from '../shaders/world/fields.js';
 import { FIELD_EMA_SETTLE } from '../shaders/fields.js';
 import { LAYOUT } from '../shaders/common.js';
@@ -399,12 +399,12 @@ export class WorldFields {
       run(k.blur, per, { axis: 0 });
       run(k.blur, per, { axis: 1 });
       run(k.blurFinal, per, { axis: 2 });
-      if (lv.k === 0) {
+      if (lv.k < FIELD_THIN_LEVELS) {   // (the boosted levels: thin features kept, shaders/world/fields.js)
         run(k.boost0, per, { axis: 0 });
         run(k.boost, per, { axis: 1 });
         run(k.boost, per, { axis: 2 });
         run(k.peak, per);
-        const cg = this._cert();
+        const cg = lv.k === 0 ? this._cert() : null;   // (the certificate is level 0's)
         if (cg) k.cert.dispatch(frame, per, { bind: [null, null, cg], params });
       } else run(k.store, per);
       this.stats.jobs++;

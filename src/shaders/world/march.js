@@ -107,7 +107,8 @@ export const WORLD_GROUP2 = () => worldGroup2(FIELDS_BINDINGS, LIGHT_BINDINGS);
 // It needs the prelude of physics' window grid (slotOf for the physics-indexed reads), the
 // frame's bindings, brickInfoWGSL and W's module.
 const BRICK_KEY_BITS = { x: 11, y: 10 };
-const PHYS_FADE_CELLS = 8;   // cells inside physics' window's faces over which its own fields (flow, foam) fade out   // a brick's key: x | y << 11 | z << 21 (worlds to 8192 × 4096 × 8192 cells)
+const PHYS_FADE_CELLS = 8;
+const COARSE_PASS_ISO = 0.35;   // a coarse brick is crossed in one trip if its three samples stay under this (SURF_ISO 0.5, less a margin for what lies between them)   // cells inside physics' window's faces over which its own fields (flow, foam) fade out   // a brick's key: x | y << 11 | z << 21 (worlds to 8192 × 4096 × 8192 cells)
 const worldCoreWGSL = () => {
   const dda = ddaWalk();
   const near = 'vec3i(NX, NY, NZ) - 1';
@@ -268,7 +269,16 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
 // the Lab's 39 iterations a pixel (2026-10-25: research/voxel-traversal/KNOWLEDGE.md, "What we missed" 1).
 const WC_INFO_FIELD_CERT: u32 = ${WC_FIELD_CERT >>> 0}u;
 const WC_INFO_OWN_MATTER: u32 = ${WC_OWN.MATTER >>> 0}u;
+// The coarse brick pass (traceWorld's COARSE_AT): what keeps a brick out of it, and the field's ceiling in it.
+const COARSE_PASS_BLOCK: u32 = BRICK_MEDIA | BRICK_THIN | BRICK_FILM | BRICK_FILM_CELLS | BRICK_GLASS_CELLS | ${WC_OWN.CRISP >>> 0}u;
+const COARSE_PASS_ISO: f32 = ${glf(COARSE_PASS_ISO)};
 fn brickSurfCert(bc: vec3i, f: u32) -> u32 {
+  // Read from a coarse level (gPickL > 0: past level 0's clip, the distance), a brick with no matter of its own
+  // holds no surface the march draws: its smooth surface is where its neighbours' matter is, to the coarse
+  // texel's own blur (the clipmap's error there, a texel). Its air is walked in one trip (airWalk) instead of a
+  // field sample a cell, the shell of dilated bricks a grazing ray crawled through over the distant land
+  // (research/voxel-traversal/KNOWLEDGE.md; Laine & Karras 2010's contours bound a voxel's surface to it).
+  if (gPickL > 0u && (f & (BRICK_SURF | BRICK_THIN | WC_INFO_OWN_MATTER)) == BRICK_SURF) { return f & ~BRICK_SURF; }
   if ((f & (WC_INFO_FIELD_CERT | BRICK_SURF)) != (WC_INFO_FIELD_CERT | BRICK_SURF) || (f & BRICK_THIN) != 0u
       || gPickL != 0u || gPickA > 0.0) { return f; }
   let lo = vec3f(bc * BS);
@@ -306,6 +316,7 @@ const floorWorld = (code) => rewrite(code, [
 // nothing, so its pick (gPickL, gPickA) is read only if the ray ends past it (the floor, the trip cap):
 // taken after the loop then, at the same point (its entry), before anything after the loop reads it.
 const BEAM_AT = "  // (one trip more than the march's steps";
+const COARSE_AT = '    let tExit = min(tMax.x, min(tMax.y, tMax.z));\n    // The cell\'s element from the brick\'s occupancy';
 const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTraceWGSL(detail, format, optics, split), [
   // the lean march's head start from the beam stage (shaders/world/beam.js): a ray in air, nothing met at its start
   ...(split === 'lean' ? [[BEAM_AT, `  if (!ifPend & !anyHit & (liq == E_EMPTY)) { ax = beamStart(ro, rd, t0, bh.y, ax, &cell, &tMax, &tEnter); }\n${BEAM_AT}`]] : []),
@@ -320,6 +331,32 @@ const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTr
         if (liq == E_EMPTY${GRAINS_ANY(detail) ? ' && !gPebInside' : ''}) { flags = brickSurfCert(bc, flags); }
         gThin = brickThin(flags);\n`],
   [SPLIT_AT, `  if (pickOwed) { fieldPickAt(ro + rd * pickT); }   // (the last brick entered was empty)\n\n${SPLIT_AT}`],
+  // The coarse brick pass: read from a coarse field level (gPickL > 0: past level 0's clip), a brick of smooth
+  // matter alone (no crisp cell, medium, film, glass or thin matter) that the field stays well under its iso at
+  // the ray's entry, middle and exit is crossed in one trip, as the body would pass its cells finding nothing:
+  // a coarse level's field varies over its texel (2 cells and more), so three samples a brick bound it (with
+  // COARSE_PASS_ISO's margin). Anything nearer the iso takes the full body, cell by cell, as before. The grazing
+  // ray over distant ground and through distant crowns walked most of its cells here (Amanatides & Woo's
+  // walk at the level's own resolution: the mip rule, gfx/lodFade.js, for geometry).
+  [COARSE_AT, `    if ((gPickL > 0u) & (liq == E_EMPTY) & ((flags & COARSE_PASS_BLOCK) == 0u)${GRAINS_ANY(detail) ? ' & !gPebInside' : ''}) {
+      var bCell = cell;
+      var bMax = tMax;
+      var bT = tEnter;
+      let bAx = skipBrick(bc, ro, rd, istp, &bCell, &bMax, &bT);
+      if (bT < tCut) {
+        if (phiStale) { phiA = surfSample(ro + rd * tEnter); phiStale = false; }
+        let pM = surfSample(ro + rd * (0.5 * (tEnter + bT)));
+        let pB = surfSample(ro + rd * bT);
+        let mx = max(phiA, max(pM, pB));
+        if (max(max(mx.x, mx.y), max(mx.z, mx.w)) < COARSE_PASS_ISO) {
+          cell = bCell; tMax = bMax; tEnter = bT; ax = bAx;
+          prevCrisp = E_EMPTY;
+          phiA = pB;
+          continue;
+        }
+      }
+    }
+${COARSE_AT}`],
   // airWalk: in a brick of air alone (no cell of its own) the fast path holds for every cell until the ray
   // leaves the brick or reaches the cut, so its cells are passed here, as the loop's later trips would pass
   // them through the fast path (after the head's checks: the trip cap, the world's edge, the cut), each one

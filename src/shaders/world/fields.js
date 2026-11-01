@@ -39,7 +39,12 @@ import { WorldCopyUniforms, WC_FIELD_CERT } from './copy.js';
 export const FIELD_CLIP_TEXELS = 128;   // texels a level spans along x and z (S): level 0 reaches ±64 cells (19 m)
 export const FIELD_CLIP_ROWS = 128;     // most rows a level's band holds (the world's height, if less)
 export const FIELD_MAX_LEVELS = 8;      // FieldClip's arrays (S · 2^7 = 16384 cells: past every map)
-export const FIELD_THIN_LEVELS = 1;     // levels the thin mask has: a thin feature is sub-texel past level 0
+// Levels whose fields get the thin-feature boost and keep a thin mask (level 0's rule, fieldPeakFrag): the
+// march draws the whole world, and past level 0's clip a plank wall or a leafy twig read from a plain blurred
+// coarse texel fell under the iso and vanished (cottages drew as ruins, crowns as blobs). Boosted, it stays,
+// a texel thick (2 cells at level 1, 4 at level 2): Losasso & Hoppe's coarse levels keep the shape, not lose it.
+// Past these the footprint (fieldLevelFor) or the distance makes a thin feature sub-pixel.
+export const FIELD_THIN_LEVELS = 3;
 export const FIELD_LEVEL_BLEND = 0.25;  // octave share over which a level blends into the next (brilinear)
 export const FIELD_TRANSITION = 0.1;    // transition band, as a share of a level's clip (Losasso & Hoppe: n/10)
 // Texels kept between a sampled point and the edge of what a level holds: the cubic reading reaches
@@ -517,6 +522,24 @@ fn entryBrick(w: u32) -> vec3i { return vec3i(i32(w & 1023u), i32((w >> 10u) & 2
 // the level's world size in texels
 fn worldTexels() -> vec3i { return (P.world.xyz + P.band.z - 1) / P.band.z; }
 fn texelInWorld(q: vec3i) -> bool { return all(q >= vec3i(0)) && all(q < worldTexels()); }
+// the smooth-surface channels any cell of texel q holds (1 each): a cell at level 0, every cell of a coarse
+// texel (the boosted levels': FIELD_THIN_LEVELS, at most 4³ cells)
+fn texelSurfOcc(q: vec3i) -> vec4f {
+  var occ = vec4f(0.0);
+  let n = P.band.z;
+  let c0 = q * n;
+  for (var z = 0; z < n; z++) {
+    for (var y = 0; y < n; y++) {
+      for (var x = 0; x < n; x++) {
+        let c = c0 + vec3i(x, y, z);
+        if (any(c >= P.world.xyz)) { continue; }
+        let ch = SURFCH(eid(wcA(c)));
+        if (ch >= 0) { occ[ch] = 1.0; }
+      }
+    }
+  }
+  return occ;
+}
 // level brick b's word in the slot map (the level's clip, toroidally; b >= 0)
 fn slotKey(b: vec3i) -> u32 {
   let rb = P.band.y / 4;
@@ -691,8 +714,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var wt = 0.5 * (1.0 - P.sm);
     if (i == 0) { wt = P.sm; }
     acc += wt * vec4f(unpack2x16float(work[OFF_C + t]), unpack2x16float(work[OFF_C + SC + t]));
-    let ch = SURFCH(eid(wcA(q)));
-    if (ch >= 0) { occ[ch] = 1.0; }
+    occ = max(occ, texelSurfOcc(q));
   }
   work[OFF_A + s] = pack4x8unorm(acc);
   work[OFF_A + SC + s] = pack4x8unorm(occ);
@@ -747,7 +769,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     textureStore(ftOut, g, thin);
   }
 }`,
-    // a coarse level: the normalised blur as it is (no boost: a thin feature is under its texel)
+    // a coarse level past the boosted ones (FIELD_THIN_LEVELS): the normalised blur as it is
     store: `${main}
   if ((w & FE_FINAL) == 0u || !texelInWorld(p)) { return; }
   let phi = vec4f(unpack2x16float(work[OFF_C + s]), unpack2x16float(work[OFF_C + SC + s]));
