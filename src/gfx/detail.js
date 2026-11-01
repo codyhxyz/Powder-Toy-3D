@@ -153,6 +153,11 @@ export const DETAIL = [
   // gives up: texture and cloud detail finer than two pixels on smooth distant ground and sky.
   // high: Island whole-frame GPU span at Balanced, origin/main 03b045db vs mixed (tools/profile.mjs --frozen
   // --detail balanced, Apple M5, 1280x800 @2x, 2026-10-25): default pose 20.19 -> 17.89 ms, horizon 11.07 -> 8.93 ms.
+  // high (the Full level; measured below): meadow grass as blades up close, Grimorium's in-cell
+  // grass (research/grimorium-graphics/compare-cell-detail.md). One walk of at most 24 blade sites
+  // a pixel, no memory reads, only on grass within ~3.5 m (shaders/gfx/blades.js).
+  { key: 'grassBlades', define: 'DETAIL_GRASS_BLADES', label: 'Grass blades up close', cost: 'high', since: '2026-11-01',
+    desc: 'Up close, meadow grass is real blades with dark gaps between them instead of a photo of grass' },
   { key: 'farFull', define: 'DETAIL_FAR_FULL', label: 'Distant view at full resolution', cost: 'high', since: '2026-10-25',
     desc: 'On big maps, shades every pixel of the land, sea and sky past the area around you instead of a quarter of them, with edges drawn in full either way' },
 ];

@@ -6,6 +6,7 @@ import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
+import { bladesWGSL, BLADES_ON } from './blades.js';
 import { lib, libLayouts } from './lib.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.js';
@@ -38,7 +39,9 @@ import { TEX_LAYERS, FLOOR_TEX } from '../../gfx/materials.js';
 // (floorFwidth). Nothing here samples with an implicit level.
 export const surfaceGLSL = (detail = {}, { sourceAppearance = false } = {}) => {
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
+  const blades = BLADES_ON(detail);
   return /* wgsl */ `
+${bladesWGSL(detail)}
 ${grains ? `
 // Close-up grains (gfx/grains.js, gfx/detail.js): compiled in only when switched on.
 var<private> gGrainSun: f32 = 1.0;   // sun visibility past a grain's neighbours, set around its shadeSurf` : ''}
@@ -2317,7 +2320,8 @@ fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fd: vec4f) -> vec3f 
     sh = vec3f(1.0);
     if (FU.shadows != 0u) { sh = sunShadow(select(s.p, fhp, onFloor), ng); }
   }${grains ? `
-  if (!onFloor) { sh *= gGrainSun; }   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}
+  if (!onFloor) { sh *= gGrainSun; }   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}${blades ? `
+  if (!onFloor) { sh *= gBladeSun; }   // a grass blade under the blades above it (gfx/blades.js)` : ''}
   var aoT = ao * s.cav;   // (the floor: cav 1, shadeFloorFw)
 
   // specular layer (F0) and the energy it takes from the diffuse one

@@ -14,6 +14,7 @@ import { liquidDetailGLSL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { MEDIA_EFFICIENT } from './gfx/mediaDetail.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
+import { BLADES_ON } from './gfx/blades.js';
 import { volumeHazeGLSL } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
@@ -775,6 +776,7 @@ if (!Number.isInteger(BS_SHIFT)) throw new Error('render: the brick edge is no p
 const realistic = (detail, curved = false, fixedReadFormat, richOptics = true, split = null) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
+  const blades = BLADES_ON(detail);
   // Deep liquid cell by cell (gfx/detail.js waterSteps: Full, and the grain and curved tracers), else a
   // brick at a time where its own interior bit certifies it (deep liquid, below).
   // The split march's loop variants (shaders/world/march.js, "The event kernels"):
@@ -1650,7 +1652,12 @@ ${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stop
           s = gatherPlan(hitP, ns, hitCh, &pl);
         }
         if (pl.count > 0) { applyMat(&s, planMat(pl)); }${grains ? `
-        if (clod) { clodFinish(&s); }` : ''}
+        if (clod) { clodFinish(&s); }` : ''}${blades ? `
+        // meadow grass up close: the blades under its surface (gfx/blades.js), at their depth
+        if (hitK == HIT_SMOOTH) {
+          var bladeP = hitP;
+          if (grassBlades(&s, shadeRd, grassShare(pl), &bladeP) && sp == 0 && all(hitPos == hitP)) { hitPos = bladeP; }
+        }` : ''}
         decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
       }
       c = shadeHit(s, shadeRd, floorLit, floorHp, floorFw);
@@ -1663,7 +1670,8 @@ ${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stop
         liquidFoam(s.p, &foamN, s.id, &foamCol, &foamTrans);
         c = foamCol + foamTrans * (c - s.emit) + s.emit;
       }${grains ? `
-      gGrainSun = 1.0;   // (grainSurf set it for this shadeHit; the floor's is 1 already)` : ''}
+      gGrainSun = 1.0;   // (grainSurf set it for this shadeHit; the floor's is 1 already)` : ''}${blades ? `
+      gBladeSun = 1.0;   // (grassBlades set it for this shadeHit)` : ''}
     }
     if (sp == 0) {
       if (stop) { col += trans * c; trans = vec3f(0.0); }
