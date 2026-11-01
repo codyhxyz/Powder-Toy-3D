@@ -5,6 +5,7 @@ import { povEvents } from './events.js';
 import { CLASSES, CLASS, STATS, RESPAWN_ROOM_S, DEFAULT_CLASS, applyClass, classStats, heldTool, keyName } from './classes.js';
 import { renderPortraits } from './classPortraits.js';
 import './classPicker.css';
+import { KEYS, is, codes, label } from '../keys.js';
 
 // The class picker: Team Fortress 2's class-select screen, opened with its key
 // (comma) in first person. A row of cards, one per class (classes.js): a posed
@@ -137,7 +138,7 @@ export function createClassPicker(env) {
       h('p.cp-keys', {},
         h('span', {}, h('kbd', { text: '1' }), '–', h('kbd', { text: String(CLASSES.length) }), ' pick'),
         h('span', {}, h('kbd', { text: '←' }), h('kbd', { text: '→' }), ' ', h('kbd', { text: 'Enter' }), ' choose'),
-        h('span', {}, h('kbd', { text: ',' }), ' or ', h('kbd', { text: 'Esc' }), ' close'),
+        h('span', {}, h('kbd', { text: label(KEYS.classPicker) }), ' or ', h('kbd', { text: 'Esc' }), ' close'),
         row.querySelector('.cp-item.soon') ? h('span.cp-soon-key', {}, h('i'), ' coming soon') : null)));
   closeBtn.addEventListener('click', () => close());
   root.addEventListener('mousedown', (e) => { if (e.target === root) close(); });
@@ -255,23 +256,24 @@ export function createClassPicker(env) {
     const joining = pendingJoin || mustPick;
     if (pendingJoin) { pendingJoin = false; setTimeout(() => show({ joined: true }), 0); }   // (once the shell is in first person)
     if (chosen) return applyClassTo(body, chosen, env.getToolbelt());
-    if (!hinted && !joining) { hinted = true; env.toast?.('Press , to choose a class', { kind: 'hint' }); }
+    if (!hinted && !joining) { hinted = true; env.toast?.(`Press ${label(KEYS.classPicker)} to choose a class`, { kind: 'hint' }); }
     return null;
   }
 
   // keys: before the toolbelt's digits (it listens in the capture phase too, and is made later)
-  const OWN = new Set(['Escape', 'Enter', ' ', ',', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab']);
-  const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC', 'KeyZ', 'KeyF', 'F5', 'F1']);
+  const OWN = new Set(['Escape', 'Enter', ' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab']);
+  // the body's keys, held back while it's open
+  const MOVE = codes(KEYS.forward, KEYS.back, KEYS.left, KEYS.right, KEYS.jump, KEYS.fast, KEYS.crouch, KEYS.zoom, KEYS.kick, KEYS.view, KEYS.hideHud);
   addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!open) {
-      if (e.key === ',' && !e.repeat && env.isActive() && allowed()) { e.preventDefault(); e.stopImmediatePropagation(); show(); }   // (outside Siege, comma is settings)
+      if (is(e, KEYS.classPicker) && !e.repeat && env.isActive() && allowed()) { e.preventDefault(); e.stopImmediatePropagation(); show(); }   // (outside Siege, comma is settings)
       return;
     }
     const digit = /^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1;
-    if (!OWN.has(e.key) && digit < 0 && !MOVE.has(e.code)) return;   // the rest (V, P, T, ?) work as ever
+    if (!OWN.has(e.key) && !is(e, KEYS.classPicker) && digit < 0 && !MOVE.has(e.code)) return;   // the rest (V, P, T, ?) work as ever
     e.preventDefault();
     e.stopImmediatePropagation();
     if (e.repeat && !e.key.startsWith('Arrow')) return;
@@ -280,7 +282,7 @@ export function createClassPicker(env) {
     else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') setFocus(focus + 1);
     else if (e.key === 'Tab') setFocus(focus + (e.shiftKey ? -1 : 1));
     else if (e.key === 'Enter' || e.key === ' ') choose(CLASSES[focus].key, { close: true });
-    else if (e.key === 'Escape' || e.key === ',') close();
+    else if (e.key === 'Escape' || is(e, KEYS.classPicker)) close();
   }, { capture: true });
 
   return {

@@ -1,5 +1,6 @@
 import { h } from './dom.js';
 import { decoView, setDecoColor } from '../deco.js';
+import { KEYS, label } from '../keys.js';
 
 // The deco tools' options (TPT's colour picker and its RGBA sliders,
 // src/gui/game/GameView.cpp colourPicker): the colour, its alpha (how strongly
@@ -18,7 +19,7 @@ export function createDecoPicker({ onToggle }) {
   const swatch = h('span.deco-swatch', { 'aria-hidden': 'true' });
   const show = h('button.material-control', {
     type: 'button', title: 'Show decoration (Ctrl+B)', 'aria-label': 'Show decoration', on: { click: () => onToggle() },
-  }, h('span', { text: 'Show decoration' }), h('kbd', { text: 'Ctrl B' }));
+  }, h('span', { text: 'Show decoration' }), h('kbd', { text: label(KEYS.deco) }));
   const fill = (input) => input.style.setProperty('--fill', `${((input.value - input.min) / (input.max - input.min)) * 100}%`);
   const apply = () => {
     setDecoColor([...fromHex(color.value), +alpha.value]);

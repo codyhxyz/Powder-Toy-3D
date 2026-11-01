@@ -1,5 +1,6 @@
 import { h } from '../ui/dom.js';
 import { TOUCH_MEDIA } from './touch.js';
+import { KEYS, label } from '../keys.js';
 
 // The POV HUD: crosshair (with its bloom, and Halo's red on an enemy in range) and hitmarker, Halo's grenade count, the Energy Shield (Halo's bar over health, and its flare on the screen's edge), health and breath, the perks held (Noita's row of
 // icons), screen effects for what the body feels, the pointer-lock prompt, the death screen. Styles
@@ -82,7 +83,7 @@ export function createPovHud() {
   const goldRow = h('div.pov-gold', { 'aria-label': 'Gold' }, h('span.pov-ic', { text: '$' }), goldText);
   const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, manaRow, breathRow, jetRow, goldRow);
 
-  const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('V'), ' to leave');
+  const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key(label(KEYS.firstPerson)), ' to leave');
 
   const deathCause = h('div.pov-cause');
   const deathCount = h('b');
@@ -91,7 +92,7 @@ export function createPovHud() {
     deathCause,
     h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, ...(touch
       ? [h('span.pov-dot', { text: '·' }), 'God to leave']
-      : [h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'])));
+      : [h('span.pov-dot', { text: '·' }), 'click or ', key(label(KEYS.jump)), ' now', h('span.pov-dot', { text: '·' }), key(label(KEYS.firstPerson)), ' for god view'])));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
     fx.buried, fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, pogo, nades, vitals, lock, death);

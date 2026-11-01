@@ -15,6 +15,7 @@ import {
   ballRadius,
 } from './transfer.js';
 import { gear } from './catalog.js';
+import { KEYS, is } from '../../keys.js';
 
 // Flask: Noita's potion flask. It holds FLASK_CAP cells of any liquid or
 // powder, mixed, each cell kept as it was taken (temperature and all), and
@@ -65,7 +66,6 @@ const SPOUT_RADIUS = 1.2;                        // cells: the stream fills empt
 const BODY_CLEARANCE = 0.3;                      // cells kept clear around the body
 const THROW_REFIRE = 0.6;                        // s after a throw before the next can go (a fresh flask in hand)
 const DRINK_INTERVAL = 0.6;                      // s between gulps while H is held
-const DRINK_KEY = 'KeyH';                        // drink (Grim Dawn's potion key; V, F5, Z, E, Q, Tab, C, T, M are taken)
 const SHATTER_ENERGY = 20;                       // sim KE units the shatter's impact sounds and shakes like
 const SPILL_SLACK = 2.5;                         // candidate cells per spilled cell (some are full)
 const SPILL_RISE = 1;                            // cells: each retry looks this much higher (no room spills over the top)...
@@ -198,12 +198,12 @@ export default {
     let keyHeld = false, keyPressed = false;
     const typing = (t) => t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
     const onDown = (e) => {
-      if (e.code !== DRINK_KEY || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!is(e, KEYS.drink) || e.repeat) return;
       if (!selected || !env.isActive?.() || typing(e.target)) return;
       keyHeld = true;
       keyPressed = true;
     };
-    const onUp = (e) => { if (e.code === DRINK_KEY) keyHeld = false; };
+    const onUp = (e) => { if (KEYS.drink.includes(e.code)) keyHeld = false; };
     if (!env.owner) { addEventListener('keydown', onDown); addEventListener('keyup', onUp); }
 
     // ---- scooping and pouring

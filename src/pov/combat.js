@@ -6,6 +6,7 @@ import { swing } from './tools/action.js';
 import { createFrags } from './frag.js';
 import { MELEE_LUNGE } from './kick.js';
 import { haloMatch, wu } from './halo.js';
+import { KEYS, is } from '../keys.js';
 
 // Halo's golden triangle for the player in a Halo match (docs/modes.md, "Halo
 // combat"): guns (the toolbelt's), grenades and melee. This is the shell's
@@ -22,7 +23,6 @@ import { haloMatch, wu } from './halo.js';
 // F is Halo's melee in a match: kick.js. The shield's flare and sounds on every
 // body: vfx.js, audio.js and hud.js listen to body:shield (player.js).
 
-export const GRENADE_KEY = 'KeyG';   // G: Halo: The Master Chief Collection's PC default, and most PC shooters' grenade key
 const THROW_REFIRE = 0.6;            // s before the next throw: Halo 3's throw (by eye)
 const HITMARK_S = 0.2;               // s the hitmarker shows for a landed blow (feel.js HIT_TIME's, a touch longer)
 // Halo 3's red reticle reaches as far as the weapon's auto-aim (Halopedia: "H3:Assault Rifle" 15 wu,
@@ -89,7 +89,7 @@ export function createCombat(shell) {
   let lob = null, queued = false, wait = 0, hitT = 0, red = false;
 
   addEventListener('keydown', (e) => {
-    if (e.code !== GRENADE_KEY || e.repeat || !shell.active() || shell.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!is(e, KEYS.grenade) || e.repeat || !shell.active() || shell.isTyping()) return;
     queued = true;
   });
   const offs = [

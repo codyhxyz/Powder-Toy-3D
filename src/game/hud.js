@@ -1,6 +1,7 @@
 import { h } from '../ui/dom.js';
 import { MODES, MODE_KEYS, TEAM_NAME, TEAM_CSS, KILLFEED_S, KILLFEED_MAX, styleOf } from './rules.js';
 import { deathNotice, iconFor, KF_COLOR } from '../pov/killfeed.js';
+import { KEYS, label } from '../keys.js';
 import './game.css';
 
 // The team game's screen, Halo's layout: the score, the clock and the
@@ -66,7 +67,7 @@ export function createGameHud({ onLeave }) {
   const repBody = h('div.game-cols');
   const repNext = h('b');
   const repFoot = h('div.game-report-foot', {},
-    h('span.game-report-next', {}, 'Next match in ', repNext), dot(), key('Esc'), ' menu',
+    h('span.game-report-next', {}, 'Next match in ', repNext), dot(), key(label(KEYS.escape)), ' menu',
     h('button.game-leave', { type: 'button', on: { click: () => onLeave?.() } }, 'Leave'));
   const report = h('div.game-report.panel', {}, repTitle, repSub, repBody, repFoot);
 
@@ -75,7 +76,7 @@ export function createGameHud({ onLeave }) {
   const death = h('div.game-death', {}, deathWho, h('div.game-death-count', {}, 'Respawn in ', deathCount));
 
   // the mouse isn't captured: one click puts you in (pointer lock needs it)
-  const play = h('div.game-play', {}, h('b', { text: 'Click to play' }), h('span', {}, key('Esc'), ' menu'));
+  const play = h('div.game-play', {}, h('b', { text: 'Click to play' }), h('span', {}, key(label(KEYS.escape)), ' menu'));
 
   // the first spawn's controls card
   const card = h('div.game-card.panel');

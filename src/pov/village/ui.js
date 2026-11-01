@@ -2,6 +2,8 @@ import { h } from '../../ui/dom.js';
 import { createActionButtons } from '../../ui/actionButtons.js';
 import { ITEMS, POCKETS } from './state.js';
 import { VILLAGE_TOOLS } from './actions.js';
+// (the use and Esc keys are the game's, keys.js; pockets and rotate are this menu's own)
+import { KEYS, label } from '../../keys.js';
 import './village.css';
 
 // Original icons, with the soft silhouettes of a toy furniture catalogue.
@@ -81,19 +83,19 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     hint.hidden = !active || (!c.carry && !c.grip && !c.rest && !c.busy && !c.warning && !c.feedback && !c.reaction && !!action);
     const run = type => { act({ type }); syncActions(); };
     actions.update(!active ? [] : c.grip ? [
-      { id: 'release', label: 'Let go', key: 'E', codes: ['KeyE', 'Escape'], run: () => run('cancel') },
+      { id: 'release', label: 'Let go', key: label(KEYS.use), codes: [...KEYS.use, ...KEYS.escape], run: () => run('cancel') },
       { id: 'stow', label: 'Put in pockets', key: 'I', codes: ['KeyI', 'KeyQ'], disabled: c.grip.moving, run: () => run('stow') },
     ] : c.rest ? [
-      { id: 'stand', label: c.rest === 'sleep' ? 'Wake up' : 'Stand up', key: 'E', codes: ['KeyE', 'Escape'], run: () => run('cancel') },
+      { id: 'stand', label: c.rest === 'sleep' ? 'Wake up' : 'Stand up', key: label(KEYS.use), codes: [...KEYS.use, ...KEYS.escape], run: () => run('cancel') },
     ] : c.busy ? [
-      { id: 'cancel', label: 'Cancel', key: 'Esc', codes: ['Escape'], run: () => run('cancel') },
+      { id: 'cancel', label: 'Cancel', key: label(KEYS.escape), codes: KEYS.escape, run: () => run('cancel') },
     ] : c.carry ? [
-      { id: 'drop', label: 'Set down', key: 'E', codes: ['KeyE'], disabled: !!c.carry.error, run: () => run('drop') },
+      { id: 'drop', label: 'Set down', key: label(KEYS.use), codes: KEYS.use, disabled: !!c.carry.error, run: () => run('drop') },
       { id: 'rotate', label: `Rotate · ${c.carry.rotation * 90}°`, key: 'R', codes: ['KeyR'], run: () => run('rotate') },
       { id: 'stow', label: 'Put in pockets', key: 'I', codes: ['KeyI', 'KeyQ'], run: () => run('stow') },
-      { id: 'cancel', label: 'Cancel move', key: 'Esc', codes: ['Escape'], run: () => run('cancel') },
+      { id: 'cancel', label: 'Cancel move', key: label(KEYS.escape), codes: KEYS.escape, run: () => run('cancel') },
     ] : [
-      ...(action ? [{ id: 'interact', label: action.title, key: 'E', codes: ['KeyE'], run: () => act({ type: 'interact' }) }] : []),
+      ...(action ? [{ id: 'interact', label: action.title, key: label(KEYS.use), codes: KEYS.use, run: () => act({ type: 'interact' }) }] : []),
       ...(action?.secondary ? [{ id: 'grab-near', label: action.secondary.title, key: 'G', codes: ['KeyG'], run: () => act({ type: 'secondary' }) }] : []),
       ...(equipped.primary ? [{ id: 'tool-primary', label: equipped.primary, key: 'Click', run: () => run('tool-primary') }] : []),
       ...(equipped.secondary ? [{ id: 'tool-secondary', label: equipped.secondary, key: 'RMB', run: () => run('tool-secondary') }] : []),
@@ -244,7 +246,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   return {
     open, close, draw, get opened() { return dialog.open; }, get talking() { return !!dialogue; },
     handleKey(e) { syncActions(); return actions.handleKey(e); },
-    dialogueKey(e) { if (dialogue && e.code === 'KeyE') { e.preventDefault(); if (!e.repeat) advance(); } },
+    dialogueKey(e) { if (dialogue && KEYS.use.includes(e.code)) { e.preventDefault(); if (!e.repeat) advance(); } },
     talk(resident, text, choices = [], options = {}) {
       stopReveal(); dialogue = { ...resident, text, choices, choiceOnly: !!options.choiceOnly }; revealed = reducedMotion.matches ? text.length : 0;
       message = ''; show();

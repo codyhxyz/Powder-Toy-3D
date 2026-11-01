@@ -13,7 +13,7 @@ import './hotbar.css';
 // selects, the button is swallowed, the selection hides).
 
 export const HOTBAR_SLOTS = SLOTS.length;
-export const slotKey = (i) => String((i + 1) % 10);   // slot i's number key
+export { slotKey } from '../../keys.js';   // slot i's number key
 const SHOW_MS = 1500;             // HL2 hud_weaponselection.cpp FASTSWITCH_DISPLAY_TIMEOUT 1.5 s
 const SHAKE_MS = 360;             // .shake animation length (hotbar.css)
 

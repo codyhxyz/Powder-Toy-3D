@@ -55,10 +55,8 @@ export const modeToast = {
   edgeMode: (v) => `Edge Mode: ${label(EDGE_LABELS, v)}`,
 };
 
-// TPT's keys (GameView.cpp OnKeyPress): Y cycles the air mode, U toggles
-// ambient heat. TPT's W (gravity mode) is our camera key: gravity is set in
-// Settings only.
-export const MODE_KEYS = { y: 'airMode', u: 'ambientHeat' };
+// (TPT's keys, GameView.cpp OnKeyPress: Y cycles the air mode, U toggles ambient
+// heat, keys.js. TPT's W, gravity mode, is our camera key: gravity is set in Settings only.)
 // the next value a key gives the setting
 export const nextMode = (key, v) => (key === 'ambientHeat' ? !v : (v + 1) % AIR_LABELS.length);
 
