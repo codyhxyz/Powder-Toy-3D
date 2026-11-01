@@ -29,6 +29,17 @@ walls draw over nearer coarse ground. The new design splits the three jobs apart
    mask exists at level 0 only (FIELD_THIN_LEVELS), and leaves read from 2-cell texels turn into blobs. Before
    this can ship: the march needs a distance path as cheap as the old distance pass over sea and grazing land,
    and F needs cell-resolution fields (or the thin mask) out to where a cell is smaller than a pixel.
+   Round 2 (same pose, same probe; frame GPU span): coarse field levels 1-2 keep thin features (level 0's
+   boost): cottages and crowns whole again past level 0. A matterless brick read from a coarse level holds no
+   surface: 96.9 -> 76.7 ms. A smooth-only brick whose coarse field stays under the iso at entry, middle and
+   exit is crossed in one trip: -> 69.4 ms. Knockout at 69.4 ms: the liquid kernel 17 ms of it (sea pixels;
+   about 4 ms in the split), the shading tail 12-15 ms (about 3), the lean march and the rest about 38 (about
+   8). Why the mip rule alone can't close it here: at this pose (scene 1707 x 1067) a cell stays over a pixel
+   out to ~1200 cells, past the whole island, so the footprint never licenses a coarser level; the old
+   distance pass was cheap because it broke that rule (the stepped sea). What could: the screen-space error
+   rule the project already uses for geometry (gfx/lodFade.js GEOM_ERR_PX, 4 px) licenses level-1 geometry
+   past ~300 cells and level 2 past ~600; distant water and the shading tail need distance paths of their
+   own (sky-only reflection, analytic depth, no traced near field) close enough to the near look to show no line.
 5. **Physics region (P).** The 128³ window stays, for physics only. A move touches nothing the picture reads: its
    new slab is filled from the world copy plus the exact-state store, and nothing on screen changes when it moves.
 
