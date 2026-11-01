@@ -945,6 +945,9 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     worldLightWGSL(),
     crystalGLSL,
     tracerCommonWGSL(MarchParams),
+    // Not yet (2026-11-01): a converted source level's own appearance (gfx/sourceAppearance.js; it lives in
+    // the far field's grid texture, which the march doesn't bind): the march draws its elements' materials,
+    // as it always did inside physics' window; the old distance pass drew it past the window.
     floorWorld(surfaceGLSL(detail, { sourceAppearance: false })), decoWorld(),
     liquidGLSL,
     decoSurfGLSL,
