@@ -23,11 +23,20 @@
 // Light in the sward: the sun and the sky reach a point a depth z into it
 // through the blades above it, Beer-Lambert as Monsi & Saeki's canopy model
 // (1953: I = I0 exp(-k LAI), k ~ 0.5 for grass, a lawn's LAI ~ 3), so the
-// roots are dark and the tips lit. That stands in for contact occlusion
-// between blades (Ghost of Tsushima's grass darkens toward the root the same
-// way, Wohllaib, GDC 2021). The shadow map and the field AO are read at the
+// roots are dark and the tips lit, standing in for contact occlusion between
+// blades (Ghost of Tsushima's grass darkens toward the root the same way,
+// Wohllaib, GDC 2021). The shadow map and the field AO are read at the
 // surface point as before, so a blade is in the shade the ground is in.
 //
+// The mean matches the photo's, so the fade is invisible: the photo is a
+// picture of a sward, its mean already holding the dark of its gaps. A
+// blade's colour varies about the photo's own mean (BLADE_MEAN_ALB), and its
+// light is divided by the light the ray's blades get on average (swardMean:
+// where in the sward a ray like it meets a blade, and which side of the
+// blades it sees, toward or away from the sun), so many blades average to
+// the photo's shading, times BLADE.NEAR_SHADE. tools/grass-blades-cpu-check.mjs
+// walks the real lattice to check that mean.
+
 // Fade: the blades are the photo's ~5 mm blades (surface.js GRASS_BLADE_M),
 // so they go by the same mip rule as the photo's normal-mapped ones
 // (lodFade(GRASS_BLADE_F, fp): all there to ~1.8 m, gone by ~3.5 m at 1080p,
@@ -40,54 +49,190 @@
 // grass gets it the same way: the switch is the material, not the map.
 
 import { CELL_M } from '../../scale.js';
+import { LOOK } from '../../gfx/materials.js';
+import { TEXTURE_SET } from '../../gfx/textureSet.js';
+import { E } from '../../elements.js';
 
 export const BLADES_ON = (detail = {}) => !!detail.DETAIL_GRASS_BLADES;
 
+// The sward, in cells (shared with tools/grass-blades-cpu-check.mjs, which walks it on the CPU).
+export const BLADE = {
+  Q: 0.012 / CELL_M,         // lattice pitch: a site every 1.2 cm
+  N: 3,                      // blades per site (~2 blades per cm^2: a lawn's sward)
+  R: 0.0025 / CELL_M,        // a blade's half-width at its root (5 mm wide: the photo's blades, surface.js GRASS_BLADE_M)
+  TIP_R: 0.35,               // its half-width at the tip, as a share of the root's
+  H: 0.08 / CELL_M,          // the sward's depth under the surface (8 cm)
+  H_MIN: 0.75,               // the shortest blade, as a share of H
+  // The normal: the flat ribbon's facing mixed with the round taper's, then bent toward the
+  // ground's, as Ghost of Tsushima lights its blades (Wohllaib, GDC 2021): a meadow lit as a surface
+  FLAT: 0.6,
+  GROUND_N: 0.5,
+  // light in the sward (Monsi & Saeki 1953, I = I0 exp(-k LAI)): k LAI over its whole depth, k ~ 0.5
+  // for grass and a lawn's LAI ~ 3; for the sun per unit of path (over the sun's height), and the sky
+  K_SUN: 1.5,
+  K_SKY: 1.5,
+  SUN_Y_MIN: 0.2,            // the sun's lowest height in that path (a long slant)
+  // Up close a meadow reads a little darker than its photo's mean (its deepest gaps are seen, where
+  // a photo's are averaged with the tips over a pixel): the blades' mean is this share of the photo's
+  NEAR_SHADE: 0.92,
+};
+// What the blades' mean must equal: the photo's own mean as matOf draws it (gfx/textureSet.js mean,
+// tinted by its look's texTint: it already holds the sward's own shading, its gaps' dark, as photographed)
+const look = LOOK[E.PLANT];
+export const BLADE_MEAN_ALB = TEXTURE_SET[look.texAsset].mean.map((m, k) => m * look.texTint[k]);
+// the thatch on the ground among the blades (dead leaves and soil), and dry blade tips: straw, both
+// scaled to a share of the green's luma so they change its hue, not its mean
+const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+export const BLADE_THATCH_SHARE = 0.6;   // the thatch's luma over the blades' (shaded litter under a sward)
+const STRAW = [0.42, 0.36, 0.2];
+const scaled = (c, l) => c.map((v) => v * l / lum(c));
+export const BLADE_THATCH_ALB = scaled([0.16, 0.13, 0.07], BLADE_THATCH_SHARE * lum(BLADE_MEAN_ALB));
+export const BLADE_DRY_ALB = scaled(STRAW, lum(BLADE_MEAN_ALB));
+// The cosine a blade's bent normal keeps of the ground's: its own facing is near level, turned at
+// random but always toward the eye (the side seen), so looking toward the sun the blades seen are
+// their shaded sides and looking away their lit ones (the photo, a flat surface, has neither). The
+// sun's share is that mean over the facings (BLADE_FACINGS below), against the
+// ground's cosine; the sky's is a tilted plane's view of it.
+export const BLADE_N_COS = BLADE.GROUND_N / Math.hypot(BLADE.GROUND_N, 1 - BLADE.GROUND_N);
+export const BLADE_N_SKY = (1 + BLADE_N_COS) / 2;   // a tilted plane's share of the sky (view factor)
+export const BLADE_MEAN_STEPS = 8;
+// The facings averaged, in the eye's frame (x toward the eye, y across): the ribbon's turned over the
+// half turn facing the eye (BLADE_COS_TURNS), mixed with the round taper's, which faces the eye turned
+// by where across the blade the ray meets it (sin of its turn uniform: BLADE_COS_ACROSS), as the walk
+// builds a blade's normal (the CPU check walks it)
+export const BLADE_COS_TURNS = 8, BLADE_COS_ACROSS = 4;
+export const BLADE_FACINGS = (() => {
+  const out = [];
+  for (let k = 0; k < BLADE_COS_TURNS; k++) for (let j = 0; j < BLADE_COS_ACROSS; j++) {
+    const ph = ((k + 0.5) / BLADE_COS_TURNS - 0.5) * Math.PI;
+    const al = Math.asin(((j + 0.5) / BLADE_COS_ACROSS) * 2 - 1);
+    const x = (1 - BLADE.FLAT) * Math.cos(al) + BLADE.FLAT * Math.cos(ph);
+    const y = (1 - BLADE.FLAT) * Math.sin(al) + BLADE.FLAT * Math.sin(ph);
+    const d = Math.hypot(x, y);
+    out.push([x / d, y / d]);
+  }
+  return out;
+})();
+// vh: the unit horizontal toward the eye; l: toward the sun (unit); the share of the ground's cosine
+// (l.y) the blades seen get, on average
+export function bladeCosShare(vh, l, b = BLADE) {
+  const L = Math.hypot(b.GROUND_N, 1 - b.GROUND_N);
+  const along = vh[0] * l[0] + vh[1] * l[2], across = -vh[1] * l[0] + vh[0] * l[2];
+  let m = 0;
+  for (const [x, y] of BLADE_FACINGS) m += Math.max((b.GROUND_N * l[1] + (1 - b.GROUND_N) * (x * along + y * across)) / L, 0);
+  return m / BLADE_FACINGS.length / Math.max(l[1], b.SUN_Y_MIN);
+}
+
+// Expected light at the blade or ground a ray meets, over where in the sward it meets it, so a
+// pixel's mean of many blades equals the photo's (the fade is then invisible). z is the depth share;
+// a ray descends dz per unit z and crosses hs*H/dd cells sideways (hs: its horizontal speed, dd: its
+// descent per unit of ray). Hits per unit z: the blades standing there (exist), each 2r across, over
+// that sideways run, and the tips that start there seen end-on (pi r^2). Returns [sun, sky], each the
+// mean of (albedo share) x (cosine share) x light over the hits and the ground. The CPU check walks the
+// real lattice against it.
+export function swardMean(dd, hs, sunY, cosShare, b = BLADE) {
+  const nb = b.N / (b.Q * b.Q);
+  const run = b.H * hs / dd;
+  const hBar = 0.5 * (1 + b.H_MIN);
+  const dz = 1 / BLADE_MEAN_STEPS;
+  let pass = 1, sun = 0, sky = 0;
+  const kSun = b.K_SUN / Math.max(sunY, b.SUN_Y_MIN);
+  for (let i = 0; i < BLADE_MEAN_STEPS; i++) {
+    const z = (i + 0.5) * dz;
+    const exist = Math.min(z / (1 - b.H_MIN), 1);
+    const r = b.R * (1 + (b.TIP_R - 1) * Math.min((1 - z) / hBar, 1));
+    const lam = nb * (exist * 2 * r * run + (z < 1 - b.H_MIN ? Math.PI * r * r / (1 - b.H_MIN) : 0)) * dz;
+    const p = pass * (1 - Math.exp(-lam));
+    sun += p * cosShare * Math.exp(-kSun * z);
+    sky += p * BLADE_N_SKY * Math.exp(-b.K_SKY * z);
+    pass -= p;
+  }
+  sun += pass * BLADE_THATCH_SHARE * Math.exp(-kSun);
+  sky += pass * BLADE_THATCH_SHARE * Math.exp(-b.K_SKY);
+  return [sun, sky];
+}
+
 export const bladesWGSL = (detail = {}) => {
   if (!BLADES_ON(detail)) return '// (no grass blades: DETAIL_GRASS_BLADES is off)';
-  const cells = (m) => (m / CELL_M).toFixed(6);
+  const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(7)));
+  const v3 = (c) => `vec3f(${c.map(f).join(', ')})`;
+  const b = BLADE;
   return /* wgsl */ `
 // ---- grass blades (gfx/blades.js) ----
 var<private> gBladeSun: f32 = 1.0;   // the sun through the sward above a blade, set around its shadeSurf
 
-const BLADE_Q: f32 = ${cells(0.012)};        // lattice pitch: a site every 1.2 cm
-const BLADE_N: i32 = 3;                        // blades per site (~2 blades per cm^2: a lawn's sward)
-const BLADE_R: f32 = 0.5 * GRASS_BLADE_M / CELL_M;   // a blade's half-width at its root, cells (5 mm wide)
-const BLADE_TIP_R: f32 = 0.35;                 // its half-width at the tip, as a share of the root's
-const BLADE_H: f32 = ${cells(0.08)};          // the sward's depth under the surface, cells (8 cm)
-const BLADE_H_MIN: f32 = 0.75;                 // the shortest blade, as a share of BLADE_H
+const BLADE_Q: f32 = ${f(b.Q)};
+const BLADE_N: i32 = ${b.N};
+const BLADE_R: f32 = ${f(b.R)};
+const BLADE_TIP_R: f32 = ${f(b.TIP_R)};
+const BLADE_H: f32 = ${f(b.H)};
+const BLADE_H_MIN: f32 = ${f(b.H_MIN)};
 // where in its site a blade's root and tip may be (lattice units): far enough
 // in that the whole blade stays in its site, so the walk tests only the sites
 // the ray crosses, nearest first
 const BLADE_ROOT_M: f32 = BLADE_R / BLADE_Q;
 const BLADE_TIP_M: f32 = BLADE_R * BLADE_TIP_R / BLADE_Q;
 const BLADE_ROT: f32 = 0.61;                   // the lattice's turn off the grid's axes, radians
-const BLADE_FLAT: f32 = 0.6;                   // a blade's normal: share of the flat ribbon's (vs the round taper's)
-// ... and then bent this far toward the ground's, as Ghost of Tsushima lights its blades (Wohllaib, GDC 2021):
-// a meadow is lit as a surface, each blade only shading its own facing
-const BLADE_GROUND_N: f32 = 0.5;
+const BLADE_FLAT: f32 = ${f(b.FLAT)};
+const BLADE_GROUND_N: f32 = ${f(b.GROUND_N)};
 const BLADE_STEPS: i32 = 24;                   // sites a ray walks; then it is on the ground among them
 // the ground's slope (the normal's height): blades stand on ground up to 45 degrees
 // steep and are gone by 60 degrees (a grass cliff stays the photo)
 const BLADE_UP_NONE: f32 = 0.5;
 const BLADE_UP_FULL: f32 = 0.7;
-// light in the sward (Monsi & Saeki 1953): k times the leaf area above a point, over the sward's
-// depth, for the sun (per unit of path, so divided by the sun's height) and for the sky. A lawn's
-// whole LAI (~3) made the visible upper sward near black; the blades a ray meets sit in its top
-// layer, under ~1.2-1.6 of it (k ~ 0.5), and the shots against the photo agreed (2026-11-01)
-const BLADE_K_SUN: f32 = 0.6;
-const BLADE_K_SKY: f32 = 0.8;
-const BLADE_SUN_Y_MIN: f32 = 0.2;              // the sun's lowest height in that path (a long slant)
-// colour: a blade is brighter than the sward's mean (the gaps' dark is in
-// the mean the photo and the far view draw), varies blade to blade, and some
-// have dry, straw-coloured tips; the ground is thatch
-const BLADE_ALB_GAIN: f32 = 1.35;
+const BLADE_K_SUN: f32 = ${f(b.K_SUN)};
+const BLADE_K_SKY: f32 = ${f(b.K_SKY)};
+const BLADE_SUN_Y_MIN: f32 = ${f(b.SUN_Y_MIN)};
+const BLADE_NEAR_SHADE: f32 = ${f(b.NEAR_SHADE)};
+const BLADE_MEAN_ALB: vec3f = ${v3(BLADE_MEAN_ALB)};   // the photo's mean (gfx/blades.js)
+const BLADE_THATCH_SHARE: f32 = ${f(BLADE_THATCH_SHARE)};
+const BLADE_THATCH_ALB: vec3f = ${v3(BLADE_THATCH_ALB)};
+const BLADE_DRY_ALB: vec3f = ${v3(BLADE_DRY_ALB)};
+const BLADE_N_SKY: f32 = ${f(BLADE_N_SKY)};
+const BLADE_MEAN_STEPS: i32 = ${BLADE_MEAN_STEPS};
+const BLADE_PI: f32 = 3.14159265;
+// blade to blade: brightness and hue spread (zero mean), and dry tips (straw at the green's luma)
 const BLADE_ALB_VAR: f32 = 0.35;
 const BLADE_HUE_VAR: vec3f = vec3f(0.12, 0.0, -0.1);
 const BLADE_DRY_P: f32 = 0.15;                 // share of blades with dry tips
-const BLADE_DRY_ALB: vec3f = vec3f(0.42, 0.36, 0.2);
-const BLADE_THATCH_ALB: vec3f = vec3f(0.16, 0.13, 0.07);
 const BLADE_SALT: u32 = 0x2545f491u;           // spreads the sites' hash streams apart
+
+// gfx/blades.js BLADE_FACINGS and bladeCosShare, the same sum: vh the unit horizontal toward the eye,
+// l toward the sun (a private array: docs/webgpu.md C6)
+var<private> BLADE_FACINGS: array<vec2f, ${BLADE_FACINGS.length}> = array<vec2f, ${BLADE_FACINGS.length}>(${BLADE_FACINGS.map(([x, y]) => `vec2f(${f(x)}, ${f(y)})`).join(', ')});
+fn bladeCosShare(vh: vec2f, l: vec3f) -> f32 {
+  let L = length(vec2f(BLADE_GROUND_N, 1.0 - BLADE_GROUND_N));
+  let along = dot(vh, l.xz);
+  let across = -vh.y * l.x + vh.x * l.z;
+  var m = 0.0;
+  for (var k = 0; k < ${BLADE_FACINGS.length}; k++) {
+    let d = BLADE_FACINGS[k];
+    m += max((BLADE_GROUND_N * l.y + (1.0 - BLADE_GROUND_N) * (d.x * along + d.y * across)) / L, 0.0);
+  }
+  return m / ${BLADE_FACINGS.length}.0 / max(l.y, BLADE_SUN_Y_MIN);
+}
+// gfx/blades.js swardMean, the same sums: [sun, sky]
+fn swardMean(dd: f32, hs: f32, sunY: f32, cosShare: f32) -> vec2f {
+  let nb = f32(BLADE_N) / (BLADE_Q * BLADE_Q);
+  let run = BLADE_H * hs / dd;
+  let hBar = 0.5 * (1.0 + BLADE_H_MIN);
+  let dz = 1.0 / f32(BLADE_MEAN_STEPS);
+  let kSun = BLADE_K_SUN / max(sunY, BLADE_SUN_Y_MIN);
+  var left = 1.0;
+  var m = vec2f(0.0);
+  for (var i = 0; i < BLADE_MEAN_STEPS; i++) {
+    let z = (f32(i) + 0.5) * dz;
+    let exist = min(z / (1.0 - BLADE_H_MIN), 1.0);
+    let r = BLADE_R * (1.0 + (BLADE_TIP_R - 1.0) * min((1.0 - z) / hBar, 1.0));
+    let tipEnd = select(0.0, BLADE_PI * r * r / (1.0 - BLADE_H_MIN), z < 1.0 - BLADE_H_MIN);
+    let lam = nb * (exist * 2.0 * r * run + tipEnd) * dz;
+    let p = left * (1.0 - exp(-lam));
+    m += p * vec2f(cosShare * exp(-kSun * z), BLADE_N_SKY * exp(-BLADE_K_SKY * z));
+    left -= p;
+  }
+  m += left * BLADE_THATCH_SHARE * vec2f(exp(-kSun), exp(-BLADE_K_SKY));
+  return m;
+}
 
 fn bladeU(h: ptr<function, u32>) -> f32 {
   *h = pcg(*h);
@@ -183,7 +328,7 @@ fn grassBlades(s: ptr<function, Surf>, rd: vec3f, share: f32, bp: ptr<function, 
           nFlat *= inverseSqrt(max(dot(nFlat, nFlat), 1e-12));
           nFlat = select(-nFlat, nFlat, dot(nFlat, v) >= 0.0);
           hitN = normalize(mix(normalize(mix(nRound, nFlat, BLADE_FLAT)), ng, BLADE_GROUND_N));
-          var alb = ALBEDO(E_PLANT) * BLADE_ALB_GAIN * (1.0 + BLADE_ALB_VAR * (tone - 0.5)) * (1.0 + BLADE_HUE_VAR * (tone - 0.5));
+          var alb = BLADE_MEAN_ALB * (1.0 + BLADE_ALB_VAR * (tone - 0.5)) * (1.0 + BLADE_HUE_VAR * (tone - 0.5));
           if (dry < BLADE_DRY_P) { alb = mix(alb, BLADE_DRY_ALB, smoothstep(0.4, 1.0, u)); }
           hitAlb = alb;
         }
@@ -194,11 +339,16 @@ fn grassBlades(s: ptr<function, Surf>, rd: vec3f, share: f32, bp: ptr<function, 
     if (tMax.x < tMax.y) { tMax.x += tDelta.x; cl.x += stp.x; } else { tMax.y += tDelta.y; cl.y += stp.y; }
   }
   if (!found) { hitAlb = BLADE_THATCH_ALB; hitN = ng; tHit = tGround; }
-  // depth into the sward (a share of BLADE_H) and the light that gets there
+  // depth into the sward (a share of BLADE_H) and the light that gets there, over its mean for this
+  // ray (swardMean): a pixel's many blades average to the photo's shading, times BLADE_NEAR_SHADE
   let z = clamp(dd * tHit / BLADE_H, 0.0, 1.0);
   let sunY = max(dot(FU.sun, ng), BLADE_SUN_Y_MIN);
-  gBladeSun = mix(1.0, exp(-BLADE_K_SUN * z / sunY), w);
-  (*s).cav = mix((*s).cav, (*s).cav * exp(-BLADE_K_SKY * z), w);
+  let hs = length(rd.xz);
+  let vh = select(vec2f(0.0, 1.0), -rd.xz / hs, hs > 1e-6);
+  let mean = swardMean(dd, hs, sunY, bladeCosShare(vh, FU.sun));
+  let lit = BLADE_NEAR_SHADE * vec2f(exp(-BLADE_K_SUN * z / sunY), exp(-BLADE_K_SKY * z)) / max(mean, vec2f(1e-3));
+  gBladeSun = mix(1.0, lit.x, w);
+  (*s).cav = mix((*s).cav, (*s).cav * lit.y, w);
   (*s).albedo = mix((*s).albedo, hitAlb, w);
   (*s).n = normalize(mix((*s).n, hitN, w));
   *bp = (*s).p + rd * (tHit * w);
