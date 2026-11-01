@@ -10,6 +10,7 @@ import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } fro
 import { allLoads } from '../pov/tools/transfer.js';
 import { E } from '../elements.js';
 import { ELEC, LAMP_DC, sparkLevel } from '../electricity.js';
+import { KEYS, is } from '../keys.js';
 
 const fail = reason => ({ ok: false, reason });
 const dimensions = app => [app.sim.g.nx, app.sim.g.ny, app.sim.g.nz];
@@ -299,8 +300,8 @@ export function createIndustry(app) {
     // Factory's Build opens on the spawn menu's key: Q in first person, T in the god view (where
     // Q flies down, camera.js). Sandbox keeps GMod's spawn menu: that is the intentional cheat.
     // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
-    const buildKey = app.pov?.active ? 'KeyQ' : app.mp?.chatAvailable ? null : 'KeyT';
-    if (e.code === buildKey && !e.repeat && factory() && active()) {
+    const buildKey = app.pov?.active ? KEYS.toolMenu : app.mp?.chatAvailable ? null : KEYS.spawnMenu;
+    if (buildKey && is(e, buildKey) && !e.repeat && factory() && active()) {
       e.preventDefault(); e.stopImmediatePropagation();
       if (driving()) return;
       const opening = !building;
@@ -309,7 +310,7 @@ export function createIndustry(app) {
       return;
     }
     if (driving() || (!isBuilding() && !part && !inspectMode)) return;
-    if (e.code === 'Escape') {
+    if (is(e, KEYS.escape)) {
       e.preventDefault(); e.stopImmediatePropagation();
       if (!e.repeat) {
         if (isBuilding()) toggle(false);

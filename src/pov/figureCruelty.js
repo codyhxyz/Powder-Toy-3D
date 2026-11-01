@@ -15,13 +15,18 @@ const PALETTES = {
   civilian: [[0.54, 0.025, 0.6], [0.19, 0.49, 0.025], [0.76, 0.45, 0.17]],
   executive: [[0.27, 0.012, 0.42], [0.52, 0.58, 0.015], [0.71, 0.17, 0.34]],
 };
+// Faint eye glow (HDR, unlit, so it lights nothing around the grunt): the whites of a hostile's eyes
+// stay readable in a dark cave. Sickly magenta from the palette above, after Cruelty Squad's gaunt
+// stare and Noita's glowing-eyed hiisi. Intentional (decided under the user's delegation, 2026-11-01):
+// civilians (non-hostile) keep plain lit eyes; every other outfit, the executive target too, glows.
+const EYE_GLOW = [1.1, 0.22, 0.6];
 const BLACK = [0.008, 0.004, 0.014], TEETH = [0.75, 0.8, 0.28], EYES = [0.9, 0.7, 0.65];
 export function buildCruelty({ outfit = 'uniform', variant = 0 } = {}) {
   const [suit, accent, skin] = PALETTES[outfit] ?? PALETTES.uniform;
   const body = new THREE.Group(), torso = new THREE.Group(), neck = new THREE.Group();
   body.add(torso);
-  const box = (parent, name, size, at, color) => {
-    const mesh = part(parent, new THREE.BoxGeometry(...size).translate(...at), color);
+  const box = (parent, name, size, at, color, glow = null) => {
+    const mesh = part(parent, new THREE.BoxGeometry(...size).translate(...at), color, { glow });
     mesh.name = name; return mesh;
   };
   box(torso, 'corporate-jacket', [1.12, 1.75, 0.66], [0, 0.83, 0], suit);
@@ -41,7 +46,7 @@ export function buildCruelty({ outfit = 'uniform', variant = 0 } = {}) {
   for (const side of [-1, 1]) {
     const y = 0.76 + side * (0.025 + (variant % 3) * 0.02);
     box(neck, 'eye-socket', [0.38, 0.33, 0.09], [side * 0.25, y, -0.455], accent);
-    box(neck, 'eye-white', [0.29, 0.23, 0.07], [side * 0.25, y, -0.52], EYES);
+    box(neck, 'eye-white', [0.29, 0.23, 0.07], [side * 0.25, y, -0.52], EYES, outfit === 'civilian' ? null : EYE_GLOW);
     box(neck, 'pinpoint-pupil', [0.075, 0.14, 0.045], [side * 0.23, y, -0.575], BLACK);
   }
   box(neck, 'crooked-nose', [0.19, 0.33, 0.21], [0.045, 0.56, -0.48], skin);

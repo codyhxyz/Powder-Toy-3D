@@ -95,7 +95,8 @@ import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HO
 import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, sizeTag, WORLD_DIMS, resolveMode, modeByKey, viewPreviewUrl } from './maps.js';
 import { kindOf, kindOfMap } from './mapKind.js';
-import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
+import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, nextMode } from './simModes.js';
+import { KEYS, is, label } from './keys.js';
 import { VIEWS, viewKey as viewKeyOf, isMaterialView, viewForMode, THUMB_SIZE } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
@@ -123,7 +124,7 @@ const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
   [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM };   // the Spawners tools' kinds
-const SPAWNER_SET = { [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here' };
+const SPAWNER_SET = { [SPAWNER.PLAYER]: `Player spawn set: ${label(KEYS.firstPerson)} drops you in here` };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -1491,7 +1492,7 @@ function giveGear(id) {
   if (pov?.active) {
     pov.closeMenu();
     hud.toast(`${it.name}: ${slot}`);
-  } else hud.toast(`${it.name} is in your tools: press V, then ${slot}`);
+  } else hud.toast(`${it.name} is in your tools: press ${label(KEYS.firstPerson)}, then ${slot}`);
 }
 
 // Anything else picked from the spawn menu in first person loads the tool gun
@@ -2308,58 +2309,59 @@ addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
   if (isTyping()) return;
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  if (is(e, KEYS.undo)) { e.preventDefault(); undo(); return; }
   // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
   // and Open buttons go local with Ctrl held, GameView.cpp saveSimulationButton, searchButton)
   // (in the body Ctrl is the camera key and S walks back: there only ⌘ saves; Settings' Save always does)
-  const fileMod = e.metaKey || (e.ctrlKey && !pov?.active);
-  if (fileMod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!e.repeat) actions.saveGame(); return; }
-  if (fileMod && e.key.toLowerCase() === 'o') { e.preventDefault(); if (!e.repeat) actions.openSaves(); return; }
-  if (e.ctrlKey && !pov?.active && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleDeco(); return; }   // TPT's key (in the body, Ctrl swims)
+  const fileMod = e.metaKey || !pov?.active;
+  if (fileMod && is(e, KEYS.save)) { e.preventDefault(); if (!e.repeat) actions.saveGame(); return; }
+  if (fileMod && is(e, KEYS.openSaves)) { e.preventDefault(); if (!e.repeat) actions.openSaves(); return; }
+  if (!pov?.active && is(e, KEYS.deco)) { e.preventDefault(); toggleDeco(); return; }   // (in the body, Ctrl swims)
   // TPT's Ctrl+; (specific delete) and Ctrl+P (the Property tool): GameView.cpp OnKeyPress
-  if (mod && e.key === ';' && !pov?.active) { e.preventDefault(); toggleEditMode('specificDelete'); return; }
-  if (mod && e.key.toLowerCase() === 'p' && !e.shiftKey) { e.preventDefault(); if (!pov?.active) openProp(); return; }
+  if (mod && is(e, KEYS.specificDelete) && !pov?.active) { e.preventDefault(); toggleEditMode('specificDelete'); return; }
+  if (is(e, KEYS.property) && !e.shiftKey) { e.preventDefault(); if (!pov?.active) openProp(); return; }
   if (mod) return;
-  const k = e.key;
-  // V switches between the god view and the body (Garry's Mod's noclip key). In the
-  // god view F flies to what's under the cursor (focusCursor); in the body F is the kick.
-  if (k === 'v' || k === 'V') { if (!e.repeat) actions.firstPerson(); return; }
-  if ((k === 'f' || k === 'F') && !pov?.active) {
+  // the body's own key for these: F is the kick there
+  if (is(e, KEYS.firstPerson)) { if (!e.repeat) actions.firstPerson(); return; }
+  if (is(e, KEYS.focus) && !pov?.active) {
     if (!e.repeat) focusCursor().catch((err) => console.error('Focus failed', err));
     return;
   }
   // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
-  if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
+  if (is(e, KEYS.chat) && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; }   // POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
-  // Space flies up here (camera.js), as it jumps in the body; Esc pauses (below)
-  if (k === '.') { stepOnce = true; pacer.wake(); }
-  else if (k === '[') setRadius(settings.radius - 1);
-  else if (k === ']') setRadius(settings.radius + 1);
-  else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
-  // replace mode: X, or TPT's ; and Insert; specific delete: TPT's Delete (a Mac's delete key is Backspace)
-  else if (k === 'x' || k === 'X' || k === ';' || k === 'Insert') toggleEditMode('replace');
-  else if (k === 'Delete' || k === 'Backspace') toggleEditMode('specificDelete');
-  else if (e.code === 'KeyI' && e.altKey) targetHovered();   // (⌥I types a dead key on a Mac: by its code)
-  else if (Object.hasOwn(MODE_KEYS, k.toLowerCase())) { const key = MODE_KEYS[k.toLowerCase()]; setSimMode(key, nextMode(key, settings[key]), true); }   // TPT's Y, U
-  else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
-  else if (k === 'r' || k === 'R') actions.resetCamera();
-  // T: the spawn menu (chat when playing together). Q/C and E/Space fly down and up here (camera.js);
-  // in the body Q is Garry's Mod's spawn-menu key (pov/index.js)
-  else if (k === 't' || k === 'T') dock.toggle();
-  else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
-  else if (k === ',') actions.toggleSettings();
-  else if (k === '?') actions.toggleHelp();
-  // Minecraft Java's screenshot key; holding it must not download a stream of images.
-  else if (k === 'F2') { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
-  else if (k === 'Escape') {
+  // (flying up and down: camera.js)
+  if (is(e, KEYS.step)) { stepOnce = true; pacer.wake(); }
+  else if (is(e, KEYS.brushSmaller)) setRadius(settings.radius - 1);
+  else if (is(e, KEYS.brushBigger)) setRadius(settings.radius + 1);
+  else if (is(e, KEYS.brushShape)) { settings.shape ^= 1; dock.sync(); save(); }
+  else if (is(e, KEYS.replaceMode)) toggleEditMode('replace');
+  else if (is(e, KEYS.specificDelete)) toggleEditMode('specificDelete');
+  else if (is(e, KEYS.target)) targetHovered();
+  else if (is(e, KEYS.airMode)) setSimMode('airMode', nextMode('airMode', settings.airMode), true);
+  else if (is(e, KEYS.ambientHeat)) setSimMode('ambientHeat', nextMode('ambientHeat', settings.ambientHeat), true);
+  else if (is(e, KEYS.eyedropper)) { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
+  else if (is(e, KEYS.resetCamera)) actions.resetCamera();
+  else if (is(e, KEYS.spawnMenu)) dock.toggle();
+  else if (is(e, KEYS.find)) { e.preventDefault(); dock.focusSearch(); }
+  else if (is(e, KEYS.settings)) actions.toggleSettings();
+  else if (is(e, KEYS.help)) actions.toggleHelp();
+  // holding the screenshot key must not download a stream of images
+  else if (is(e, KEYS.screenshot)) { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
+  else if (is(e, KEYS.escape)) {
     const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped
     setEyedropper(false); setShadersOpen(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else pause or resume, every game's Esc
-    // (Intentional (user request, 2026-11-01): Esc pauses, not Space; the map menu is the toolbar's button)
-    if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else setPaused(!settings.paused); }
+    // (Intentional (user request, 2026-11-01): Esc pauses, not Space; the map menu is the toolbar's button).
+    // Intentional (gamemode: every one but Sandbox): Esc is the menu, as in every match (game/hud.js says so)
+    if (!overlay) {
+      if (isBuild(settings.tool)) leaveBuild();
+      else if (selectedMode !== 'sandbox') actions.openMenu();
+      else setPaused(!settings.paused);
+    }
   }
-  else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v && !e.repeat) setView(v.id); }
+  else if (/^[0-9]$/.test(e.key)) { const v = VIEWS.find((x) => x.hotkey === e.key); if (v && !e.repeat) setView(v.id); }
 });
 addEventListener('blur', () => {
   painting = false;

@@ -1,6 +1,9 @@
 import { h } from './dom.js';
 import { ICON } from './icons.js';
 import { CLASSES_ENABLED } from '../pov/classes.js';
+import { KEYS, keycaps, label, slotKey, MOD, ALT } from '../keys.js';
+import { VIEWS } from '../views.js';
+import { SLOTS } from '../pov/tools/catalog.js';
 import { createNotices } from './notices.js';
 
 export function createHud({ onTogglePause }) {
@@ -34,7 +37,7 @@ export function createHud({ onTogglePause }) {
   return {
     setPaused(paused) {
       pause.innerHTML = paused ? ICON.play : ICON.pause;
-      pause.title = paused ? 'Resume (Esc)' : 'Pause (Esc)';
+      pause.title = `${paused ? 'Resume' : 'Pause'} (${label(KEYS.escape)})`;
       pause.setAttribute('aria-label', pause.title);
       pause.classList.toggle('on', paused);
     },
@@ -68,10 +71,18 @@ export function createHud({ onTogglePause }) {
   };
 }
 
-// Controls sheet: the basics a first-time player needs, then every shortcut.
+// Controls sheet: the basics a first-time player needs, then every shortcut. The
+// keys are keys.js's, the ones the handlers listen for; mouse buttons are named in words.
 export function createHelp(onClose) {
-  const k = (...keys) => h('span', {}, keys.map((x) => h('kbd', { text: x })));
-  const row = (label, ...keys) => h('div.key', {}, h('span', { text: label }), k(...keys));
+  const SLASH = { sep: '/' };
+  // a part: a binding from KEYS (its chords, 'or' between), a mouse word, or SLASH
+  const part = (p) => (Array.isArray(p)
+    ? keycaps(p).flatMap((caps, i) => [i ? h('span.key-sep', { text: 'or' }) : null, ...caps.map((c) => h('kbd', { text: c }))])
+    : p.sep ? [h('span.key-sep', { text: p.sep })] : [h('kbd', { text: p })]);
+  const row = (text, ...parts) => h('div.key', {}, h('span', { text }), h('span', {}, parts.flatMap(part)));
+  const move = [KEYS.forward, KEYS.left, KEYS.back, KEYS.right];
+  const views = VIEWS.map((v) => v.hotkey).sort();
+  const slots = SLOTS.map((_, i) => slotKey(i));
   const el = h('div.modal-scrim', { on: { click: (e) => { if (e.target === el) onClose(); } } },
     h('div.help.panel', { role: 'dialog', 'aria-label': 'Controls' },
       h('header', {}, h('h2', { text: 'Controls' }),
@@ -80,81 +91,84 @@ export function createHelp(onClose) {
         h('h3', { text: 'Basics' }),
         row('Paint', 'Left drag'),
         row('Erase', 'Right click'),
-        row('Brush size', '[', ']'),
-        row('Find an element', '/'),
+        row('Brush size', KEYS.brushSmaller, KEYS.brushBigger),
+        row('Find an element', KEYS.find),
         row('Look around', 'Right drag'),
-        row('Fly', 'W', 'A', 'S', 'D'),
-        row('Fly up / down', 'Space', 'C'),
-        row('Pause or resume', 'Esc'),
-        row('Undo', '⌘', 'Z'),
-        row('Walk around in first person', 'V'),
-        row('This sheet', '?'),
-        row('Close menus; with none open, pause or resume', 'Esc'),
+        row('Fly', ...move),
+        row('Fly up / down', KEYS.flyUp, SLASH, KEYS.flyDown),
+        row('Pause or resume (Sandbox)', KEYS.escape),
+        row('Undo', KEYS.undo),
+        row('Walk around in first person', KEYS.firstPerson),
+        row('This sheet', KEYS.help),
         h('h3', { text: 'Painting' }),
         row('Paint', 'Left drag'),
         row('Erase on release (drag instead to look around)', 'Right click'),
-        row('Brush size', '[', ']'),
+        row('Brush size', KEYS.brushSmaller, KEYS.brushBigger),
         row('Brush size', 'Shift', 'Scroll'),
-        row('Sphere or cube brush', 'B'),
+        row('Sphere or cube brush', KEYS.brushShape),
         row('Line (TPT\'s Shift-drag)', 'Shift', 'Left drag'),
-        row('Box: brush-tall, between the corners', '⌘', 'Left drag'),
-        row('Fill: open air up to the brush top, or what you click', '⌘', 'Shift', 'Click'),
-        row('Replace mode: paint over material', 'X'),
-        row('Specific delete: erase only the target', 'Delete'),
-        row('Target for both: an element tile', '⌥', 'Click'),
-        row('Target: the element under the cursor', '⌥', 'I'),
-        row('Property tool: set a value under the brush', '⌘', 'P'),
-        row('Show or hide decoration (the Deco tab\'s paint)', 'Ctrl', 'B'),
-        row('Eyedropper: pick element under cursor', 'I'),
-        row('Undo last change', '⌘', 'Z'),
-        row('Find an element', '/'),
+        row('Box: brush-tall, between the corners', MOD, 'Left drag'),
+        row('Fill: open air up to the brush top, or what you click', MOD, 'Shift', 'Click'),
+        row('Replace mode: paint over material', KEYS.replaceMode),
+        row('Specific delete: erase only the target', KEYS.specificDelete),
+        row('Target for both: an element tile', ALT, 'Click'),
+        row('Target: the element under the cursor', KEYS.target),
+        row('Property tool: set a value under the brush', KEYS.property),
+        row('Show or hide decoration (the Deco tab\'s paint)', KEYS.deco),
+        row('Eyedropper: pick element under cursor', KEYS.eyedropper),
+        row('Undo last change', KEYS.undo),
+        row('Find an element', KEYS.find),
         h('h3', { text: 'Camera' }),
         row('Look around (hold; Roblox Studio\'s)', 'Right drag'),
-        row('Fly where you look (Garry\'s Mod\'s noclip)', 'W', 'A', 'S', 'D'),
-        row('Fly up / down (Rust\'s noclip; E and Q too, Roblox Studio\'s)', 'Space', 'C'),
-        row('Fly faster', 'Shift'),
+        row('Fly where you look (Garry\'s Mod\'s noclip)', ...move),
+        row('Fly up / down (Rust\'s noclip; E and Q, Roblox Studio\'s)', KEYS.flyUp, SLASH, KEYS.flyDown),
+        row('Fly faster', KEYS.fast),
         row('Fly speed (Unreal\'s)', 'Hold right', 'Scroll'),
-        row('Fly to what\'s under the cursor (Roblox Studio\'s focus)', 'F'),
-        row('Orbit around what you click (Blender\'s; trackpad too)', '⌥', 'Drag'),
+        row('Fly to what\'s under the cursor (Roblox Studio\'s focus)', KEYS.focus),
+        row('Orbit around what you click (Blender\'s; trackpad too)', ALT, 'Drag'),
         row('Pan', 'Shift', 'Right drag'),
         row('Pan', 'Middle drag'),
         row('Zoom toward the cursor (Roblox Studio\'s, Blender\'s)', 'Scroll'),
-        row('Reset camera', 'R'),
+        row('Reset camera', KEYS.resetCamera),
         h('h3', { text: 'First person' }),
-        row('God view, or back in the body', 'V'),
+        row('God view, or back in the body', KEYS.firstPerson),
         row('Look around', 'Mouse'),
-        row('Walk', 'W', 'A', 'S', 'D'),
-        row('Jump or swim up', 'Space'),
-        row('Sprint (hold, or toggle in settings)', 'Shift'),
-        row('Crouch (swim down in liquid)', 'C'),
-        row('Kick: shove, break glass, kick off walls', 'F'),
-        row('Zoom (hold; scroll to zoom further)', 'Z'),
+        row('Walk', ...move),
+        row('Jump or swim up', KEYS.jump),
+        row('Sprint (hold, or toggle in settings)', KEYS.fast),
+        row('Crouch (swim down in liquid)', KEYS.crouch),
+        row('Kick: shove, break glass, kick off walls (Halo\'s melee in a match)', KEYS.kick),
+        row('Zoom (hold; scroll to zoom further)', KEYS.zoom),
         row('Use tool / its other action', 'Left', 'Right'),
-        row('Pick a tool slot; again for the next in it', '1', '–', '6'),
-        row('Spawn menu (Garry\'s Mod\'s key; in Factory, Build)', 'Q'),
+        row('Pick a tool slot; again for the next in it', slots[0], { sep: '–' }, slots[slots.length - 1]),
+        row('Spawn menu (Garry\'s Mod\'s key; in Factory, Build)', KEYS.toolMenu),
         row('Tool gun: pick up what you aim at', 'Middle'),
         row('Tool gun: erase under the crosshair', 'Right'),
-        row('Drink from the flask', 'H'),
-        row('First or third person', 'F5 or Ctrl'),
-        row('Get in or out of a vehicle (drive: W A S D, Space, Shift)', 'E'),
-        CLASSES_ENABLED ? row('Choose a class, in Siege (Team Fortress 2\'s key)', ',') : null,
-        row('Hide the HUD and hand', 'F1'),
-        row('Free the mouse', 'Esc'),
+        row('Drink from the flask', KEYS.drink),
+        row('First or third person', KEYS.view, { sep: 'or' }, KEYS.viewTap),
+        row('Get in or out of a vehicle, pick up, buy', KEYS.use),
+        row('Drive', ...move, KEYS.jump, KEYS.fast),
+        row('Throw a grenade, in Halo', KEYS.grenade),
+        row('Edit your wand, in Noita', KEYS.editWand),
+        CLASSES_ENABLED ? row('Choose a class, in Siege (Team Fortress 2\'s key)', KEYS.classPicker) : null,
+        row('Switch team, in a team match', KEYS.switchTeam),
+        row('Hide the HUD and hand', KEYS.hideHud),
+        row('Free the mouse', KEYS.escape),
         h('h3', { text: 'Simulation and interface' }),
-        row('Pause or resume', 'Esc'),
-        row('Step one frame', '.'),
-        row('Air mode: on, pressure off, velocity off, off, no update', 'Y'),
-        row('Ambient heat on or off (gravity and edges: Settings)', 'U'),
-        row('Switch view', '1', '–', '5'),
-        row('Hide or show the spawn menu, or its button (in Factory, Build)', 'T'),
-        row('Chat, when playing together', 'T'),
-        row(CLASSES_ENABLED ? 'Settings (in Siege, the gear)' : 'Settings', ','),
-        row('Screenshot', 'F2'),
-        row('Scoreboard (hold)', 'Tab'),
-        row('Save the game (in the body, ⌘ only)', '⌘', 'S'),
-        row('Saves: load one, export it, open a file', '⌘', 'O'),
-        row('Lua console, TPT\'s (scripts run every step: event.register)', '`'),
-        row('Close menus; with none open, pause or resume', 'Esc'),
+        row('Pause or resume (Sandbox; in a gamemode, the menu)', KEYS.escape),
+        row('Step one frame', KEYS.step),
+        row('Air mode: on, pressure off, velocity off, off, no update', KEYS.airMode),
+        row('Ambient heat on or off (gravity and edges: Settings)', KEYS.ambientHeat),
+        row('Switch view', ...views),
+        row('Hide or show the spawn menu, or its button (in Factory, Build)', KEYS.spawnMenu),
+        row('Chat, when playing together', KEYS.chat),
+        row(CLASSES_ENABLED ? 'Settings (in Siege, the gear)' : 'Settings', KEYS.settings),
+        row('Screenshot', KEYS.screenshot),
+        row('Scoreboard (hold)', KEYS.scoreboard),
+        row('Save the game (in the body, ⌘ only)', KEYS.save),
+        row('Saves: load one, export it, open a file', KEYS.openSaves),
+        row('Lua console, TPT\'s (scripts run every step: event.register)', KEYS.console),
+        row('Close menus; with none open, pause (Sandbox) or the menu', KEYS.escape),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
       h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' }),

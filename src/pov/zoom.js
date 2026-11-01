@@ -6,7 +6,7 @@
 // 100 % does, and a scope's zoom multiplies with it (Zoomify's spyglass
 // "combine").
 
-export const ZOOM_KEY = 'KeyZ';
+// (its key: keys.js KEYS.zoom)
 const ZOOM_INITIAL = 4;          // the FOV's divisor on holding the key (Zoomify's initialZoom; OptiFine's fixed ÷4)
 const ZOOM_IN_S = 1;             // s, easing in: exponential ease-out, so most of it is in the first fifth (zoomInTime)
 const ZOOM_OUT_S = 0.5;          // s, easing back out: the mirror curve (zoomOutTime)

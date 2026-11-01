@@ -39,7 +39,7 @@ export function weatherSection(weather, { enabled = () => true } = {}) {
   const status = h('p', { role: 'status', 'aria-live': 'polite' });
   const reset = h('button.btn', { type: 'button', text: 'Stop weather sources', on: { click: () => weather.reset() } });
   const el = h('div', { on: { keydown: (event) => {
-    // Space activates focused buttons instead of toggling simulation pause.
+    // Space activates focused buttons instead of flying the god view up.
     if (event.target.tagName === 'BUTTON' && event.key !== 'Escape') event.stopPropagation();
   } } },
     h('p', { text: 'Real elements, manual sources. Clear stops emission; sky clouds and water keep reacting. Sources pause with the simulation. Weather is not synchronized in multiplayer.' }),
