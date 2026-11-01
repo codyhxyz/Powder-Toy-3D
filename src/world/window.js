@@ -297,6 +297,7 @@ export class WorldWindow {
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
+    this.focus = [fx, fz];   // (the picture's finest smooth-surface level follows it: gfx/worldView.js update, fieldFocus)
     if (!this.loaded) return null;
     this.goal = this.goalFor(fx, fz);
     if (this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
@@ -325,9 +326,8 @@ export class WorldWindow {
   }
 
   // Where the window comes to rest for the focus (world cells, x and z): update's moves, WIN_STEP a frame,
-  // all made at once. The picture's full detail (drawOrigin) is there at once, so a focus that jumps (a
-  // god view turned to look straight down) never leaves the screen to the far view while physics walks
-  // its window over (a walk of 160 cells took 18 frames, its first 8 drawing no full detail at all).
+  // all made at once (app.js windowAtRest: whether physics is still walking there). The picture doesn't
+  // read it: the world march draws the whole world wherever the window is (shaders/world/march.js).
   goalFor(fx, fz) {
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS, goal = [o.x, o.y, o.z];
     for (const [i, f, n] of [[0, fx, g.nx], [2, fz, g.nz]]) {
@@ -339,8 +339,6 @@ export class WorldWindow {
     }
     return goal;
   }
-  /** The window's box the picture draws at full detail (world cells, its low corner): where it comes to rest (goalFor), else where it is. */
-  get drawOrigin() { const o = this.sim.origin; return this.goal ?? [o.x, o.y, o.z]; }
 
   // The fill of the move the focus nears, worked out now (world/copyFill.js stage), in a frame without a
   // move, so the move's own frame only writes it (commitStaged): within STAGE_LEAD cells of a move's

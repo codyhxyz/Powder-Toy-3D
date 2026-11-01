@@ -1,14 +1,11 @@
-// A big map's full detail (docs/seamless-world.md, "work parity"): live's region, the physics window's box
-// (sim.origin + [0, g.n) in world cells, centred on the focus). The world march draws a pixel's ray only
-// inside it, and the far view (shaders/far.js farFrag, world/far.js) outside it, live's own distance march
-// over live's own far summary; both write depth, so the nearer hit wins where they meet. Both passes take the
-// ray's span through the box from windowSpan, so they cut it with the same arithmetic.
-// Intentional (small maps): a world the size of its box has no far view; its march draws all of it, as
-// live's box did (MarchParams.boxed 0).
+// The ray's span through physics' window's box (sim.origin + [0, g.n) in world cells). The far view
+// (shaders/far.js farFrag, world/far.js) marches outside it on the frames the box volume draws the window in
+// a material view (the rolling log's bent frames: app.js farPass). The world march never reads it: it draws
+// the whole world on every map (shaders/world/march.js), so a big map has no cut at the window.
 
 // Needs nothing but WGSL builtins.
 export const reachWGSL = /* wgsl */ `
-// ---- the window's span (shaders/world/reach.js): world march inside it, far view outside it ----
+// ---- the window's span (shaders/world/reach.js): the box volume inside it, the far view outside it ----
 // The ray ro + rd t through the box [lo, hi): (tNear, tFar, the axis it enters across); tNear > tFar: a miss.
 fn windowSpan(ro: vec3f, rd: vec3f, lo: vec3f, hi: vec3f) -> vec3f {
   let t0 = (lo - ro) / rd;

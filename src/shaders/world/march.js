@@ -2,10 +2,10 @@
 // its detail variants (gfx/detail.js) and material styles, as one full-screen ray march in world
 // cells over the world copy (W), the field clipmaps (F) and the lighting (L). Every map draws its
 // realistic view through it, a small one (a world the size of its box) as a big one: there is no
-// box-shaped draw. A big map's march draws each ray inside physics' window only, live's full-detail
-// region (shaders/world/reach.js windowSpan), and live's distance pass draws outside it (world/far.js,
-// shaders/far.js farFrag), depth ordered with it; a small map's march draws all of it (Intentional: no
-// far view, as live).
+// box-shaped draw and, on a big map, no distance pass beside it: every ray marches the whole world, so
+// nothing on screen is cut where physics' window ends, and the window moving changes nothing in the
+// picture (the user, 2026-11-01: the seams between the march and the old distance pass were "more than i
+// can enumerate"). Same look (small and big maps): one march; a small map's world is its box.
 //
 // What it pastes, unchanged: the realistic tracer (shaders/render.js realisticTraceWGSL) and the
 // shading library (gfx/surface.js, liquid.js, liquidDetail.js, media.js, grains.js, deco.js,
@@ -56,7 +56,6 @@ import { uniformStruct } from '../../gpu/params.js';
 import { tracerCommonWGSL, realisticTraceWGSL, RICH_BODIES, SCENE_FORMATS, REALISTIC_LEVELS } from '../render.js';
 import { materialStyleForView, isMaterialView } from '../../views.js';
 import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
-import { reachWGSL } from './reach.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
 import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
@@ -75,8 +74,6 @@ export const MarchParams = uniformStruct('MarchParams', {
   physSize: 'vec3i',    // ... its size in cells ...
   physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout ...
   physRing: 'u32',      // ... rotated by its ring, in bricks (shaders/common.js ringOf; sim.g.ring, 0 unringed)
-  boxed: 'u32',         // 1: a big map's frame with its far view: the march draws inside physics' window only (marchSpan) ...
-  drawLo: 'vec3i',      // ... where it comes to rest (world/window.js drawOrigin; physOrigin but while it walks there), physSize
   sceneRes: 'vec2f',    // the split stages' target in pixels (the beam stage's tiles' rays: shaders/world/beam.js)
 });
 /** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
@@ -288,8 +285,7 @@ const floorWorld = (code) => rewrite(code, [
   ['return mix(floorGround(hp, fd), FLOOR_LINE_ALB, line);', 'return mix(floorGround(hp, fd), FLOOR_LINE_ALB, line * f32(P.floorLines));'],
 ], 'gfx/surface.js floorAlb');
 // The tracer picks F's level at every brick with something in it it enters (and keys its bricks by
-// coordinate), and stops at physics' window's far face (marchSpan: gMarchExit) as it stops at the meshes'
-// cut: nothing past it is drawn, a ray that met nothing before it draws nothing (the far view's pixel stands).
+// coordinate), and stops at the meshes' cut: a ray that meets nothing draws nothing (the sky pass's pixel stands).
 // An empty brick's pick is owed, not taken: only a sample reads the pick (the fields' level, and
 // brickSurfCert, which an empty brick's flags leave at once), and an empty brick is jumped, sampling
 // nothing, so its pick (gPickL, gPickA) is read only if the ray ends past it (the floor, the trip cap):
@@ -327,41 +323,14 @@ const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTr
       }
       continue;
     }`],
-  ['var tCut = meshCutT(rd);', 'var tCut = min(meshCutT(rd), gMarchExit);'],
 ], 'the realistic tracer');
 
 // The full-screen triangle and the fragment entry: the pixel's ray from the eye through the far
 // plane (P.meshInv: clip → world cells, the jittered camera's), its footprint (derivatives, at
 // the top in uniform control flow), the world's box, the trace.
 const entryWGSL = () => /* wgsl */ `
-// A big map's frame with its far view (P.boxed): the ray's span through physics' window, live's
-// full-detail box ([physOrigin, physOrigin + physSize): shaders/world/reach.js windowSpan, the far view's
-// own), in place of the world's: (entry t, exit t, entry axis). The tracer cuts at its exit (gMarchExit).
-var<private> gMarchExit: f32 = MESH_CUT_NONE;
-var<private> gMarchFace: bool = false;   // the span starts at the window's face (the ray came from outside it)
-fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f {
-  var bh = boxHit(ro, rd);
-  gMarchExit = MESH_CUT_NONE;
-  gMarchFace = false;
-  if (P.boxed != 0u) {
-    let w = windowSpan(ro, rd, vec3f(P.drawLo), vec3f(P.drawLo + P.physSize));
-    if (w.x > bh.x) { bh.x = w.x; bh.z = w.z; gMarchFace = true; }
-    bh.y = min(bh.y, w.y);
-    gMarchExit = w.y;
-  }
-  return bh;
-}
-// Whether the march draws a ray from t0: never one that comes into the window inside matter (from under
-// the ground outside it), which would draw the box's cut face; the far view's hit, nearer, fills it.
-// Gas is not matter here (the media draw through the face).
-fn marchEnters(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> bool {
-  if (!gMarchFace || t0 > bh.x) { return true; }   // (a small map's walls, as live; the eye or its near clip inside)
-  if (!isGasLike(wcId(wcCell(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))))))) { return false; }
-  let p = ro + rd * t0;
-  fieldPickAt(p);
-  let phi = surfSample(p);
-  return surfInsideOpaque(phi) < 0 && phi.x < SURF_ISO;
-}
+// The ray's span through the world (entry t, exit t, entry axis): the whole world on every map.
+fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f { return boxHit(ro, rd); }
 struct MarchVarying {
   @builtin(position) position: vec4f,
   @location(0) far: vec4f,   // the far plane's point, homogeneous world cells (divided per pixel)
@@ -388,7 +357,7 @@ struct MarchFrag {
   var o: MarchFrag;
   let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
-  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }
+  if (bh.y <= t0) { discard; return o; }
   let h = traceView(ro, rd, t0, bh);
   if (!h.hit) { discard; return o; }
   o.color = h.color;
@@ -802,7 +771,7 @@ struct MarchOut {
   o.gate = 1.0;
   let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
-  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { discard; return o; }
+  if (bh.y <= t0) { discard; return o; }
   let g = traceView(ro, rd, t0, bh);
   if (g.ev) { o.gate = evGateZ(g.body); return o; }   // (G0, G1 zero: no hit yet; M 0)
   if ((g.g1.w & GB_HIT) == 0u) { discard; return o; }
@@ -820,7 +789,7 @@ ${gatedOutWGSL(false)}
   var o: MarchOut;
   let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
-  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { return o; }   // (never: the lean march held; a gated stage never drops a fragment, see "The event kernels")
+  if (bh.y <= t0) { return o; }   // (never: the lean march held; a gated stage never drops a fragment, see "The event kernels")
   let g = traceView(ro, rd, t0, bh);
   if ((g.g1.w & GB_HIT) == 0u) { return o; }   // (no hit: G0, G1 zero, as the lean march left them)
   o.g0 = g.g0; o.g1 = g.g1; o.g2 = g.g2; o.r0 = g.r0; o.r1 = g.r1;
@@ -837,7 +806,7 @@ ${gatedOutWGSL(true)}
   var o: MarchOut;
   let bh = marchSpan(ro, rd);
   let t0 = max(bh.x, P.marchNear);
-  if (bh.y <= t0 || !marchEnters(ro, rd, t0, bh)) { return o; }   // (never: the lean march held)
+  if (bh.y <= t0) { return o; }   // (never: the lean march held)
   let g = traceView(ro, rd, t0, bh);
   if (g.ev) { o.m = 1u; return o; }   // aborted: marked for the re-gate, G0, G1 zero as the lean march left them
   if ((g.g1.w & GB_HIT) == 0u) { return o; }   // (no hit: G0, G1 zero)
@@ -957,7 +926,6 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     worldCoreWGSL(),
     worldFieldsWGSL({ detail, cachedPick: true }),
     noiseGLSL,
-    reachWGSL,
     sourceAppearanceFallbackWGSL,
     worldLightWGSL(),
     crystalGLSL,

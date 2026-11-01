@@ -1030,10 +1030,6 @@ export const FAR_VIEW = {
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
   OVERLAP: BRICK,          // the march's span past the window's near face before it is left out: one far brick, so
                            // where the coarse ground stands off the fine one at the face, the far hit fills the pixel
-                           // the world march leaves (it draws nothing that comes in through the ground: march.js)
-  SEA_SLIVER: 2.0,         // cells under the flat sea a ray may leave the window and still have crossed the window's
-                           // water surface just past its face (that surface's top cell part filled, its field's iso):
-                           // the world march stops at the face, so the sea it crossed fills the pixel (farFrag)
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
   NORMAL_STEP: 2.0,        // the normal's difference step (half a brick)
@@ -1097,9 +1093,6 @@ const FAR_VIEW_FIELDS = {
   warpK: 'f32',
   warpAnchor: 'vec2f',
   warpDir: 'vec2f',
-  // 1: the world march draws the window this frame (app.js worldLit: the window's GI probes aren't kept);
-  // 0: the box volume does (the rolling log), with the window's light
-  march: 'u32',
 };
 export const FarViewParams = uniformStruct('FarViewParams', FAR_VIEW_FIELDS);
 // The mixed-resolution variant's (FAR_MIXED): 0 the quarter-pixel pass, 1 the full-resolution resolve.
@@ -1149,16 +1142,14 @@ const FAR_MIX_SKY_T: f32 = ${glf(FAR_MIXED.SKY_T)};
 // written (frag_depth: the hit's clip depth, the volume's convention), so the
 // nearer surface always wins where the two meet and TAA has the far ground's
 // depth. Sky, the open sea beyond the world and the far grid (its ground, its
-// liquids), marched past the window's box (shaders/world/reach.js windowSpan,
-// the world march's own span), which the world march (or the rolling log's box
-// volume) draws, and FAR_OVERLAP_CELLS into it at its near face.
+// liquids), marched past the window's box (shaders/world/reach.js windowSpan),
+// which the box volume draws, and FAR_OVERLAP_CELLS into it at its near face.
+// It draws only on the frames the box volume draws a material view: the rolling
+// log's bent ones (app.js farPass); every flat frame is the world march's alone,
+// over the whole world.
 // Everything here is in world cells: its header's origin is 0, so the
 // looks' worldPos() is the identity, and what reads the window (the GI probes'
-// sky share and light) takes p - winLo. Those probes are the box volume's
-// only: on the world march's frames (P.march) the window's light isn't kept
-// (app.js worldLit), so the view reads the far field's own sky share
-// (farSkyOpen) and shades a ray that comes out of the window inside opaque
-// ground as that ground's surface.
+// sky share and light) takes p - winLo.
 //
 // The rolling log (gfx/presentation.js): curved, the view is a variant of its
 // own (a template switch, as the volume's: docs/webgpu.md F2), whose rays are
@@ -1194,10 +1185,9 @@ ${occupancyGLSL('read', L)}
 ${farSkyGLSL}
 ${(mixed ? FarViewParamsMixed : FarViewParams).wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;${mixed ? farMixedGLSL : ''}
-// the air's sky share at window point q: the probes in the window (the box volume's frames), the far
-// field's sky past it and on the world march's frames (P.march: the window's probes aren't kept then)
+// the air's sky share at window point q: the box volume's probes in the window, the far field's sky past it
 fn farAirSky(q: vec3f) -> f32 {
-  if (P.march == 0u && all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
+  if (all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
   return farSkyOpen(q + vec3f(P.winLo));
 }
 ${farHazeFor('farAirSky')}
@@ -1210,7 +1200,6 @@ const FAR_MAX_STEPS: i32 = ${L.size.reduce((n, side) => n + side / BRICK, 16)};
 const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
 const FAR_OVERLAP_CELLS: f32 = ${glf(FAR_VIEW.OVERLAP)};
 const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
-const FAR_SEA_SLIVER: f32 = ${glf(FAR_VIEW.SEA_SLIVER)};
 const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
@@ -1786,21 +1775,13 @@ struct FarOut {
     var tH = tHit;
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
     let v = farSample(p);
-    // (the world march's frames: a ray that comes out of the window inside opaque coarse ground, where the
-    // fine ground lies lower or was dug, is shaded as that ground's surface: the window's probes aren't kept)
-    if (cut && !(P.march != 0u && v.r >= v.g)) {
+    if (cut) {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
       // the sun, in the probes' light just inside the window (none in a cave).
       // In its water: that water's body past the wall, so the window's water
       // carries on past its side.
       if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
-      // (the world march's frames: it crossed the sea inside the window and leaves it just under it, past a
-      // window water surface a hair under the flat sea, where the march stopped at the face (a thin dark line
-      // along the window's far faces): that sea's surface, at the exit's depth, so the march's water stays in front)
-      else if (P.march != 0u && !plain && seaWin && tSea < tHit && level - p.y <= FAR_SEA_SLIVER) {
-        lq = FAR_LQ_SURFACE; lqP = ps; lqRd = farDirection(rd, tSea); lqSun = farSunLit(ps, 0);
-      }
       else { lq = FAR_LQ_BODY; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p).y); lqSun = farSunLit(p, 0); lqSky = farSkyOpen(p); }
     } else {
       let sunVis = farSunLit(p, 0);

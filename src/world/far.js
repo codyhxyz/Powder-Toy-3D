@@ -43,15 +43,15 @@ import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEA
 // Everything records into the open frame (docs/webgpu.md B3).
 //
 // The view is one full-screen pass of its own, 'far view' (shaders/far.js
-// farFrag; drawPass), in the material views only, before the scene pass: sky,
-// the open sea beyond the world and the far grid, written with its depth,
-// marched past physics' window, which the world march (or the rolling log's box
-// volume) draws in full detail (shaders/world/reach.js windowSpan), as live.
-// Its lighting group is the volume's with the far
-// grid, tops and shadow heights in it (attachVolume): its ground's elements and
-// the sun's shadow on it. Of the window's own light in that group it reads the
-// GI probes on the box volume's frames only (the world march's frames don't
-// keep them: app.js worldLit).
+// farFrag; drawPass), before the scene pass: sky, the open sea beyond the world
+// and the far grid, written with its depth, marched past physics' window, which
+// the box volume draws in full detail (shaders/world/reach.js windowSpan). It
+// draws only where a material view is the box volume's: the rolling log's bent
+// frames (app.js farPass). Every flat frame of a big map is the world march's
+// alone, over the whole world (shaders/world/march.js), so nothing is cut at
+// the window. Its lighting group is the volume's with the far grid, tops and
+// shadow heights in it (attachVolume): its ground's elements and the sun's
+// shadow on it, and the window's GI probes.
 //
 // The rolling log (gfx/presentation.js: `presentation`, set by
 // src/wire/world.js): while a gamemode's effect bends the view, the view draws
@@ -449,7 +449,7 @@ export class FarField {
 
   // The view's params for the camera FrameUniforms holds now (the frame's
   // jittered one, or a still's): world cells → clip and back, the eye.
-  _params(winLo = null) {
+  _params() {
     const o = this.sim.origin, last = this.fu.last, p = this.viewParams, m = this._m;
     // world cells → clip: the volume's model (grid → scene) after world → grid
     m.toWorld.makeTranslation(-o.x, -o.y, -o.z);
@@ -457,7 +457,7 @@ export class FarField {
     p.clipToWorld.copy(p.worldToClip).invert();
     m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
     p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
-    p.winLo = winLo ?? [o.x, o.y, o.z];   // (the world march's box: where the window comes to rest, drawOrigin)
+    p.winLo = [o.x, o.y, o.z];   // (the box volume's: physics' window)
     // the rolling log's parameters (world cells, as these are), or flat
     const w = this.curved ? this.presentation.parameters : null;
     p.warpK = w ? w.k : 0;
@@ -468,21 +468,17 @@ export class FarField {
 
   /**
    * Big maps' distance level of detail: the view drawn into rp, sky, open sea and the far grid's coarse
-   * surface past physics' window, depth tested and written. march: the world march draws the window this
-   * frame (its light isn't the window's: shaders/far.js FarViewParams.march), else the box volume does.
+   * surface past physics' window, which the box volume draws (the rolling log's bent frames: app.js farPass),
+   * depth tested and written.
    * The rule of every engine's LOD: a coarser level past the fine one (Tanner et al. 1998, "The Clipmap").
    * Its ground is the far grid's surface put on the ground map's cells (shaders/far.js FAR_GROUND).
-   * winLo: the world march's box (world/window.js drawOrigin) on its frames; the box volume's is physics' window.
    * @param {GPURenderPassEncoder} rp
-   * @param {{ march?: boolean, winLo?: number[] | null }} [opts]
    * @returns {boolean} whether it drew
    */
-  drawBehind(rp, { march = false, winLo = null, resolve = null, low = null } = {}) {
+  drawBehind(rp, { resolve = null, low = null } = {}) {
     const pipe = this._drawPipeline();
     if (!pipe) return false;
-    const marched = march && !this.curved;   // (the rolling log's view is the box volume's)
-    const params = { ...this._params(marched ? winLo : null) };
-    params.march = marched ? 1 : 0;
+    const params = { ...this._params() };
     const mixed = pipe === this._pipeline(this.curved, true);
     // (the mixed variant: the low pass, or with resolve its targets read; drawn alone it is the low pass)
     if (mixed) params.resolve = resolve ? 1 : 0;
@@ -497,9 +493,9 @@ export class FarField {
    * pass: colour and depth cleared, or loaded (load: three's opaque meshes are in them), and stored for
    * the scene pass to load. Returns whether it drew (nothing recorded if not).
    * @param {object} frame gpu.frame
-   * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean, march?: boolean, winLo?: number[] | null }} opts
+   * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean }} opts
    */
-  drawPass(frame, { color, depth, load = false, march = false, winLo = null }) {
+  drawPass(frame, { color, depth, load = false }) {
     const pipe = this._drawPipeline();
     if (!pipe) return false;
     const views = (this._targetViews ??= new WeakMap());   // the scene target's views, by texture
@@ -513,10 +509,10 @@ export class FarField {
       // mixed resolution (FAR_MIXED): the quarter-pixel pass first, into the view's own targets
       low = this._lowTargets(color.width, color.height);
       const lp = frame.render(target(low.colorView, low.depthView, false), 'far view low');
-      try { this.drawBehind(lp, { march, winLo, resolve: false }); } finally { lp.end(); }
+      try { this.drawBehind(lp, { resolve: false }); } finally { lp.end(); }
     }
     const rp = frame.render(target(view(color), view(depth), load), 'far view');
-    try { return this.drawBehind(rp, { march, winLo, resolve: !!low, low }); } finally { rp.end(); }
+    try { return this.drawBehind(rp, { resolve: !!low, low }); } finally { rp.end(); }
   }
 
   /** Whether the view draws this frame (viewBehind said so, it is built, its pipeline is ready); asks for the pipeline when it isn't. */

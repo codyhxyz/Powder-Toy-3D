@@ -82,22 +82,28 @@ export function fieldClipPlan(world, { texels = FIELD_CLIP_TEXELS, rows = FIELD_
 }
 
 /**
- * Level 0's size for physics' window (docs/seamless-world.md, "work parity": full detail is the window's box,
- * live's derived fields' region): fieldClipPlan's texels and rows, so level 0, centred on the window
- * (fieldFocus), holds all of it at a texel a cell. Along an axis the window spans the world (a small map's
- * box, the Island's height) the clip holds the world; elsewhere the window and, on each side, the brick ring a
- * clip keeps out of what it holds (gfx/worldFields.js usable) and FIELD_FILTER_MARGIN. Level 0 then needs no
- * transition band (transition0 0): the march reads it inside the window only, and the far view takes over at
- * the window's faces, inside level 0's. Never less than the defaults.
+ * Level 0's size for physics' window: fieldClipPlan's texels and rows, so level 0, centred on the focus
+ * (fieldFocus), holds about the window at a texel a cell. Along an axis the window spans the world (a small
+ * map's box, the Island's height) the clip holds the world; elsewhere the window and, on each side, the brick
+ * ring a clip keeps out of what it holds (gfx/worldFields.js usable) and FIELD_FILTER_MARGIN. Never less than
+ * the defaults. Level 0 keeps its transition band (Losasso & Hoppe 2004) like every level: the march draws the
+ * whole world, so its faces are on screen, and a hard cut to level 1 there was a seam. (A small map's level 0
+ * holds its whole world: its faces are the world's, which have no band.)
  * @param {number[]} world [x, y, z] cells
  * @param {number[]} win physics' window [nx, ny, nz] cells
  */
 export function fieldClipFor(world, win) {
   const need = (i) => roundUp(win[i] >= world[i] ? world[i] : win[i] + 2 * (WC_BRICK + FIELD_FILTER_MARGIN), WC_BRICK);
-  return { texels: Math.max(FIELD_CLIP_TEXELS, need(0), need(2)), rows: Math.max(FIELD_CLIP_ROWS, need(1)), transition0: 0 };
+  return { texels: Math.max(FIELD_CLIP_TEXELS, need(0), need(2)), rows: Math.max(FIELD_CLIP_ROWS, need(1)) };
 }
-/** F's focus (world cells): physics' window's centre, so level 0 holds the window (fieldClipFor). */
-export const fieldFocus = (origin, win) => origin.map((v, i) => v + win[i] / 2);
+/**
+ * F's focus (world cells): where you are working, the point physics' window follows (world/window.js focus:
+ * the first-person body, else the god view's focus), at the window's middle height. Not the window itself:
+ * the window moves WIN_STEP at a time, and level 0 following it jumped its band across the screen with it.
+ * The clip snaps by whole bricks (clipOrigin), as any clipmap follows its viewer. A small map's window is
+ * its world (origin 0, focus null): its middle.
+ */
+export const fieldFocus = (origin, win, focus = null) => origin.map((v, i) => (focus && i !== 1 ? focus[i >> 1] : v + win[i] / 2));
 
 /** A level's clip origin (level bricks) for the camera at world cell `cam`: centred, clamped into the world. */
 export function clipOrigin(level, cam) {

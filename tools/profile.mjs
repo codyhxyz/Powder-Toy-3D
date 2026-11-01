@@ -99,8 +99,8 @@ export function parseArgs(argv) {
   if (o.capture) o.counters = false;
   if (o.detail !== null && !['off', 'balanced', 'full'].includes(o.detail)) throw new Error('--detail: off, balanced or full');
   // --upscale: Settings -> Upscaling (app.js settings.upscale; post.js UPSCALE keys: performance is the menu's Fast)
-  // --truth: the reference picture (app.js ?truth=1: a big map's world march draws the whole world) at native
-  // resolution and Detail Full, auto resolution off; with --shot its frames are what tools/look-score.py scores against
+  // --truth: the reference picture: native resolution and Detail Full, auto resolution off (every map's world
+  // march draws the whole world since 2026-11-01; ?truth=1 is kept in the URL for older builds); with --shot its frames are what tools/look-score.py scores against
   if (o.truth) { if ((o.upscale ?? 'native') !== 'native' || (o.detail ?? 'full') !== 'full') throw new Error('--truth draws native at Detail Full'); o.upscale = 'native'; o.detail = 'full'; }
   if (o.upscale !== null && !['native', 'quality', 'balanced', 'performance'].includes(o.upscale)) throw new Error('--upscale: native, quality, balanced or performance (Fast)');
   if (!Number.isSafeInteger(o.frames) || o.frames < 10 || o.frames > 240) throw new Error('--frames must be 10–240 (the median and spread need 10; the profiler keeps 240)');
