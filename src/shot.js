@@ -2,7 +2,7 @@
 // tools/side-by-side/shots.mjs) in a player's own page, so the iPhone opens
 // the same scene, camera and game time that tools/side-by-side.mjs captures
 // on the Mac, through the same setup code (tools/side-by-side/engine.mjs),
-// and then it's the player's: a still waits paused (Space runs it), a clip's
+// and then it's the player's: a still waits paused (Esc runs it), a clip's
 // action is set going and plays live. Inert without the parameter and never
 // kept, as ?test= isn't: app.js imports this module only when it's there, and
 // the scene the link boots isn't remembered as the one to boot next time.
@@ -10,6 +10,7 @@
 // v2's behind ?engine=v2), as the tool does.
 import { E, PROP_TOOL } from './elements.js';
 import { PROP } from './editing.js';
+import { KEYS, label } from './keys.js';
 import { shotByName } from '../tools/side-by-side/shots.mjs';
 import { linkQuery, shotEngine, prepareShot, SETTINGS_STORE } from '../tools/side-by-side/engine.mjs';
 
@@ -61,7 +62,7 @@ export async function playShot(app, shot, { setPaused }) {
     engine.release?.();
     setPaused(shot.kind === 'still');
     app.hud.toast(shot.kind === 'still'
-      ? `${shot.title}: ${(shot.settle ?? 0) + (shot.time ?? 0)} s in, paused. Space runs it`
+      ? `${shot.title}: ${(shot.settle ?? 0) + (shot.time ?? 0)} s in, paused. ${label(KEYS.escape)} runs it`
       : `${shot.title}: running`);
   } catch (err) {
     console.error(`?shot=${shot.name} failed`, err);

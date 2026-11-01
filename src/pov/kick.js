@@ -61,8 +61,7 @@ import { haloMatch, points, wu, CAUSE } from './halo.js';
 // kg or Infinity; melee: it was Halo's), and an impact (source 'kick') when it
 // meets something.
 
-export const KICK_KEY = 'KeyF';      // F: free in the body (V god view, F5 first/third, Z zoom, C crouch, Q tools, E vehicles, digits slots); Halo's melee in a Halo match
-
+// (its key: keys.js KEYS.kick)
 const KICK_SPEED = 14 / CELL_M;      // cells/s (47, a Noita jump's speed): a martial artist's front kick, ≈ 14 m/s at the foot
 const KICK_HIP = 2.6;                // cells above the feet the leg swings from (figure.js HIP_Y)
 const KICK_REACH = 1.2 / CELL_M;     // cells from the hip: thigh, shin and foot (≈ 0.9 m) and the lean into it

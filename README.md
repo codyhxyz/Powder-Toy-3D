@@ -27,49 +27,10 @@ The games this one borrows from. When a feature needs a rule or a number, we tak
 
 ## Controls
 
-Press `?` in the app for the full list.
-
-| Painting | |
-|---|---|
-| Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
-| Right-click | erase on release; moving 6 pixels or more looks around instead and erases nothing |
-| `[` `]` or Shift + scroll | brush size |
-| Shift + left-drag | a line: the brush swept from where you pressed to where you let go (TPT's Shift-drag) |
-| ⌘ + left-drag (Ctrl on Windows) | a box between the two corners, as tall as the brush (TPT's Ctrl-drag) |
-| ⌘ + Shift + click | flood fill (TPT's Ctrl+Shift-click): see [Editing tools](#editing-tools) |
-| `B` / `X` | sphere or cube brush / replace mode: paint over existing material (also `;` or Insert, as in TPT) |
-| Delete | specific delete: the brush erases only the target element (also ⌘; as TPT's Ctrl+;) |
-| ⌥ + click a tile, or ⌥`I` | make that element the target that replace mode and specific delete keep to |
-| ⌘`P` | the Property tool: set the temperature, element, ctype, life, velocity or pressure under the brush |
-| `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
-| ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
-| `/` | find an element |
-| Ctrl+B | show or hide decoration (TPT's key) |
-
-| Camera | |
-|---|---|
-| Hold right mouse and move | look around, as in first person (Roblox Studio's and Unreal's editor camera) |
-| `W` `A` `S` `D` | fly where you look (Garry's Mod's noclip; hold Shift to go faster) |
-| Space / `C` | fly up / down (Rust's noclip keys, and the body's jump and crouch; `E` / `Q`, Roblox Studio's, work too) |
-| Scroll while holding right mouse | fly speed (Unreal's) |
-| `F` | fly to what's under the cursor (Roblox Studio's focus key; in the body `F` kicks) |
-| ⌥ + drag | orbit around the point you click (Blender's and Maya's; also the trackpad orbit) |
-| Shift + right-drag or middle-drag | pan |
-| Scroll | zoom toward the cursor (Roblox Studio's and Blender's) |
-| `R` | reset the camera |
-| `V` | drop into the world as a person, or pop back out (Garry's Mod's noclip key) |
-
-| Everything else | |
-|---|---|
-| Esc / `.` | pause or resume (with nothing else open) / step one frame |
-| `Y` / `U` | cycle the air mode / turn ambient heat on or off (The Powder Toy's keys; see Simulation modes) |
-| `1`–`5` | switch view |
-| `T` or the spawn menu's button | hide or show the spawn menu, open by default like The Powder Toy's element bar; in first person `Q` opens it (Garry's Mod's key). In Factory it's Build |
-| `,` | settings |
-| `F2` | save a screenshot (Minecraft's key; Fn+F2 on some keyboards) |
-| ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
-| ⌘O / Ctrl+O | the Saves list: load a save, export it, open a file |
-| `` ` `` | the Lua console (TPT's): run commands, or code every step |
+Press `?` in the app for the full list. Every key lives once, in [`src/keys.js`](src/keys.js): the game listens
+for those keys and the in-game Controls sheet is built from the same table, so this README doesn't copy them.
+Where a key comes from another game (The Powder Toy, Garry's Mod, Minecraft, Roblox Studio, Rust, Halo), the
+table says which.
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
@@ -98,22 +59,15 @@ The Powder Toy's editing tools, in 3D (TPT's `Editing.cpp`, `PropertyTool.cpp`, 
 
 ## First person
 
-Press `F` to drop a body onto the surface under the cursor. The camera swoops down into its eyes and the world stays
+Press `V` to drop a body onto the surface under the cursor. The camera swoops down into its eyes and the world stays
 running around you. You're about 5½ cells tall (one cell is roughly 30 cm), so a lava flow is a river and a house is
-a building. `F` again swoops back out.
+a building. `V` again swoops back out.
 
 The body is as mortal as a sand grain. You float or sink by density (hold Space to keep your head out of water),
 blasts throw you along the pressure gradient, and heat, lava, cold, acid, drowning, being buried and being thrown
 into walls hurt (falls don't, as in Noita). When you die, the camera pulls back and shows what killed you, then you respawn where you dropped in.
 
-| In first person | |
-|---|---|
-| Mouse | look (click to capture the mouse, Esc to release it) |
-| `W` `A` `S` `D`, Shift | walk, sprint |
-| Space / `C` | jump or swim up / swim down |
-| Left / right click | use the tool / its second action |
-| `1`–`5` or scroll | pick a tool |
-| `V` | first or third person |
+The keys are in the in-game Controls sheet (`?`), under First person.
 
 The tools are physical and finite. Infinite painting stays in the god view.
 

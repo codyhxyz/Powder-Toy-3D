@@ -80,10 +80,10 @@ try {
     assert.equal(await bar.locator('.pause-btn, .view-btn, .cam-seg, .keys-only').count(), 0);
     const pause = page.locator('.stats .pause-btn');
     await pause.click();
-    assert.equal(await pause.getAttribute('aria-label'), 'Resume (Space)');
+    assert.equal(await pause.getAttribute('aria-label'), 'Resume (Esc)');
     await pause.focus();
     await page.keyboard.press('Space');
-    assert.equal(await pause.getAttribute('aria-label'), 'Pause (Space)', 'focused Space toggles once');
+    assert.equal(await pause.getAttribute('aria-label'), 'Pause (Esc)', 'focused Space toggles once');
     await page.getByRole('combobox', { name: 'Camera mode' }).selectOption('third');
     assert.equal(await page.evaluate(() => fixture.calls.at(-1)), 'third');
     assert.equal(await page.locator('.camera-select').inputValue(), 'god', 'wait for actual camera state');

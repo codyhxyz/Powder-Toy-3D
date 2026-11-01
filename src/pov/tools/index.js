@@ -20,6 +20,7 @@ import { povGpu } from '../gpu.js';
 import { gridSpace } from '../space.js';
 import { createGrappendix } from '../grappendix.js';
 import { tickCounter, nativeSeconds } from '../../v2/host.js';
+import { KEYS, is } from '../../keys.js';
 
 export { emptyLoads };
 
@@ -427,7 +428,7 @@ export function createToolbelt(env) {
     if (editor.open || !env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    if (e.code === 'KeyB' && descentLevel) {   // edit the wand (the Noita gamemode's)
+    if (is(e, KEYS.editWand) && descentLevel) {   // edit the wand (the Noita gamemode's)
       e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) openEditor(); return;
     }
     const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;

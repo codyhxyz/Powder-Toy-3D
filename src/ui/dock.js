@@ -5,6 +5,7 @@ import { PROP_FIELDS, propIndex, parseProp } from '../editing.js';
 import { mountTile, setTileSettings } from './tiles/live.js';
 import { modelIcon } from '../pov/models.js';
 import { createDecoPicker } from './decoPicker.js';
+import { KEYS, label } from '../keys.js';
 
 const KIND_NAME = { [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas', [K.SOLID]: 'solid' };
 export const kindOf = (it) => (isBuild(it.id) ? 'build' : it.id < 0 ? 'tool' : KIND_NAME[it.kind]);
@@ -147,7 +148,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   // a blend Mode menu (Paint, Replace, Delete only, and the one element they keep
   // to), and the eyedropper. Pop-ups sit over the bar (under the first-person
   // menu's buttons), close on Esc, a click outside or a pick, and never keep the
-  // keyboard, so Space still pauses.
+  // keyboard, so the game's keys still work.
   // Native sliders keep precise keyboard control; color belongs to the materials.
   const iconButton = (icon, label, title, onClick) => h('button.material-control', {
     type: 'button', title, 'aria-label': label, on: { click: onClick },
@@ -314,8 +315,8 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   });
   // the bar's field opens from the search button and closes once it's left empty
   search.addEventListener('blur', () => { if (!search.value) dock.classList.remove('searching'); });
-  const find = h('label.material-find', {}, h('span', { html: ICON.search }), search, h('kbd', { text: '/' }));
-  const collapse = iconButton(ICON.chevUp, 'Hide elements', 'Hide elements (T)', () => setCollapsed(true));
+  const find = h('label.material-find', {}, h('span', { html: ICON.search }), search, h('kbd', { text: label(KEYS.find) }));
+  const collapse = iconButton(ICON.chevUp, 'Hide elements', `Hide elements (${label(KEYS.spawnMenu)})`, () => setCollapsed(true));
   // phones: the bar is one tile wide, so its search and brush options open beside it
   const optsButton = iconButton(ICON.sphere, 'Brush options', 'Search and brush options', () => {
     dock.classList.toggle('opts');
@@ -380,9 +381,9 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   const tabTile = h('span.dock-tab-swatch', { 'aria-hidden': 'true' });
   const tabName = h('b');
   const tabChev = h('span', { html: ICON.chevDown });
-  const tab = h('button.dock-tab.panel', { type: 'button', title: 'Show elements (T)', on: { click: () => setCollapsed(false) } },
-    tabTile, tabName, tabChev, h('kbd', { text: 'T' }));
-  // Space activates a focused control, not the simulation's global pause shortcut.
+  const tab = h('button.dock-tab.panel', { type: 'button', title: `Show elements (${label(KEYS.spawnMenu)})`, on: { click: () => setCollapsed(false) } },
+    tabTile, tabName, tabChev, h('kbd', { text: label(KEYS.spawnMenu) }));
+  // Space activates a focused control, not the god view's fly-up key.
   for (const el of [dock, tab]) el.addEventListener('keydown', (e) => {
     if (e.code === 'Space') e.stopPropagation();
   });

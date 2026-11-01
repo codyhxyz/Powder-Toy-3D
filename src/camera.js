@@ -1,13 +1,12 @@
 import * as THREE from 'three';
 import { LOOK_SENSITIVITY, LOOK_MAX_PX, PITCH_LIMIT, POV_FOV } from './pov/camera.js';
 import { DRAG_PX } from './brushInput.js';
+import { KEYS, held, codes } from './keys.js';
 
 // The god view's camera, an editor viewport's (Roblox Studio's, Unreal's): hold
 // the right button to look around from where you are, as in first person, and
 // fly with W A S D where you look, Garry's Mod's noclip (looking down, W goes
-// down), Space or E up and C or Q down (Space and C as in Rust's noclip and our own
-// body's jump and crouch, so the keys carry over; E and Q are Roblox Studio's. Not
-// Ctrl: Ctrl+W closes the browser tab and no page can stop it); the wheel with the right button
+// down), and straight up and down (the keys: keys.js); the wheel with the right button
 // held sets the fly speed (Unreal's), and F flies to what's under the cursor
 // (Roblox Studio's and Unreal's focus). Alt + left drag orbits the point under the cursor, Blender's and
 // Maya's Alt orbit (and a trackpad's). OrbitControls keeps the rest: the wheel's
@@ -27,7 +26,7 @@ export function createCameraRig(camera, controls, isTyping, { sensitivity = () =
   let speed = 1;
   let maxSpeed = Infinity;   // world units/s WASD never exceeds (a world's window has to keep up)
 
-  const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space', 'KeyC', 'ShiftLeft', 'ShiftRight']);
+  const MOVE = codes(KEYS.forward, KEYS.back, KEYS.left, KEYS.right, KEYS.flyUp, KEYS.flyDown, KEYS.fast);
   addEventListener('keydown', (e) => {
     if (isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }   // (Space would scroll the page)
@@ -111,19 +110,19 @@ export function createCameraRig(camera, controls, isTyping, { sensitivity = () =
         if (anim.t >= 1) anim = null;
       }
       if (!keys.size || isTyping()) return;
-      const fast = keys.has('ShiftLeft') || keys.has('ShiftRight') ? FAST : 1;
+      const fast = held(keys, KEYS.fast) ? FAST : 1;
       // forward is the look itself, pitch included (noclip); strafing stays level, up and down go straight up and down
       fwd.subVectors(controls.target, camera.position);
       const dist = fwd.length();
       if (dist < 1e-9) camera.getWorldDirection(fwd); else fwd.divideScalar(dist);
       levelRight(fwd, right);
       move.set(0, 0, 0);
-      if (keys.has('KeyW')) move.add(fwd);
-      if (keys.has('KeyS')) move.sub(fwd);
-      if (keys.has('KeyD')) move.add(right);
-      if (keys.has('KeyA')) move.sub(right);
-      if (keys.has('KeyE') || keys.has('Space')) move.add(UP);
-      if (keys.has('KeyQ') || keys.has('KeyC')) move.sub(UP);
+      if (held(keys, KEYS.forward)) move.add(fwd);
+      if (held(keys, KEYS.back)) move.sub(fwd);
+      if (held(keys, KEYS.right)) move.add(right);
+      if (held(keys, KEYS.left)) move.sub(right);
+      if (held(keys, KEYS.flyUp)) move.add(UP);
+      if (held(keys, KEYS.flyDown)) move.sub(UP);
       if (move.lengthSq() === 0) return;
       // scale with how far we are from what we're looking at, so close-ups stay controllable
       move.normalize().multiplyScalar(Math.min(THREE.MathUtils.clamp(dist * 0.6, 1.2, 14) * speed * fast, maxSpeed) * dt);

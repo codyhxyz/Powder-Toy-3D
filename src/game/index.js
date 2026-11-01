@@ -18,6 +18,7 @@ import { CAUSE } from '../pov/halo.js';
 import { createFeel } from './feel.js';
 import { iconFor } from '../pov/killfeed.js';
 import { play as announce } from '../pov/announcer.js';
+import { KEYS, is } from '../keys.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and Siege (TF2's attack/defend on a row of control
@@ -725,8 +726,8 @@ export function createGame(shell) {
   // keys, in first person: '.' switches team (Tab, the scoreboard, is ui/scoreboard.js's:
   // scoreboard() is what it shows). The gamemode is picked on the start menu (Esc), never in the game
   addEventListener('keydown', (e) => {
-    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
-    if (e.key === '.') switchTeam();
+    if (!shell.active() || app.isTyping() || e.repeat) return;
+    if (is(e, KEYS.switchTeam)) switchTeam();
   });
 
   return {

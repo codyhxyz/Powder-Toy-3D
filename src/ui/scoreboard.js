@@ -1,6 +1,7 @@
 import { h } from './dom.js';
 import { povEvents } from '../pov/events.js';
 import { PLAYER } from '../pov/targets.js';
+import { KEYS, is } from '../keys.js';
 import './scoreboard.css';
 
 // The scoreboard, held up while Tab is down: Garry's Mod's base gamemode's
@@ -116,11 +117,11 @@ export function createScoreboard({ wantsTab, map, match, session, dead }) {
 
   // +showscores / -showscores
   addEventListener('keydown', (e) => {
-    if (e.code !== 'Tab' || e.metaKey || e.ctrlKey || e.altKey || !wantsTab(e)) return;
+    if (!is(e, KEYS.scoreboard) || !wantsTab(e)) return;
     e.preventDefault();
     show(true);
   });
-  addEventListener('keyup', (e) => { if (e.code === 'Tab') show(false); });
+  addEventListener('keyup', (e) => { if (KEYS.scoreboard.includes(e.code)) show(false); });
   addEventListener('blur', () => show(false));
 
   return {

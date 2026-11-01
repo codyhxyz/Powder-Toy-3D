@@ -3,6 +3,7 @@ import './console.css';
 import { ScriptWorld } from './world.js';
 import { createGpuBackend } from './gpu.js';
 import { installBuiltins } from './api.js';
+import { KEYS, is } from '../keys.js';
 
 // The scripting console (docs/console.md), The Powder Toy's Lua console with
 // Garry's Mod's look: ` opens it (TPT's src/gui/game/GameView.cpp,
@@ -24,8 +25,6 @@ import { installBuiltins } from './api.js';
 
 // console/lua.js EVENTS, without loading it
 const EVENT = { TICK: 0, BEFORESIM: 1, AFTERSIM: 2 };
-// TPT's console key, by physical key (SDL scancode there, KeyboardEvent.code here)
-export const CONSOLE_KEY = 'Backquote';
 // All the event handlers of a frame share this much time; past it the rest
 // wait for the next frame (a slow script slows itself, never the game).
 const FRAME_BUDGET_MS = 8;
@@ -177,7 +176,7 @@ export function createConsole(app) {
     // the game never sees what's typed here (its Escape would open the map
     // menu once this closes; app.js isTyping covers the rest)
     e.stopPropagation();
-    if (e.code === CONSOLE_KEY && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); setOpen(false); return; }
+    if (is(e, KEYS.console)) { e.preventDefault(); setOpen(false); return; }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); return; }
     const before = input.value.slice(0, input.selectionStart), after = input.value.slice(input.selectionEnd);
     if (e.key === 'ArrowUp' && !before.includes('\n') && hIndex > 0) {
@@ -204,7 +203,7 @@ export function createConsole(app) {
       if (lua?.continuing) { lua.cancel(); print('(cancelled)', 'info'); sync(); } else setOpen(false);
       return;
     }
-    if (e.code !== CONSOLE_KEY || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (!is(e, KEYS.console) || e.repeat) return;
     if (e.target === input) return;   // (its own handler)
     const a = document.activeElement;
     if (a && a !== document.body && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) return;   // typing elsewhere

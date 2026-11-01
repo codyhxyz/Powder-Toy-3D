@@ -175,6 +175,7 @@ import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
 import { PHYS, SIM_GRAVITY, simSteps } from './physics.js';
 import { CELL_M } from './scale.js';
+import { KEYS, label } from './keys.js';
 import { accessorsWGSL } from './shaders/hostStruct.js';
 
 // Photon reflectance of steel at normal incidence: F0 from its measured
@@ -1263,13 +1264,13 @@ export const TOOLS = [
   { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm', color: '#7a3550', spawner: true,
     desc: 'Giant worm: click a surface to spawn a giant burrowing worm. Each click adds a new entity, with no pad or respawn.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff', spawner: true,
-    desc: 'Player spawn. Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+    desc: `Player spawn. Click a surface: ${label(KEYS.firstPerson)} drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.` },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep', color: '#8fa04a', spawner: true,
-    desc: 'Jeep: click a surface to spawn a jeep; press V then E nearby to drive. Each click adds a new entity, with no pad or respawn.' },
+    desc: `Jeep: click a surface to spawn a jeep; press ${label(KEYS.firstPerson)} then ${label(KEYS.use)} nearby to drive. Each click adds a new entity, with no pad or respawn.` },
   { id: -22, key: 'BOATPAD', abbr: 'BOAT', name: 'Boat', color: '#d69042', spawner: true,
-    desc: 'Boat: click a surface to spawn a boat; press V then E nearby to drive; the motor needs water. Each click adds a new entity, with no pad or respawn.' },
+    desc: `Boat: click a surface to spawn a boat; press ${label(KEYS.firstPerson)} then ${label(KEYS.use)} nearby to drive; the motor needs water. Each click adds a new entity, with no pad or respawn.` },
   { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike', color: '#5fd0e0', spawner: true,
-    desc: 'Hoverbike: click a surface to spawn a hoverbike; press V then E nearby to ride. Each click adds a new entity, with no pad or respawn.' },
+    desc: `Hoverbike: click a surface to spawn a hoverbike; press ${label(KEYS.firstPerson)} then ${label(KEYS.use)} nearby to ride. Each click adds a new entity, with no pad or respawn.` },
   // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
   // sparkCell). -8 is left for the Lightning tool (branch el-mat).
   { id: -9, key: 'SPARK', abbr: 'SPRK', name: 'Spark', color: '#ffff80',
