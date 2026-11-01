@@ -408,8 +408,9 @@ Three upgrades sit on top, each switchable in Settings → Lighting (all on by d
 short rays per pixel walk the voxel grid; a ray that hits matter within six cells sees that matter's own sunlit, probe-lit
 colour, and one that escapes falls back to the probes. Caustics: where the shadow map says a point lies under a pool,
 the ripple height field's curvature focuses the sunlight reaching it (crests brighten, troughs spread), blurred with
-depth by the sun's disc. Lava and fire as lights: each pixel picks one nearby emitting brick, weighted by its power over
-distance², and traces a shadow ray to it, so the glow gets a direction and casts shadows.
+depth by the sun's disc. Lava and fire as lights: a surface reads the blurred glow volume around it, takes the light's
+direction from that volume's gradient and checks three points toward it for anything opaque in the way, so the glow
+has a direction and stops at walls without a shadow ray per light (`glowLightScale` in `gfx/lighting.js`).
 
 **Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
@@ -458,6 +459,54 @@ into the shader, so the on-screen legend always matches.
 | `4` | Flow | what's moving and which way: falling, sliding, rising, plus moving air |
 | `5` | X-ray | everything see-through in its own colour, denser materials more solid |
 | `0` | Plain | the original look from before the smooth renderer: flat-coloured blocks, sunlight, shadows and glow |
+
+## Optimizations that make this possible
+
+The few design choices without which this wouldn't run in a browser at all. Each is a whole approach, not a tuning
+pass; a new one of that size gets a line here. Details are in the files named.
+
+**Simulation**
+- **The whole simulation runs on the GPU, in place.** 16 bytes a cell in one copy, updated in place, stored in
+  4×4×4 bricks (`src/shaders/v2.js`, `docs/v2.md` 5.2). A tick is a fixed handful of compute passes, whatever is going on.
+- **Still matter sleeps.** A brick sleeps once neither it nor any of its 26 neighbours has done anything for 8 ticks
+  (`QUIET_TICKS`), and only awake bricks are dispatched. A settled world dispatches nothing at all.
+- **Motion by the run, not the cell.** Falling powder moves as whole vertical runs, liquids flow as shallow-water flux
+  between column runs, and only contact (toppling, sinking, reactions) is solved cell by cell in 2×2×2 blocks
+  (`src/shaders/v2.js` header, `src/shaders/v2/columns.js`).
+- **A fixed 60 Hz tick spread over frames.** A tick is recorded in six stages while the frame's 10 ms physics budget
+  lasts, and the rest goes on next frame, so a heavy tick slows game time instead of stretching a frame
+  (`TICK_STAGES` in `src/v2/physics.js`; Minecraft-style bounded catch-up in `src/v2/host.js`).
+- **Big maps simulate a window, not the map.** Only a 128³ window around you is simulated. The whole map stays on the
+  GPU at full cell detail for drawing (Minecraft 1.18's separate simulation and render distances;
+  `docs/seamless-world.md`).
+
+**Rendering**
+- **Ray-march the cells, no meshes.** The renderer reads the simulation's own cells, so nothing is rebuilt when water
+  floods or a wall blows apart (`src/shaders/render.js`, `src/shaders/world/march.js`).
+- **Empty space crossed in jumps.** Occupancy is kept at 4, 16 and 64 cells, and a ray jumps the largest empty block
+  it is in. A pre-pass sends one cone per screen tile so every ray in it starts past the air (`skipEmpty`;
+  `src/shaders/world/beam.js`, after Laine & Karras 2010).
+- **A lean march, then the rich pixels on their own.** Most pixels run a small loop to their first hit. Pixels that
+  meet water, glass, crystal or smoke stop there and resume in their own pass, then reflections and shading run over
+  the result. One shader that did everything was too big for the GPU: 71 ms a frame on the Island
+  (`src/shaders/world/march.js`, "The split march"; `docs/march-spill.md`).
+- **Sun shadows traced once and kept.** Three 512² shadow cascades, traced in 8×8-texel tiles, at most 160 tiles a
+  frame. A texel is traced again only when a brick its ray crossed changes or the sun turns half a degree, and the
+  cascades scroll with the camera without retracing (`src/shaders/world/light.js`; the clipmap idea, Losasso &
+  Hoppe 2004).
+- **Bounce light and glow from scrolling volumes.** Three levels of 32³ light probes (4, 16 and 64 cells apart) are
+  updated under a fixed budget each frame, as DDGI's scrolling volumes are. Light from lava, fire and glowing
+  crystal comes from a blurred volume, so it costs the same however much is glowing
+  (`src/shaders/world/light.js`, `src/shaders/gfx/lighting.js`).
+- **Fewer pixels, rebuilt over time.** The scene is traced below screen resolution and upscaled with temporal
+  anti-aliasing. Automatic resolution steers on the GPU's measured frame time toward 12 ms, down to a third of the
+  screen along each side (`src/gfx/autoResolution.js`, `src/gfx/post.js`).
+- **Nothing drawn that didn't change.** Frames are capped at 60. Each pass reruns only when its inputs change, so a
+  paused, still scene costs no GPU work (`src/gfx/pacing.js`).
+
+**Multiplayer**
+- **Guests only render.** The host packs the 4 bytes a cell that drawing needs, and sends a keyframe or an XOR delta
+  against the last frame, deflated, through a relay. Guests never simulate (`src/net/codec.js`).
 
 ## Signs
 
