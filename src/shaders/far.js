@@ -2014,7 +2014,9 @@ struct FarOut {
           var past: bool;
           let tl = farSeaHit(ro, rd, lk, &pl, &past);
           let lakeWin = ${curved ? 'warpInside(tl, gFarWindow)' : 'tl >= tw.x && tl <= tw.y'};
-          if (tl < NO_HIT && tl > t0 && !past && !lakeWin) {
+          // (the plane must lie over that liquid: a ray at a low angle meets the plane level far from the hit, over
+          // land, and its flat lake then drowns the land between: the Island's far shore past a hut, 2026-11-01)
+          if (tl < NO_HIT && tl > t0 && !past && !lakeWin && abs(farLakeTop(pl) - lk) <= FAR_SEA_SNAP) {
             flatY = lk; tf = tl; pf = pl; nearFlat = true;
             flatId = farLiquidOf(farIds(pl - vec3f(0.0, FAR_ID_INSET, 0.0)).y);
           }
