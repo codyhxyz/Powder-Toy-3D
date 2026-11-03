@@ -762,8 +762,15 @@ export const RICH_BODIES = ['liquid', 'crystal', 'glass', 'media', 'film'];
 // iteration's brick, entered as the lean loop entered it. A ray the lean loop stopped at its start
 // (EVK_START) keeps the start the prologue gave it. interiorLiquid stays false: the lean loop is never
 // in liquid.
+// A stop at a liquid surface the lean loop met (its crossing found) hands on the crossing's t (rsT,
+// else RS_NONE), and the resumed iteration takes it in place of its smooth-surface crossing tests (below),
+// which would find it again: the surface's samples and its root finding (surfRoot's five reads, cubic
+// close up) were done twice on every sea pixel, once in each stage. The record then holds rsT where
+// phiA was: phiA is dead after a surface event, as the loop's head resamples it at the refracted
+// ray's start, and the first event never runs out of bends (ifStraight, which would read phiB).
 const rsResumeWGSL = /* wgsl */ `
-  if (rsResume(&cell, &tMax, &tEnter, &ax, &phiA, &phiStale, &i)) {
+  var rsT = RS_NONE;   // (the lean loop stopped at a liquid surface it met, at this t: >= 0, as t0 is)
+  if (rsResume(&cell, &tMax, &tEnter, &ax, &phiA, &phiStale, &i, &rsT)) {
     lastB = cell / BS;
     bid = brickId(lastB);
     flags = brickInfoOf(bid);
@@ -956,7 +963,9 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var hitCell = vec3i(0);
   var hitA = vec4f(0.0);${lean || kernel ? `
   var evK = 0u;   // a stop at a rich event (lean) or an abort (a kernel): EVK_* (shaders/world/march.js), 0: none
-  var evB = 0u;   // (lean) the body it stopped at: RICH_BODIES' index + 1` : ''}
+  var evB = 0u;   // (lean) the body it stopped at: RICH_BODIES' index + 1` : ''}${lean ? `
+  var evAt = false;   // (lean) it stopped at a liquid surface it met, at evT (rsResumeWGSL)
+  var evT = 0.0;` : ''}
 
   // Nothing is drawn past the cut: the march below stops there, and every
   // surface, pane face, grain and relief hit is tested against it, so the
@@ -1444,8 +1453,14 @@ ${richOptics ? `
       // In certified liquid, keep every DDA segment, absorption, mixed ID,
       // paint, mesh cut and grain test. Only omit impossible surface events.
       // The else marks phi stale so leaving the certificate resamples the
-      // actual entry value; never propagate a synthetic field to a boundary.
-      if (brickSurf(flags)${interior ? ' && !(liq != E_EMPTY && interiorLiquid)' : ''}) {
+      // actual entry value; never propagate a synthetic field to a boundary.${resume ? `
+      // (resumed at a liquid surface the lean loop met: these tests' result,
+      // its entering crossing at rsT, handed on: rsResumeWGSL)
+      if (rsT >= 0.0) {
+        ev = EV_ENTER; evCh = CH_LIQUID; tEv = rsT;
+        rsT = RS_NONE;
+        phiStale = false;
+      } else` : '\n     '} if (brickSurf(flags)${interior ? ' && !(liq != E_EMPTY && interiorLiquid)' : ''}) {
         if (phiStale) { phiA = surfSample(ro + rd * tEnter); }
         // A missed entry has no later entering crossing. Recover it in every
         // segment, including rays in liquid, not just after a brick/glass skip.
@@ -1561,7 +1576,7 @@ ${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stop
         if (ev == EV_OPAQUE) {
           hitK = HIT_SMOOTH; stop = true; hitP = hp; hitN = evN; hitCh = evCh;
           break;
-        } else {${!hasLiq ? ` ${STOP('liquid')}
+        } else {${!hasLiq ? ` ${STOP('liquid', 'evAt = true; evT = tEv; ')}
         }` : `
           // liquid surface: at the top of the next step (the loop's head:
           // ifPend), its normal and detail, then refract in or out and

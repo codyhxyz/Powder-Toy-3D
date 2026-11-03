@@ -584,7 +584,9 @@ const gbLayout = (stage) => STAGE_EXTRA[stage].map(([, k, w], i) => (w
 //       each; y 12: worlds to 8192 × 4096 × 8192, BRICK_KEY_BITS), ax, phiStale, the kind, the
 //       iteration (16 bits), F's pick (gPickL), tEnter
 //   1  tMax, F's pick's blend (gPickA)
-//   2  phiA (the fields at the segment's start, as carried: never resampled, docs/march-spill.md)
+//   2  phiA (the fields at the segment's start, as carried: never resampled, docs/march-spill.md); or, at
+//       a liquid surface the lean loop met (layer 0's bit 30), its crossing's t, which the resumed
+//       iteration takes in place of finding it again (shaders/render.js rsResumeWGSL)
 // Every float is kept by its bits. The rest the loop reads is the prologue's (the ray, istp, tDelta,
 // tCut, mNext, liqDither), which the event stage computes as the lean march did, or the brick's,
 // which it reads again (rsResumeWGSL).
@@ -592,28 +594,35 @@ const RESUME_WGSL = (stage) => /* wgsl */ `
 const EVK_START: u32 = 1u;    // the lean loop stopped at the ray's start (into liquid at the box wall, the eye in it): the event stage traces the ray whole
 const EVK_RESUME: u32 = 2u;   // ... at a rich event: the event stage resumes that iteration (rsResume)
 const EVK_ABORT: u32 = 3u;    // an event kernel met a body it doesn't keep: the fat stage takes the pixel
+const RS_AT_BIT: u32 = 30u;   // layer 0's wA: the stop is at a liquid surface the lean loop met (layer 2 holds its t)
+const RS_NONE: f32 = -1.0;    // (rsResume's evT: no surface handed on; a real one is >= the march's t0 >= 0)
 ${stage === 'march' ? `${evGateWGSL()}
-fn rsStore(k: u32, b: u32, cell: vec3i, tMax: vec3f, tEnter: f32, ax: i32, phiA: vec4f, phiStale: bool, i: i32) {
+fn rsStore(k: u32, b: u32, cell: vec3i, tMax: vec3f, tEnter: f32, ax: i32, phiA: vec4f, phiStale: bool, i: i32,
+           evAt: bool, evT: f32) {
   let px = gbPix();
   let wA = (u32(cell.x) & 0x1fffu) | ((u32(cell.z) & 0x1fffu) << 13u) | (u32(ax) << 26u) | (select(0u, 1u, phiStale) << 28u)
-         | (select(0u, 1u, k == EVK_RESUME) << 29u);
+         | (select(0u, 1u, k == EVK_RESUME) << 29u) | (select(0u, 1u, evAt) << RS_AT_BIT);
   let wB = (u32(cell.y) & 0xfffu) | ((u32(i) & 0xffffu) << 12u) | (min(gPickL, 15u) << 28u);
   textureStore(gbK, px, 0, vec4u(b, wA, wB, bitcast<u32>(tEnter)));
   if (k == EVK_RESUME) {
     textureStore(gbK, px, 1, vec4u(bitcast<vec3u>(tMax), bitcast<u32>(gPickA)));
-    textureStore(gbK, px, 2, bitcast<vec4u>(phiA));
+    textureStore(gbK, px, 2, select(bitcast<vec4u>(phiA), vec4u(bitcast<u32>(evT), 0u, 0u, 0u), evAt));
   }
 }` : `fn rsResume(cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>, ax: ptr<function, i32>,
-            phiA: ptr<function, vec4f>, phiStale: ptr<function, bool>, i: ptr<function, i32>) -> bool {
+            phiA: ptr<function, vec4f>, phiStale: ptr<function, bool>, i: ptr<function, i32>,
+            evT: ptr<function, f32>) -> bool {
   let px = gbPix();
   let k1 = textureLoad(gbK, px, 0, 0);
   if (((k1.y >> 29u) & 1u) == 0u) { return false; }
   let k2 = textureLoad(gbK, px, 1, 0);
+  let k3 = textureLoad(gbK, px, 2, 0);
   *cell = vec3i(i32(k1.y & 0x1fffu), i32(k1.z & 0xfffu), i32((k1.y >> 13u) & 0x1fffu));
   *tMax = bitcast<vec3f>(k2.xyz);
   *tEnter = bitcast<f32>(k1.w);
   *ax = i32((k1.y >> 26u) & 3u);
-  *phiA = bitcast<vec4f>(textureLoad(gbK, px, 2, 0));
+  let at = ((k1.y >> RS_AT_BIT) & 1u) != 0u;
+  *evT = select(RS_NONE, bitcast<f32>(k3.x), at);
+  *phiA = select(bitcast<vec4f>(k3), vec4f(0.0), at);   // (at a surface met: dead, rsResumeWGSL)
   *phiStale = ((k1.y >> 28u) & 1u) != 0u;
   *i = i32((k1.z >> 12u) & 0xffffu);
   gPickL = k1.z >> 28u;
@@ -673,7 +682,7 @@ const marchEpilogueWGSL = (lean, kernel = false) => /* wgsl */ `
   // ---- the split march's end (shaders/world/march.js): the terminal state into the G-buffer ----${lean ? `
   if (evK != 0u) {
     // stopped at a rich event: its state for the stage that takes it, nothing drawn here
-    rsStore(evK, evB, cell, tMax, tEnter, ax, phiA, phiStale, i);
+    rsStore(evK, evB, cell, tMax, tEnter, ax, phiA, phiStale, i, evAt, evT);
     var none: GBuf;
     none.ev = true;
     none.body = evB;
