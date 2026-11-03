@@ -430,3 +430,33 @@ frame GPU span Lab default 15.36 / 15.37 → 15.04 / 14.99 ms (two pairs, −0.3
 16.98 ms, Island horizon 8.75 → 8.85 ms (noise). The beam pass costs 0.24 ms (Lab) and 0.39 ms (Island) of
 it. Less than the trips promised, as with the cheaper jumps before it: the empty jumps were ~250 operations
 each and cheap next to the surface trips and the shade, reflect and event stages.
+
+## The surface trips' field taps: where they go, and the one exact cut (2026-11-02, perf/surface-taps)
+
+Base origin/main 06001883. CPU only (the Mac was on battery): counted on the generated WGSL, not measured.
+
+**Taps a sample** (Balanced, F's level 0, no level blend; `fieldTexL` 1 tap, `fieldCubicL` 8): `surfSample` 1 where
+no cubic channel (liquid, granular) lies in (CUBIC_LO, CUBIC_HI), 2 in it far off (trilinear + thin mask), 9 up close
+(cubicClose 1), 10 between; a root step (`surfChannel`) 2 / 8 / 10 on a cubic channel, 1 on solid or molten. A cell
+step in a surface brick reads phiB, and phiM where the cell is smooth matter or the brick thin; the cell holding the
+surface adds `surfRoot`'s SURF_ROOT_STEPS (5) reads. So a sand or water pixel up close: ~4 cells out of the band at
+1-2 taps, the band cell's phiB (and phiM) at 9-10, the hit cell's phiB and phiM at 9-10 each, the root's 40-50:
+about 75-90 taps, the root half of it. Rock (not cubic) is ~15.
+
+**What is not exact to cut, by the code:**
+- A land hit's root and band samples: hitP is the G-buffer's point; every value feeds the regula falsi.
+- A per-cell or per-brick min/max bound past the brick certificate (Tevs et al. 2008): a band sample (φ ≥ 0.3) sits
+  within the cubic's 2-texel reach of a texel at SURF_ISO, so no bound clears it; it would only drop the 1-tap
+  samples further out (≤ ~10 % of a land pixel).
+- The gradient sharing fieldCubic's taps: `fieldCubicGradL` reads each axis at its own derivative coordinates
+  (da, db), so none of its 24 taps are the value's 8; and the normal is the shade stage's (the lean march writes
+  GB_N0), not the lean march's.
+
+**The exact cut: the lean march leaves a liquid entry's root to the liquid kernel.** The kernel resumes the
+iteration from the record and finds the root again, so the lean march's was thrown away on every pixel whose
+first event is a liquid surface (the sea). The lean loop now stops before its crossing tests where surfCross's own
+test says only the liquid's channel crosses and the cut lies past the segment (shaders/render.js, lean only; the
+kernels', fat stage's and one-pass march's WGSL are byte-identical). That removes 5 root reads (10 far off, 40-50 up
+close) of a sea pixel's lean taps, about 40-55 % of them; land pixels are unchanged. Proof:
+`node tools/lean-liquid-cpu-check.mjs` (production WGSL in wgsl_reflect's interpreter: every stop is one the old
+tests make in the same iteration with the same record, none is missed, four mutations fail).

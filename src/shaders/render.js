@@ -1470,7 +1470,23 @@ ${richOptics ? `
           tM = tClosest(cell, ro, rd, tEnter, tExit);
           phiM = surfSample(ro + rd * tM);
         }
-        if (ev == EV_NONE) {
+        if (ev == EV_NONE) {${lean ? `
+          // (the lean loop, never in liquid) A liquid surface entered in this segment ends the lean loop
+          // here: the liquid kernel resumes this iteration from the record and finds the crossing's root
+          // itself, so the root (SURF_ROOT_STEPS field reads, cubic up close) is not also taken here. The
+          // test is surfCross's own (whether a channel crosses, not where). Where only the liquid's channel
+          // crosses and the cut lies past the segment, the tests below stop at the liquid in this
+          // iteration with the same record (tools/lean-liquid-cpu-check.mjs); should its root round past
+          // tExit, they stop an iteration later, and the kernel's loop goes that way from here. Every other
+          // segment runs the tests below unchanged.
+          {
+            let xa = phiA - SURF_ISO;
+            let xm = phiM - SURF_ISO;
+            let xb = phiB - SURF_ISO;
+            let xs = ((xa < vec4f(0.0)) & (xm >= vec4f(0.0))) | ((xm < vec4f(0.0)) & (xb >= vec4f(0.0)) & vec4<bool>(tM < tExit));
+            // (channel CH_LIQUID = 0, as below)
+            if (xs.x & !any(xs.yzw) & (tCut >= tExit)${richOptics ? ' & !brickFilm(flags)' : ''}) ${STOP('liquid', 'phiStale = false; ')}
+          }` : ''}
           // the first surface crossed, channel by channel (one surfCross call
           // site: the root finding is inlined wherever it is called). In
           // liquid, its surface is crossed going out (channel CH_LIQUID = 0).
