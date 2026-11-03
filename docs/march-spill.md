@@ -402,6 +402,29 @@ stubbed variants (local only, never merged) change the picture.
 Cost: 16 headless slots, about 230 s of GPU occupancy (5 variant runs lost to a slot held by another session or a
 cold compile past the deadline).
 
+### Exact cuts to the material plan, looked for on CPU (2026-11-02, branch `perf/shade-material`, none found)
+
+Base origin/main 06001883. CPU only (on battery). The bar was an exact change (same picture) removing at least 30%
+of the counted operations of the piece it targets. None of the three leads has one.
+
+- **mCell's search is already near its floor.** `research/shade-material/mcell-search-sim.mjs` counts the cells
+  hashed. Production order: 13.3 a pixel. A per-pixel sorted order: 12.1. That floor is set by the jitter bound
+  (a seed may lie anywhere in its cell). On the GPU, a 32-lane SIMD group runs a cell's hash if any lane needs it.
+  The groups hash 25–27 of the 27 cells while the cells are 2–8 pixels wide, and 18–22 up close. So the pruning
+  saves little time, and no visit order saves much. Mirroring each axis so its nearer neighbour comes first cuts
+  the groups' count by 13–21% (27 → 23.6, 25.2 → 19.9). It also changes which seed wins an exact tie in distance.
+  Making it tie-exact (comparing the original rank) needs about 9 operations per hashed cell. Net, by a per-cell
+  count of the unrolled code (5 for a test, about 43 for a hash with its update), that comes to about 12%. Storing
+  the winners' cell numbers instead of their vectors, and rehashing the two at the end, comes to about 14%. Skipping
+  the tests altogether (hash all 27) comes to about 4%. All are below the bar, so none was built.
+- **planMat's loop and lampShade's loop** cost register copies. The GPU compiler decides those around the inlined
+  matOf and traceNearSteps. They are not operations the WGSL can count, so a CPU check can't prove a cut. In the
+  WGSL itself: planMat's second trip runs only when its blend weight is above 0 (`count = select(1, 2, k > 0.0)`, a
+  flowing layer's `flowW > 0`). Skipping trip 1 at a weight of 1 is not exact, because Metal's `mix` is
+  `x + (y − x)·a`. lampShade leaves its loop on the first trip when there are no lamps and no beacon. Each lamp in
+  range costs one shadow ray (`traceNearSteps`, up to 48 steps), and those rays outweigh the loop's own state.
+  Measuring either needs a GPU A/B of the spill and the registers (`tools/capture-remarks.mjs` on a capture).
+
 ## The beam pre-pass (Laine & Karras 2010, §6.2)
 
 A new first split stage, `world beam` (shaders/world/beam.js), walks one cone per 8×8-pixel tile through W's
