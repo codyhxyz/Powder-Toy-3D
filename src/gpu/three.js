@@ -1,4 +1,4 @@
-// Every use of three.js internals (docs/webgpu.md B10, W20). three r186's
+// Every use of three.js internals (docs/webgpu.md B10, W20). three r187's
 // WebGPURenderer draws the mesh scene only, on our device, into render
 // targets; the canvas is ours (present.js). This file is the whole interop
 // surface, and tools/gpu-foundation-check.mjs exercises each piece (the
@@ -49,7 +49,11 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
   await renderer.init();
   trackNativeRenderPipelines(renderer);
   renderer.autoClear = false;
+  // r187 restarts that loop on every render() and compute() (Renderer.js:1827, :3246,
+  // #35278): stopped once, it would come back on the first frame, ticking
+  // nodeFrame.update a second time per frame and keeping rAF alive at idle. Pin it off.
   renderer._animation.stop();
+  renderer._animation.start = () => {};
   renderer.onError = (info) => gpu.fail(new GraphicsFailure(gpuErrorMessage(info?.originalEvent?.error ?? info), { cause: info }));
   renderer.onDeviceLost = (info) => gpu.fail(new GraphicsFailure(deviceLostMessage(info?.originalEvent ?? info), { cause: info }));
 
@@ -103,7 +107,7 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
 }
 
 /**
- * r186-only, renderer-instance interop: compileAsync's pipeline-cache hits do
+ * r186–r187 (rechecked on r187, Pipelines.getForRender), renderer-instance interop: compileAsync's pipeline-cache hits do
  * not await the first creation, and WebGPUBackend catches native rejection.
  * Enroll the ORIGINAL native completion on every async getForRender, including
  * sync-created pipelines' existing validation scopes, then require the actual
@@ -124,7 +128,7 @@ export function trackNativeRenderPipelines(renderer) {
     let result;
     if (!promises) {
       const device = this.device;
-      // r186 PipelineUtils reads device once, then pops its existing scope
+      // r186–r187 PipelineUtils reads device once, then pops its existing scope
       // synchronously. Forward native receivers for WebIDL brand checks; never
       // change the shared device or leave this renderer-local facade installed.
       this.device = new Proxy(device, {
@@ -276,7 +280,7 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
 }
 
 /**
- * three's temporal anti-aliasing upscaler (r186's TAAUNode: Karis 2014's
+ * three's temporal anti-aliasing upscaler (r187's TAAUNode: Karis 2014's
  * jittered reconstruction with FSR 2's single-pass history, three's own
  * jitter sequence, velocity reprojection, variance clipping, thin-feature
  * locks) run on our frame, for every Upscaling preset, native included: at a
@@ -347,7 +351,7 @@ export function reserveTemporalJitter(node, camera, w, h) {
 }
 
 /**
- * three r186's TAAUNode with its history in two targets that take turns, so
+ * three r187's TAAUNode with its history in two targets that take turns, so
  * the frame's output-size work is the resolve alone. The same picture, bit
  * for bit: resolving the same inputs as the stock node (createTemporalUpscaler
  * { stock: true }) every frame, each with its own history, 0 of 4.1 M texels
@@ -388,7 +392,7 @@ export function reserveTemporalJitter(node, camera, w, h) {
  *   while the view moves it holds FSR 2's shorter history (TAAU_MOTION).
  * Only outside a RenderPipeline (the jitter's view-offset hooks are
  * createTemporalUpscaler's). updateBefore and setup are the node's own
- * (TAAUNode.js:377-489, :491-702) but for those changes.
+ * (r187 TAAUNode.js:372-470, :472-) but for those changes.
  */
 // FSR 2's kernel (ffx_fsr2_upsample.h). The offsets, in input pixels, are scaled by the
 // upsample ratio before the Lanczos-2 window (zero at 1, support 2): FSR 2's
@@ -529,7 +533,13 @@ class PingPongTAAUNode extends TAAUNode {
   }
 
   setup(builder) {
-    if (builder.renderer.reversedDepthBuffer === true) this._previousDepthRenderTarget.depthTexture.type = FloatType;
+    // r187's node (a Node now, not a TempNode) registers its inputs before its consumers
+    // (#34565) and gives the previous-depth copy the scene depth's own format and type
+    this.depthNode.build(builder);
+    this.velocityNode.build(builder);
+    this.beautyNode.build(builder);
+    this._previousDepthRenderTarget.depthTexture.format = this.depthNode.value.format;
+    this._previousDepthRenderTarget.depthTexture.type = this.depthNode.value.type;
     const historyNode = this._historyNode;
     // (one output: the node's second, the lock, goes to a target with one attachment and is dropped)
     const colorOutput = property('vec4');
@@ -666,12 +676,12 @@ export function createTemporalUpscaler(gpu, { stock = false } = {}) {
   // (the colour bilinear: the node's history seed after a resize samples it at output uv)
   const velocity = target('taau velocity', RGFormat, NearestFilter);
   const color = target('taau colour', RGBAFormat, LinearFilter);
-  // TAAUNode reads its input size from the beauty node's render target (TAAUNode.js:399, :513)
+  // TAAUNode reads its input size from the beauty node's render target (r187 TAAUNode.js:486, in a RenderPipeline only)
   const beauty = Object.assign(textureNode(color.texture), { isRTTNode: true, renderTarget: color });
   // (its depth: the scene's, set at the first resolve, before the node is built)
   const node = new (stock ? TAAUNode : PingPongTAAUNode)(beauty, textureNode(new DepthTexture(1, 1, FloatType)), textureNode(velocity.texture), null);
   // our scene depth is depth32float; the copy into the previous-depth texture needs the same format
-  // (TAAUNode switches it to FloatType only for a reversed depth buffer: TAAUNode.js:530)
+  // (r187's setup also copies the scene depth's format and type, :498; the stock node is built the same way)
   node._previousDepthRenderTarget.depthTexture.type = FloatType;
   const material = new NodeMaterial();
   material.name = 'TAAU build';

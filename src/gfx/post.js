@@ -68,7 +68,7 @@
 // the old transparent canvas over the page, so the compositor no longer blends a
 // full-window layer every frame.
 //
-// Temporal anti-aliasing and upscaling: three.js r186's TAAUNode (gpu/three.js
+// Temporal anti-aliasing and upscaling: three.js r187's TAAUNode (gpu/three.js
 // createTemporalUpscaler; Karis 2014's jittered reconstruction, FSR 2's
 // single-pass history) at every Upscaling preset, native included. The scene
 // renders at the preset's share of the output's pixels per axis (UPSCALE: AMD

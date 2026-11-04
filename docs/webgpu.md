@@ -48,7 +48,7 @@ box session and a quiet world pay. Both matter, and the targets below name both.
 ### Decisions
 
 **W1. Raw WebGPU and hand-written WGSL for all simulation, derived, volume, world, POV/tool, post and codec work;
-three.js only for meshes.** One `GPUDevice`, created by `src/gpu/device.js`. three.js r186 `WebGPURenderer`
+three.js only for meshes.** One `GPUDevice`, created by `src/gpu/device.js`. three.js r187 `WebGPURenderer`
 (constructed with `{ device }`) draws the mesh scene only: figures (stickman, GLTF skinned mannequin, NPC wizards,
 worms), viewmodels, vehicles, markers, constructions ghost, billboards. The floor grid, the box edges and the
 brush cursor are small pipelines of ours in the scene pass (F1), so a box-mode frame never needs three. Its materials
