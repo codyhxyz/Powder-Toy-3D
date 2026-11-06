@@ -77,6 +77,22 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
     finally { gpu.timing.scope = previousScope; }
   };
 
+  // r187 keeps one compile state on the renderer (Renderer._beginPreCompile/_finishPreCompile,
+  // new in r187): two compileAsync calls in flight at once overwrite and then null each other's
+  // state, the later one throws "Cannot destructure property 'useFrameBufferTarget' of
+  // 'this._precompilationState' as it is null" and can leave the renderer on the other call's
+  // target. One compile at a time: every compileAsync (ours and direct callers') waits its turn,
+  // and its synchronous setup runs only when its turn comes. Pipelines inside one call still
+  // build in parallel (three's _maxCompilingPipelines).
+  const compileNow = renderer.compileAsync.bind(renderer);
+  let compileTail = Promise.resolve();
+  const inTurn = (start) => {
+    const p = compileTail.then(start, start);
+    compileTail = p.then(() => {}, () => {});
+    return p;
+  };
+  renderer.compileAsync = (scene, camera, targetScene = null) => inTurn(() => compileNow(scene, camera, targetScene));
+
   gpu.three = {
     renderer,
     /** what prepare() uses when a call leaves it out: the app sets its camera, scene and scene target once */
@@ -85,22 +101,28 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
      * Compiles a new kind of mesh before it joins the scene (B5, F8), for the
      * formats of `target` (the scene target): three otherwise creates its
      * pipeline synchronously at the first draw. `gpu.three.prepare(object)`
-     * uses gpu.three.defaults.
+     * uses gpu.three.defaults. Compiles run one at a time (see inTurn above).
      * @param {object} object the mesh or group
-     * @param {{ camera?: object, scene?: object, target?: object }} [opts]
+     * @param {{ camera?: object, scene?: object, target?: object, setup?: () => (void | (() => void)) }} [opts]
+     *   setup: runs right before this compile starts (when its turn comes); what it returns runs
+     *   right after compileAsync's synchronous part, where three has read visibility and keys
      * @returns {Promise<unknown>}
      */
     prepare(object, opts = {}) {
-      const { camera, scene = null, target = null } = { ...gpu.three.defaults, ...opts };
-      if (!camera) return Promise.reject(new Error('gpu.three.prepare: no camera (set gpu.three.defaults.camera)'));
-      const prev = renderer.getRenderTarget();
-      if (target) renderer.setRenderTarget(target);
-      try {
-        // compileAsync reads the render target synchronously, before its first await
-        return renderer.compileAsync(object, camera, scene);
-      } finally {
-        if (target) renderer.setRenderTarget(prev);
-      }
+      return inTurn(() => {
+        const { camera, scene = null, target = null, setup = null } = { ...gpu.three.defaults, ...opts };
+        if (!camera) throw new Error('gpu.three.prepare: no camera (set gpu.three.defaults.camera)');
+        const prev = renderer.getRenderTarget();
+        if (target) renderer.setRenderTarget(target);
+        const cleanup = setup?.();
+        try {
+          // compileAsync reads the render target synchronously, before its first await
+          return compileNow(object, camera, scene);
+        } finally {
+          cleanup?.();
+          if (target) renderer.setRenderTarget(prev);
+        }
+      });
     },
   };
   return renderer;

@@ -561,31 +561,39 @@ export function prepareMesh(object, { alone = false, rejectOnFailure = false, ..
   if (meshGpu.failure || meshGpu.lost) return rejectOnFailure
     ? Promise.reject(meshGpu.failure ?? new Error('prepareMesh: GPU device lost')) : Promise.resolve();
   for (const k of Object.keys(opts)) if (opts[k] === undefined) delete opts[k];   // (left out: the defaults')
-  const saved = [], done = [];
-  const tSig = targetSig(opts.target ?? three.defaults.target);
-  const lSig = lightsSig(opts.scene ?? three.defaults.scene, opts.camera ?? three.defaults.camera);
-  object.traverse((o) => {
-    saved.push([o, o.visible, o.frustumCulled]);
-    o.visible = !alone || o === object;
-    o.frustumCulled = false;
-    if (o.material && o.visible) done.push([o, o.material]);
-  });
-  // three keys a render object's lights and environment by the renderer's
-  // render-call count (NodeManager.getCacheKey caches it per info.calls): a
-  // compile after a light came or went, with no render since, would take the
-  // last render's key, and the next render would throw the compiled pipeline
-  // away and build it again synchronously. A count no render has had keeps
-  // the compile's key fresh. (Belongs in gpu.three.prepare: hand-back.)
-  const info = three.renderer.info, calls = info.calls;
-  info.calls = -(++prepares);
+  const done = [];
+  let tSig = '', lSig = '';
+  // Runs when this compile's turn comes (gpu.three.prepare runs one compile at a time), so the
+  // signatures, visibility and render-call key are this moment's, not the queueing call's.
+  const setup = () => {
+    const saved = [];
+    tSig = targetSig(opts.target ?? three.defaults.target);
+    lSig = lightsSig(opts.scene ?? three.defaults.scene, opts.camera ?? three.defaults.camera);
+    object.traverse((o) => {
+      saved.push([o, o.visible, o.frustumCulled]);
+      o.visible = !alone || o === object;
+      o.frustumCulled = false;
+      if (o.material && o.visible) done.push([o, o.material]);
+    });
+    // three keys a render object's lights and environment by the renderer's
+    // render-call count (NodeManager.getCacheKey caches it per info.calls): a
+    // compile after a light came or went, with no render since, would take the
+    // last render's key, and the next render would throw the compiled pipeline
+    // away and build it again synchronously. A count no render has had keeps
+    // the compile's key fresh.
+    const info = three.renderer.info, calls = info.calls;
+    info.calls = -(++prepares);
+    // (three reads visibility, and the key, before its first await)
+    return () => {
+      info.calls = calls;
+      for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
+    };
+  };
   let p;
   try {
-    p = three.prepare(object, opts);   // (three reads visibility, and the key, before its first await)
+    p = three.prepare(object, { ...opts, setup });
   } catch (error) {
     p = Promise.reject(error);
-  } finally {
-    info.calls = calls;
-    for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
   }
   return Promise.resolve(p).then(() => {
     for (const [o, m] of done) preparedWith.set(o, { material: m, key: keyOf(tSig, lSig) });
