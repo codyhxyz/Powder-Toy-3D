@@ -38,7 +38,8 @@ import { createSandboxMedals } from './sandboxMedals.js';
 import { connectAnnouncer, announceMatches } from './announcer.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom } from './zoom.js';
-import { KEYS, is, held, codes } from '../keys.js';
+// keyHeld: `held` below is the tool in hand (held.js); under one name it shadowed this test and every frame on foot threw
+import { KEYS, is, held as keyHeld, codes } from '../keys.js';
 import { createTouchControls } from './touch.js';
 import { createDescent } from './descent/index.js';
 import { preparePov, volumeLight } from './gpu.js';
@@ -709,25 +710,25 @@ export function createPov(app) {
       || editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
       const t = touch.state;   // (the touch stick drives too: forward throttles, sideways steers)
-      d.throttle = THREE.MathUtils.clamp((held(keys, KEYS.forward) ? 1 : 0) - (held(keys, KEYS.back) ? 1 : 0) + t.z, -1, 1);
-      d.steer = THREE.MathUtils.clamp((held(keys, KEYS.left) ? 1 : 0) - (held(keys, KEYS.right) ? 1 : 0) - t.x, -1, 1);
-      d.brake = held(keys, KEYS.jump) || t.jump;
-      d.boost = held(keys, KEYS.fast) || t.sprint;
+      d.throttle = THREE.MathUtils.clamp((keyHeld(keys, KEYS.forward) ? 1 : 0) - (keyHeld(keys, KEYS.back) ? 1 : 0) + t.z, -1, 1);
+      d.steer = THREE.MathUtils.clamp((keyHeld(keys, KEYS.left) ? 1 : 0) - (keyHeld(keys, KEYS.right) ? 1 : 0) - t.x, -1, 1);
+      d.brake = keyHeld(keys, KEYS.jump) || t.jump;
+      d.boost = keyHeld(keys, KEYS.fast) || t.sprint;
       return;
     }
     const t = touch.state;   // the touch stick adds in, analog (touch.js)
     input.cancelJump = false;
-    const f = THREE.MathUtils.clamp((held(keys, KEYS.forward) ? 1 : 0) - (held(keys, KEYS.back) ? 1 : 0) + t.z, -1, 1);
-    const r = THREE.MathUtils.clamp((held(keys, KEYS.right) ? 1 : 0) - (held(keys, KEYS.left) ? 1 : 0) + t.x, -1, 1);
+    const f = THREE.MathUtils.clamp((keyHeld(keys, KEYS.forward) ? 1 : 0) - (keyHeld(keys, KEYS.back) ? 1 : 0) + t.z, -1, 1);
+    const r = THREE.MathUtils.clamp((keyHeld(keys, KEYS.right) ? 1 : 0) - (keyHeld(keys, KEYS.left) ? 1 : 0) + t.x, -1, 1);
     if (f || r) {
       const fw = povCam.forwardH(vA), rt = povCam.rightH(vB);
       // The body normalizes Noita movement; Cruelty Squad keeps diagonal air acceleration.
       input.move.x = fw.x * f + rt.x * r;
       input.move.z = fw.z * f + rt.z * r;
     }
-    input.jump = held(keys, KEYS.jump) || t.jump;
-    input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : held(keys, KEYS.fast));
-    input.crouch = input.down = held(keys, KEYS.crouch) || t.down;   // crouched on land, swimming down in liquid
+    input.jump = keyHeld(keys, KEYS.jump) || t.jump;
+    input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : keyHeld(keys, KEYS.fast));
+    input.crouch = input.down = keyHeld(keys, KEYS.crouch) || t.down;   // crouched on land, swimming down in liquid
     const ladders = app.getWorld()?.scene.importManifest?.interactions?.ladders;
     if (ladders?.length) {
       ladderFeet.copy(player.pos).add(app.getSim().origin);
@@ -868,7 +869,7 @@ export function createPov(app) {
     const match = game.playerRespawn;   // in a team game: Halo's delay, at a spawn of your side
     if (deadSeen) {
       deadTime += dt;
-      const asked = !match && deadTime >= RESPAWN_MIN && (buttons.primaryPressed || held(keys, KEYS.jump));
+      const asked = !match && deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keyHeld(keys, KEYS.jump));
       if (!mission.engaged && (deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
         for (const c of KEYS.jump) keys.delete(c);   // the key that respawned doesn't also jump
         player.spawn(match ? match.at() : dropPoint.clone());
@@ -898,7 +899,7 @@ export function createPov(app) {
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
     povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
     // the zoom key: while it's held the wheel zooms, as in Zoomify, instead of picking a tool
-    const zooming = mode === 'on' && !deadSeen && held(keys, KEYS.zoom);
+    const zooming = mode === 'on' && !deadSeen && keyHeld(keys, KEYS.zoom);
     povCam.keyZoom = zoom.update(dt, zooming, zooming ? wheelNotches : 0);
     if (zooming) wheelNotches = 0;
     toWorld(vEye.copy(vA), vEye);
