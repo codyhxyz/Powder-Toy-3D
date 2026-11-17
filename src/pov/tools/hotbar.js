@@ -1,6 +1,7 @@
 import { h } from '../../ui/dom.js';
 import { modelIcon } from '../models.js';
 import { SLOTS } from './catalog.js';
+import { slotKey } from '../../keys.js';
 import './hotbar.css';
 
 // Half-Life 2's weapon selector, as Garry's Mod shows it: nothing on screen
@@ -13,7 +14,7 @@ import './hotbar.css';
 // selects, the button is swallowed, the selection hides).
 
 export const HOTBAR_SLOTS = SLOTS.length;
-export { slotKey } from '../../keys.js';   // slot i's number key
+export { slotKey };   // slot i's number key (keys.js), for the toolbelt
 const SHOW_MS = 1500;             // HL2 hud_weaponselection.cpp FASTSWITCH_DISPLAY_TIMEOUT 1.5 s
 const SHAKE_MS = 360;             // .shake animation length (hotbar.css)
 
