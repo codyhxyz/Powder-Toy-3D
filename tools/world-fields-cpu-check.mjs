@@ -131,6 +131,37 @@ ${F.worldFieldsWGSL({ detail })}
     check(lt.slice(0, 3).every((v) => v <= -F.FIELD_FAR) && ht.slice(0, 3).every((v) => v >= F.FIELD_FAR), `${world}: the coarsest level doesn't hold the world (${lt}, ${ht})`);
     console.log(`planner ${world}: ${plan.n} levels, ${S}×${plan.rows}×${S} texels, thin ${plan.thinRows} rows; filled in ${still} still frames`);
   }
+  // More owed than a frame fits (a small map with a lava pit: the air round it changing every tick, 2026-11-16).
+  // Every frame the whole map is reported changed, and once a heap lands in a far corner. Its bricks must still
+  // be finished (FINAL) and keep getting EMA passes, its turn among all the others, and with the reports over every
+  // queue must empty.
+  {
+    const world = [128, 128, 128], plan = F.fieldClipPlan(world), lay = F.fieldWorkLayout(plan, FIELD_BRICKS_PER_FRAME);
+    const levels = plan.levels.map((l) => new ClipLevel(l, lay)), cam = [64, 40, 64], all = [{ lo: [0, 0, 0], hi: world }];
+    let frame = 0;
+    do planFrame(levels, { frame: ++frame, cam }); while (!levels.every((L) => L.complete));
+    const heap = [26, 1, 3];   // a level-0 brick far from the camera's (16, 10, 16)
+    const key = (b) => b.join();
+    let finals = 0, emas = 0, firstFinal = 0;
+    for (let i = 0; i < 400; i++) {
+      for (const j of planFrame(levels, { frame: ++frame, cam, changes: all })) {
+        if (j.level.k) continue;
+        for (const w of j.entries) {
+          const e = F.unpackEntry(w);
+          if (key(e.b) !== key(heap)) continue;
+          if (e.flags & F.FE.FINAL) { finals++; firstFinal ||= i + 1; }
+          if (e.flags & F.FE.EMA) emas++;
+        }
+      }
+    }
+    // (every brick of the level is owed a pass every frame here: a frame fits about one in 45 of them, so each gets
+    // a pass about every 45 frames, for as long as the reports go on)
+    check(finals > 0 && firstFinal <= 64 && emas >= 400 / 64, `flood: the far brick was finished ${finals} times with ${emas} EMA passes in 400 frames (first after ${firstFinal})`);
+    let drain = 0;
+    while (levels.some((L) => L.queue.size) && drain < 5000) { planFrame(levels, { frame: ++frame, cam }); drain++; }
+    check(levels.every((L) => !L.queue.size), `flood: the queues still hold ${levels.map((L) => L.queue.size)} bricks ${drain} frames after the last change`);
+    console.log(`planner flood: the far brick first finished after ${firstFinal} frames, ${emas} EMA passes in 400; the queues emptied ${drain} frames after the last change`);
+  }
   // fieldLevelFor: level + blend never falls as the footprint grows (the JS twin of its WGSL)
   const levelFor = (fp, n) => { const lam = Math.log2(Math.max(fp, 1e-6)), l = Math.max(0, Math.min(n - 1, Math.floor(lam)));
     const t = Math.max(0, Math.min(1, (lam - l - (1 - F.FIELD_LEVEL_BLEND)) / F.FIELD_LEVEL_BLEND));

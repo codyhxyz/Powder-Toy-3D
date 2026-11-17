@@ -8,15 +8,25 @@
 //   fields.update(gpu.frame, cameraWorldCell, changes);    // each frame, before the march
 //   group 2 of the march: fields.bindEntries() (FIELDS_BINDINGS)
 //
-// Each level keeps its clip origin (level bricks: 4 texels, 4 · 2^k cells), which snaps by whole
-// bricks, and the box it holds (valid). A move shrinks valid to what the new clip still holds; the
-// texels that came in hold the far side's old values until filled, and fieldPick never reads them
-// (FieldClip's boxes are valid's). Each frame then, within FIELD_BRICKS_PER_FRAME:
-//   1. the slabs that came in, nearest level first: valid grows by one brick layer a job, on its
-//      face nearest the camera, until it is the clip (less a brick at faces inside the world)
-//   2. what the world copy changed: at level 0 the EMA over every brick changed within
-//      FIELD_EMA_SETTLE frames (the window's EMA set, shaders/fields.js DIRTY), the fields a brick
-//      around them (FIELD_REACH); at coarse levels the texels within the blur's reach, once
+// The plan, whole (planFrame):
+//   Each level keeps its clip origin (level bricks: 4 texels, 4 · 2^k cells), which snaps by whole
+//   bricks, and the box of it that holds fields (valid). A move shrinks valid to what the new clip
+//   still holds; the texels that came in hold the far side's old values until filled, and fieldPick
+//   never reads them (FieldClip's boxes are valid's).
+//   A brick the world copy changed is owed work: at level 0 the EMA's FIELD_EMA_SETTLE passes (the
+//   temporal blend reaches its target by then), at a coarse level one. It waits in its level's queue
+//   until it has had every pass it is owed. Nothing takes it out but the work being done, or the brick
+//   leaving what the level holds (a slab computes it from the copy as it is when it comes back).
+//   A frame spends its budget (FIELD_BRICKS_PER_FRAME level bricks, the scratch's size) on:
+//     1. the slabs that came in, nearest level first: valid grows by one brick layer a job, on its
+//        face nearest the camera, until it is the clip (less a brick at faces inside the world);
+//     2. the queues, the levels taking turns to go first, each from the brick that has waited longest.
+//        A brick that had a pass and is owed more goes to the back.
+//   So a frame with more owed than fits does the oldest of it and the rest the frames after: fields
+//   under load update less often, and none is left as it was. (The planner this replaces took the
+//   bricks nearest the camera first and dropped one FIELD_EMA_SETTLE frames after its change whether
+//   or not it had been computed: with more changed than fit, matter far from the middle of the map,
+//   a sand heap that had just landed, never got its surface and was not drawn. 2026-11-16.)
 // A job lists the bricks it finishes (FINAL) and every brick within one of them (the chain's reach).
 // Liquids' EMA history lives in level 0's clip cells, world-keyed: a physics move doesn't touch it.
 import {
@@ -41,10 +51,8 @@ export const FIELD_BRICKS_PER_FRAME = 4096;
 /**
  * The budget for a plan: FIELD_BRICKS_PER_FRAME, or more if a level's slab with its ring (a brick-thick face of
  * its clip, 3 bricks with the ring, the clip's size across) needs it. A slab is filled in one job (the valid box
- * stays a box), so one that never fits never comes in: a clip that moves loses its faces for good. A world
- * whose window spans a tall world (Descent's 320 cells, the Giant Volcano's 384) has 3 × 36 × 80 bricks in a
- * level-0 slab, past 4096: after a move its level 0 never filled again, and once the full-detail box follows
- * the focus (shaders/world/reach.js) that was every few frames.
+ * stays a box), so one that never fits never comes in: a clip that moves loses its faces for good (a window
+ * over a tall world, Descent's 320 cells or the Giant Volcano's 384, has 3 × 36 × 80 bricks in a level-0 slab).
  * @param {{ levels: { clipBricks: number[], worldBricks: number[] }[] }} plan fieldClipPlan's
  */
 export function fieldBudgetFor(plan) {
@@ -60,7 +68,7 @@ export const FIELD_GROW_SEED = 4;
 /** Jobs a frame may record (each is ~9 dispatches): a frame of small jobs stops here. */
 export const FIELD_JOBS_PER_FRAME = 16;
 const STAMP_MAX = 0xffff;   // the slot map's stamp is 16 bits
-const JOB_STAMP_MAX = 0xffffffff;   // JobBuilder's stamps (a Uint32Array)
+const JOB_STAMP_MAX = 0xffffffff;   // Job's stamps (a Uint32Array)
 const FIELD_TRANSITION_NONE = 1e-3;   // cells: a level without a transition band (fieldPick divides by its width)
 
 // ---- boxes, in level bricks, hi exclusive ----
@@ -88,14 +96,16 @@ export function normalizeChanges(changes) {
   return list.map((c) => (Array.isArray(c) ? { lo: c.slice(0, 3), hi: c.slice(3, 6) } : { lo: c.lo ?? c.min, hi: c.hi ?? c.max }));
 }
 
-/** One level's clip: where it is, what it holds, what is pending. Pure CPU (tools/world-fields-cpu-check.mjs drives it). */
+/** One level's clip: where it is, what it holds, what it is owed. Pure CPU (tools/world-fields-cpu-check.mjs drives it). */
 export class ClipLevel {
   constructor(level, layout) {
     Object.assign(this, { level, layout, origin: null, valid: EMPTY });
     this.world = { lo: [0, 0, 0], hi: level.worldBricks };
-    this.active = new Map();   // level 0: key → [b, last frame changed] (the EMA set)
-    this.dirty = new Map();    // coarse: key → b (texels to redo)
+    // bricks owed work, the longest waiting first (a Map keeps the order its keys were set in):
+    // clip key → { b, owed }, owed the passes still to run
+    this.queue = new Map();
   }
+  // a brick's slot in the clip (the clip wraps: a brick's key is its coordinates modulo the clip's size)
   key(b) {
     const { cb, rbMax } = this.layout, rb = this.level.clipBricks[1];
     return (b[0] % cb) + cb * ((b[1] % rb) + rbMax * (b[2] % cb));
@@ -141,13 +151,17 @@ export class ClipLevel {
     const V = this.valid;
     this.valid = boxEmpty(V) ? layer : { lo: V.lo.map((v, i) => Math.min(v, layer.lo[i])), hi: V.hi.map((v, i) => Math.max(v, layer.hi[i])) };
   }
+  // brick b changed: it is owed its passes from now. One already waiting keeps its place.
+  owe(b) {
+    const k = this.key(b), owed = this.level.k === 0 ? FIELD_EMA_SETTLE : 1, q = this.queue.get(k);
+    if (q) { q.b = b; q.owed = owed; } else this.queue.set(k, { b, owed });
+  }
 }
 
-// A job's entries: each brick once (by the clip's key), its flags or'ed. The index is a typed array
-// over the clip's slot map, kept on the level and stamped a job at a time: planFrame adds a few
-// hundred thousand bricks a frame on a busy map (each changed brick's 5³), and a Map of them cost
-// 13–30 ms of CPU a frame (lab, 2026-10-25).
-class JobBuilder {
+// A job's entries: each brick once (by the clip's key), its flags or'ed. The index is a typed array over the
+// clip's slot map, kept on the level and stamped a job at a time (a changed brick adds its 5³: a Map of them
+// cost 13–30 ms of CPU a frame on a busy map, lab, 2026-10-25).
+class Job {
   constructor(clip) {
     const c = clip.clip, w = clip.world, n = clip.layout.slotMap;
     this.clip = clip;
@@ -159,8 +173,7 @@ class JobBuilder {
     this.bricks = []; this.flags = [];
   }
   get count() { return this.bricks.length; }
-  add(b, flags) { this.addAt(b[0], b[1], b[2], flags); }
-  addAt(x, y, z, flags) {
+  add(x, y, z, flags) {
     const { lo, hi } = this;
     if (x < lo[0] || y < lo[1] || z < lo[2] || x >= hi[0] || y >= hi[1] || z >= hi[2]) return;
     const C = this.clip, { cb, rbMax } = C.layout, k = (x % cb) + cb * ((y % C.level.clipBricks[1]) + rbMax * (z % cb));
@@ -173,49 +186,45 @@ class JobBuilder {
     this.flags[i] |= flags;
   }
   entries() { return Uint32Array.from(this.bricks, (b, i) => packEntry(b, this.flags[i])); }
+  get final() { return this.flags.reduce((n, f) => n + (f & FE.FINAL ? 1 : 0), 0); }
 }
 
-// The bricks within `reach` of a changed one, with the flags each takes: [dx, dy, dz, in valid, outside it] five
-// numbers an offset. Within reach - 1 and in valid: FINAL; level 0 also EMA at the brick itself, and EMA | FRESH
-// outside valid (no history there: it starts at its targets).
-const OFFSETS = new Map();
-function reachOffsets(reach, coarse) {
-  const key = `${reach}|${coarse}`;
-  let offs = OFFSETS.get(key);
+// What a pass over a changed brick computes: the bricks within `reach` of it, five numbers an offset, [dx, dy, dz,
+// its flags inside valid, its flags outside]. Level 0 (reach 2, FIELD_REACH is a brick and the chain's ring one
+// more): the EMA at the brick itself, the fields finished (FINAL) a brick around it; a brick outside valid holds no
+// history, so its EMA starts at its targets (FRESH) and nothing is finished there. A coarse level (reach 1: its
+// texels already cover the blur's reach): the brick finished, its ring read.
+const REACH = new Map();
+function reachOffsets(coarse) {
+  let offs = REACH.get(coarse);
   if (offs) return offs;
-  const out = [];
+  const reach = coarse ? 1 : 2, out = [];
   for (let dz = -reach; dz <= reach; dz++) for (let dy = -reach; dy <= reach; dy++) for (let dx = -reach; dx <= reach; dx++) {
     const d = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)), self = !coarse && d === 0 ? FE.EMA : 0;
-    out.push(dx, dy, dz, (d <= reach - 1 ? FE.FINAL : 0) | self, coarse ? 0 : self | FE.EMA | FE.FRESH);
+    out.push(dx, dy, dz, (d < reach ? FE.FINAL : 0) | self, coarse ? 0 : FE.EMA | FE.FRESH);
   }
-  OFFSETS.set(key, offs = Int32Array.from(out));
+  REACH.set(coarse, offs = Int32Array.from(out));
   return offs;
 }
 
 /**
- * Plans a frame (pure CPU): the clips follow the camera, the changes are noted, and the jobs are
- * chosen within the budget. Returns [{ level, entries: Uint32Array, final: number }].
+ * Plans a frame (pure CPU; the rules are at the top of this file): the clips follow the camera, the changes
+ * join the queues, and the jobs are chosen within the budget. Returns [{ level, entries: Uint32Array, final }].
  */
 export function planFrame(levels, { frame, cam, changes = [], budget = FIELD_BRICKS_PER_FRAME, maxJobs = FIELD_JOBS_PER_FRAME }) {
   for (const L of levels) L.setCamera(cam);
-  // the changes: level 0's EMA set, the coarse levels' texels within the blur's reach (2 texels)
+  // the changes: the bricks they touch at each level (a coarse level's texels within the blur's reach, 2, too)
   for (const box of changes) {
     for (const L of levels) {
       const s = L.level.s, r = L.level.k ? 2 : 0;
       const lo = box.lo.map((v) => Math.floor((Math.floor(v / s) - r) / WC_BRICK));
       const hi = box.hi.map((v) => Math.floor((Math.ceil(v / s) + r - 1) / WC_BRICK) + 1);
-      for (const b of boxCells(boxMeet({ lo, hi }, boxMeet(L.clip, L.world)))) {
-        if (L.level.k === 0) L.active.set(L.key(b), [b, frame]);
-        else L.dirty.set(L.key(b), b);
-      }
+      for (const b of boxCells(boxMeet({ lo, hi }, boxMeet(L.clip, L.world)))) L.owe(b);
     }
   }
   const jobs = [];
   let left = budget;
-  const push = (L, job) => {
-    jobs.push({ level: L.level, entries: job.entries(), final: job.flags.filter((f) => f & FE.FINAL).length });
-    left -= job.count;
-  };
+  const push = (L, job) => { jobs.push({ level: L.level, entries: job.entries(), final: job.final }); left -= job.count; };
   // 1. the slabs, nearest level first
   for (const L of levels) {
     for (;;) {
@@ -224,45 +233,33 @@ export function planFrame(levels, { frame, cam, changes = [], budget = FIELD_BRI
       if (!layer) break;
       const ring = boxMeet(boxGrow(layer, 1), boxMeet(L.clip, L.world));
       if (boxCount(ring) > left) break;
-      const job = new JobBuilder(L), V = L.valid, stale = L.level.k === 0 ? FE.EMA | FE.FRESH : 0;
-      for (const b of boxCells(ring)) job.add(b, (boxHas(layer, b) ? FE.FINAL : 0) | (boxHas(V, b) ? 0 : stale));
+      const job = new Job(L), V = L.valid, stale = L.level.k === 0 ? FE.EMA | FE.FRESH : 0;
+      for (const b of boxCells(ring)) job.add(b[0], b[1], b[2], (boxHas(layer, b) ? FE.FINAL : 0) | (boxHas(V, b) ? 0 : stale));
       L.take(layer);
-      // (a brick that came in has no change pending: what changed there before is in what it reads now)
-      for (const b of boxCells(layer)) { L.active.delete(L.key(b)); L.dirty.delete(L.key(b)); }
+      // (a brick that came in is owed nothing: what changed there before is in what it reads now)
+      for (const b of boxCells(layer)) L.queue.delete(L.key(b));
       push(L, job);
     }
   }
-  // 2. the changes: level 0's EMA set (nearest first), then the coarse levels'
-  for (const L of levels) {
-    if (jobs.length >= maxJobs) break;
-    const V = L.valid, U = L.usable, c = L.camBrick(cam), coarse = L.level.k > 0;
-    const set = coarse ? L.dirty : L.active;
-    // nearest first, by the brick's (whole) distance: a bucket a distance, in the set's order (a stable sort's)
-    const buckets = [];
-    for (const [k, v] of set) {
-      const b = coarse ? v : v[0];
-      // settled, or never to be finished here (outside the usable box: the margin, gone past)
-      if ((!coarse && frame - v[1] >= FIELD_EMA_SETTLE) || !boxHas(U, b)) { set.delete(k); continue; }
-      if (!boxHas(V, b)) continue;   // (a slab still to come computes it from what is there then)
-      const d = Math.max(Math.abs(b[0] - c[0]), Math.abs(b[1] - c[1]), Math.abs(b[2] - c[2]));
-      (buckets[d] ??= []).push(k, b);
-    }
-    // Level 0: the EMA over the set, the fields over a brick around it (FIELD_REACH is a brick),
-    // their ring a brick further; a brick outside valid holds no history: it starts at its targets.
-    // A coarse level: the dirty brick (its texels already cover the blur's reach), its ring.
-    const reach = coarse ? 1 : 2, need = (2 * reach + 1) ** 3, job = new JobBuilder(L);
-    const [vx0, vy0, vz0] = V.lo, [vx1, vy1, vz1] = V.hi, offs = reachOffsets(reach, coarse);
-    fill: for (const bucket of buckets) {
-      if (!bucket) continue;
-      for (let i = 0; i < bucket.length; i += 2) {
-        const k = bucket[i], b = bucket[i + 1];
-        if (left - job.count < need) break fill;
-        for (let o = 0; o < offs.length; o += 5) {
-          const x = b[0] + offs[o], y = b[1] + offs[o + 1], z = b[2] + offs[o + 2];
-          job.addAt(x, y, z, x >= vx0 && y >= vy0 && z >= vz0 && x < vx1 && y < vy1 && z < vz1 ? offs[o + 3] : offs[o + 4]);
-        }
-        if (coarse) set.delete(k);
+  // 2. the queues: the levels take turns to go first, each from the brick that has waited longest
+  for (let i = 0; i < levels.length && jobs.length < maxJobs; i++) {
+    const L = levels[(frame + i) % levels.length];
+    if (!L.queue.size) continue;
+    const V = L.valid, U = L.usable, coarse = L.level.k > 0, offs = reachOffsets(coarse), need = offs.length / 5;
+    const [vx0, vy0, vz0] = V.lo, [vx1, vy1, vz1] = V.hi, job = new Job(L);
+    let turns = L.queue.size;   // (a brick sent to the back isn't met again this frame)
+    for (const [k, q] of L.queue) {
+      if (turns-- === 0) break;
+      const b = q.b;
+      // gone past what the level holds: a slab computes it, from the copy as it is then, when it comes back
+      if (!boxHas(U, b) || !boxHas(V, b)) { L.queue.delete(k); continue; }
+      if (left - job.count < need) break;
+      for (let o = 0; o < offs.length; o += 5) {
+        const x = b[0] + offs[o], y = b[1] + offs[o + 1], z = b[2] + offs[o + 2];
+        job.add(x, y, z, x >= vx0 && y >= vy0 && z >= vz0 && x < vx1 && y < vy1 && z < vz1 ? offs[o + 3] : offs[o + 4]);
       }
+      L.queue.delete(k);
+      if (--q.owed > 0) L.queue.set(k, q);
     }
     if (job.count) push(L, job);
   }
@@ -351,12 +348,12 @@ export class WorldFields {
   /** Starts every level over (a new smoothing, a reset): the next frames refill them. */
   reset({ smoothing = this.smoothing } = {}) {
     this.smoothing = smoothing;
-    for (const L of this.levels) { L.valid = EMPTY; L.active.clear(); L.dirty.clear(); }
+    for (const L of this.levels) { L.valid = EMPTY; L.queue.clear(); }
   }
 
   /**
    * One frame's work, before the march: the clips follow the camera, then the slabs that came in
-   * and the changed bricks, within the budget.
+   * and the bricks owed work, longest waiting first, within the budget.
    * @param {object} frame gpu.frame
    * @param {number[]} cameraWorldCell the camera, in world cells
    * @param {*} [changes] world-cell boxes changed since the last call (normalizeChanges); by
