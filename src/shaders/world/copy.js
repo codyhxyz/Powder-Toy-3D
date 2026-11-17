@@ -374,15 +374,21 @@ var<workgroup> wgLiqHi: atomic<u32>;     // 1 + the highest liquid-channel id (0
 var<workgroup> wgLiqLo: atomic<u32>;     // NE - the lowest
 var<workgroup> wgSlot: u32;
 var<workgroup> wgChanged: atomic<u32>;   // cells whose word differs from the copy's (was)
+var<workgroup> wgShown: atomic<u32>;     // ...of them, those the picture can show a change in: every one but air that only changed temperature
 var<workgroup> wgThin: atomic<u32>;      // a thin liquid cell: air on both sides along an axis, inside the brick
 fn wcGather(li: u32, w: u32, was: u32) {
   if (li == 0u) {
     atomicStore(&wgDiff, 0u); atomicStore(&wgLow, 0u); atomicStore(&wgOwn, 0u); atomicStore(&wgNotWhole, 0u);
-    atomicStore(&wgLiqHi, 0u); atomicStore(&wgLiqLo, 0u); atomicStore(&wgChanged, 0u); atomicStore(&wgThin, 0u);
+    atomicStore(&wgLiqHi, 0u); atomicStore(&wgLiqLo, 0u); atomicStore(&wgChanged, 0u); atomicStore(&wgThin, 0u); atomicStore(&wgShown, 0u);
   }
   workgroupBarrier();
   wgW[li] = w;
-  if (w != was) { atomicAdd(&wgChanged, 1u); }
+  if (w != was) {
+    atomicAdd(&wgChanged, 1u);
+    // (air's temperature is in no field and no light: beside a lava pit it is most of what changes a tick, and
+    // every 16³ node it marked changed went to F and L, more than their frame could take)
+    if (wcId(w) != E_EMPTY || ((w ^ was) & ~(255u << 16u)) != 0u) { atomicAdd(&wgShown, 1u); }
+  }
   let o = wcCellOwn(w);
   let gas = o.x >> WC_I_GAS_SHIFT;
   if (gas != 0u) { atomicAdd(&wgLow, 1u << WC_I_GAS_SHIFT); }
@@ -692,7 +698,7 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
       wcGAdd(WC_G_SUM_CHANGED, 1u);
       let n = (ob + wb) >> vec3u(2u);
       let r = n - (ob >> vec3u(2u));
-      if (wcGMark(WC_GL_CHGMARK + u32(r.x + WC_CHG_N.x * (r.y + WC_CHG_N.y * r.z)))) {
+      if (atomicLoad(&wgShown) != 0u && wcGMark(WC_GL_CHGMARK + u32(r.x + WC_CHG_N.x * (r.y + WC_CHG_N.y * r.z)))) {
         let i = wcGAdd(WC_G_NCHG, 1u);
         if (i < WC_GL_CHGCAP) { wcGSet(WC_GL_CHG + i, u32(n.x + WC_N1.x * (n.y + WC_N1.y * n.z))); }
         else { wcGAdd(WC_G_CHG_OVER, 1u); }
