@@ -1455,6 +1455,10 @@ function accentFor(hex) {
 
 // the last element or tool picked, for leaving a construction's options
 let lastPaintTool = E.SAND;
+// Warm air / Cool air (elements.js AMB_HEAT, AMB_COOL) paint the air's own temperature, which ambient heat off holds
+// at ambient (TPT's AMBP and AMBM do nothing with its ambient heat off): while one is the tool, ambient heat is on
+// (picked: here, with TPT's toast; a new scene's modes: resetSimModes). simModes.js says why it starts off.
+function airHeatToolPicked(id = settings.tool) { const key = toolById(id)?.key; return key === 'AMB_HEAT' || key === 'AMB_COOL'; }
 function selectTool(id) {
   setEyedropper(false);
   // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
@@ -1470,6 +1474,7 @@ function selectTool(id) {
     return;   // Never save or send starter IDs to the paint shader.
   }
   if (!isBuild(id)) lastPaintTool = id;
+  if (sim && airHeatToolPicked(id) && !settings.ambientHeat) setSimMode('ambientHeat', true, true);
   if (isDecoTool(id) && sim) wire('deco')?.prepare(ctx);   // its passes compile while the colour is picked (src/deco.js)
   settings.tool = id;
   const it = toolById(id);
@@ -1805,7 +1810,7 @@ function setSimModes(modes) {
   applySimModes(sim, settings);
   settingsPanel.sync();
 }
-function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
+function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes, ...(airHeatToolPicked() ? { ambientHeat: true } : null) }); }
 
 function setSettingsOpen(v) {
   if (v) shaderPanel.setOpen(false);

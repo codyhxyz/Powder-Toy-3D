@@ -20,7 +20,7 @@ export function nativeModes(sim) {
   const requestedEdge = mode(sim.edgeMode ?? SIM_MODE_DEFAULTS.edgeMode, EDGE, 'edge mode');
   const setting = sim._gravity ?? sim.gravity ?? GRAVITY_SETTING_REFERENCE;
   const ambient = sim.airT ?? 20;
-  const heat = sim.ambientHeat ?? true;
+  const heat = sim.ambientHeat ?? SIM_MODE_DEFAULTS.ambientHeat;
   if (typeof heat !== 'boolean') throw new TypeError('Native ambientHeat must be boolean');
   if (!Number.isFinite(setting) || setting < 0 || !Number.isFinite(Math.fround(setting / GRAVITY_SETTING_REFERENCE * GRAVITY_MS2))) throw new RangeError('Invalid native gravity magnitude');
   if (!Number.isFinite(ambient)) throw new RangeError('Invalid native ambient temperature');

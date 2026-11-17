@@ -293,7 +293,9 @@ host sets them.
   convection, and matter isn't pushed by pressure, since in TPT particles feel pressure only through the air's velocity);
   off (both); no update (pressure and wind stay where they are, without spreading or fading).
 - **Ambient heat** (`U`): off holds the air at 20 °C, and matter trades no heat with it, so nothing cools in air and
-  convection carries no heat. TPT starts with it off; here it starts on, as the world always was.
+  convection carries no heat. It starts off, as TPT's does: with it on, the air around anything hot is simulated cell by
+  cell and a map with lava or fire slows down as the warm air spreads. `U` turns it on, and so does picking the Warm air
+  or Cool air tool.
 - **Edges**: solid (walls); void (whatever leaves the box is gone, and the air outside is still, at ambient, with no
   pressure, so blasts vent out of the sides); loop (what leaves comes back on the far side, along all three axes, air,
   heat and reactions included: TPT's air doesn't wrap, but ours lives on the same cells as matter). World keeps solid

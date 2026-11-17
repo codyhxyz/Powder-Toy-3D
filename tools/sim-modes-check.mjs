@@ -146,14 +146,14 @@ try {
 
     // ambient heat: a hot metal block in air
     const hot = async (m) => { modes(m); scene((box) => box(28, 28, 28, 36, 36, 36, 'METAL', { T: 600 })); steps(200); return tally(); };
-    const on = await hot({}), off = await hot({ ambientHeat: false });
+    const on = await hot({ ambientHeat: true }), off = await hot({});   // (off is the default: simModes.js)
     check('ambient heat on: the metal warms the air and cools', on.air.Tmax > 30 && on.METAL.T < 600, { air: on.air.Tmax, metal: on.METAL.T });
     check('ambient heat off: the air stays at ambient, the metal keeps its heat', off.air.Tmax === 20 && off.METAL.T > 599.9, { air: off.air.Tmax, metal: off.METAL.T });
 
     // a fresh scene starts the modes over
-    modes({ gravityMode: GRAV.RADIAL, airMode: AIR.OFF, ambientHeat: false, edgeMode: EDGE.LOOP });
+    modes({ gravityMode: GRAV.RADIAL, airMode: AIR.OFF, ambientHeat: true, edgeMode: EDGE.LOOP });
     a.loadPreset('empty', false);
-    check('a fresh scene starts the modes over', sim.gravityMode === GRAV.VERTICAL && sim.airMode === AIR.ON && sim.ambientHeat && sim.edgeMode === EDGE.SOLID
+    check('a fresh scene starts the modes over', sim.gravityMode === GRAV.VERTICAL && sim.airMode === AIR.ON && sim.ambientHeat === false && sim.edgeMode === EDGE.SOLID
       && a.settings.gravityMode === GRAV.VERTICAL, { g: sim.gravityMode, air: sim.airMode, heat: sim.ambientHeat, edge: sim.edgeMode });
     return out;
   });

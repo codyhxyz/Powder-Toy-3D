@@ -39,7 +39,14 @@ export const EDGE = { SOLID: 0, VOID: 1, LOOP: 2 };
 
 // The settings keys that belong to a saved world (save/load stores these with it).
 export const SIM_MODE_KEYS = ['gravityMode', 'airMode', 'ambientHeat', 'edgeMode'];
-export const SIM_MODE_DEFAULTS = { gravityMode: GRAV.VERTICAL, airMode: AIR.ON, ambientHeat: true, edgeMode: EDGE.SOLID };
+// Ambient heat starts off, as The Powder Toy's does (Simulation.cpp aheat_enable = 0: "ambient heat simulation"
+// is an option the player turns on). On, every air cell near anything hot holds its own temperature, and the
+// block pass (shaders/v2.js) runs its full rules on all of it: measured on the Lab (2026-11-16), 300 ticks after
+// boot the pass ran 152,686 of the box's 262,144 cubes, about nine in ten of them nothing but warm air, and the
+// warm air kept spreading (73,783 cubes at tick 100), so a tick cost ~23 ms and the game ran at a quarter speed
+// and slower the longer it was played. Off, air stays at ambient and all-air cubes are the pass's zero-work
+// identity. U (keys.js) and Settings turn it on; the Warm air / Cool air tools turn it on themselves (app.js).
+export const SIM_MODE_DEFAULTS = { gravityMode: GRAV.VERTICAL, airMode: AIR.ON, ambientHeat: false, edgeMode: EDGE.SOLID };
 
 // labels, in TPT's order and words (GameController.cpp SwitchGravity, SwitchAir, SetEdgeMode)
 export const GRAV_LABELS = [[GRAV.VERTICAL, 'Vertical'], [GRAV.OFF, 'Off'], [GRAV.RADIAL, 'Radial']];
