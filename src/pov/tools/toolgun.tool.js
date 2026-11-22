@@ -1,6 +1,7 @@
 import { attachModel, jagexColor } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { gear } from './catalog.js';
+import { builderNote } from '../hud.js';
 
 // Tool gun: Garry's Mod's gmod_tool. Whatever the spawn menu (Q) picked last,
 // an element, a brush tool, a construction or a spawner, it does what a click
@@ -11,6 +12,7 @@ import { gear } from './catalog.js';
 //   left (hold)   spawn: an element pours while held, a construction or a spawner is set per click
 //   right (hold)  erase: The Powder Toy's right button draws its secondary
 //                 element, which starts as nothing (an eraser)
+//   shape mode   left sets/advances a selection, right starts a cut or cancels
 //   middle        pick up what you aim at (Minecraft creative's pick block): app.js
 //
 // An NPC's kit (createKit) has no env.toolGun: the gun is carried but does nothing.
@@ -41,7 +43,7 @@ export default {
         hand.visible = true;
         rig.update(ctx);
         if (!gun) return;
-        gun.aim();   // the brush and the construction ghost follow the crosshair this frame
+        gun.aim(ctx.toolUse);   // the brush and the construction ghost follow the crosshair this frame
         const item = gun.item;
         if (screen && item && item.color !== shown) { screen.material.color.copy(jagexColor(item.color)); shown = item.color; }
         if (down && !ctx[down]) letGo();
@@ -57,11 +59,12 @@ export default {
       // what it holds, by the crosshair (GMod's tool gun shows its mode on its screen and the HUD)
       readout() {
         const item = gun?.item;
-        return item ? { name: item.name, color: item.color, note: 'Q to change' } : null;
+        const builder = gun?.builder;
+        return item ? { name: item.name, color: item.color, note: builder ? builderNote(builder) : 'Q to change' } : null;
       },
-      deselect() { hand.visible = false; letGo(); },
-      worldReplaced() { letGo(); },
-      dispose() { letGo(); screen?.material.dispose(); mesh.dispose(); hand.removeFromParent(); },
+      deselect() { hand.visible = false; letGo(); gun?.cancel(); },
+      worldReplaced() { letGo(); gun?.cancel(); },
+      dispose() { letGo(); gun?.cancel(); screen?.material.dispose(); mesh.dispose(); hand.removeFromParent(); },
     };
   },
 };

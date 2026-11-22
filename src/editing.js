@@ -1,5 +1,6 @@
 import { ELEMENTS, E } from './elements.js';
 import { PHYS } from './physics.js';
+import { planeRoots, rayPoint } from './gfx/presentationMath.js';
 
 // The Powder Toy's editing tools in 3D (TPT: src/simulation/Editing.cpp,
 // src/gui/game/tool/PropertyTool.cpp, src/gui/game/GameView.cpp):
@@ -105,21 +106,96 @@ export function parseProp(field, text) {
 }
 
 // ---- line and box (TPT's DrawLine and DrawRect) ----
-// A box from two corner points on the paint plane (Ctrl-drag): TPT's
-// CreateBox fills every cell between its corners; here that footprint, as
-// tall as the brush (2 × radius, centred on the plane, so it sits on the
-// surface that was clicked as the brush does), the way a WorldEdit cuboid
-// selection spans its two corners. As the paint pass reads it: a centre and
-// how far the box reaches past a brush of that radius along each axis
-// (grow), with its half size and the cells it covers [lo, hi) for the ghost.
-export function boxFromCorners(a, b, radius, dims) {
-  const lo = [Math.floor(Math.min(a.x, b.x)), 0, Math.floor(Math.min(a.z, b.z))];
-  const hi = [Math.floor(Math.max(a.x, b.x)) + 1, 0, Math.floor(Math.max(a.z, b.z)) + 1];
-  lo[1] = a.y - radius; hi[1] = a.y + radius;
-  if (dims) for (let k = 0; k < 3; k++) { lo[k] = Math.max(lo[k], 0); hi[k] = Math.min(hi[k], dims[k]); }
-  const half = lo.map((v, k) => Math.max((hi[k] - v) / 2, 0));
-  const center = { x: (lo[0] + hi[0]) / 2, y: (lo[1] + hi[1]) / 2, z: (lo[2] + hi[2]) / 2 };
-  return { center, half, grow: half.map((h) => h - radius), lo, hi };
+// WorldEdit's cuboid selection includes both clicked cells. Internally the
+// outside faces are [lo, hi), so even a one-cell-wide slab is exact. The
+// shared paint kernel takes its half extent as radius + grow on each axis.
+export function boxFromCorners(a, b, radius) {
+  const lo = a.map((v, i) => Math.min(v, b[i]));
+  const hi = a.map((v, i) => Math.max(v, b[i]) + 1);
+  const size = hi.map((v, i) => v - lo[i]);
+  const half = size.map(v => v / 2);
+  const center = lo.map((v, i) => v + half[i]);
+  return { center, size, half, grow: half.map(h => h - radius), lo, hi };
+}
+
+export const boxShellThickness = radius => Math.max(1, Math.round(radius));
+// CPU reference for strokeDist's box-shell test (shaders/passes.js).
+export const boxContains = ({ lo, hi }, cell, shell = 0) =>
+  cell.every((v, i) => v >= lo[i] && v < hi[i]) &&
+  (!shell || cell.some((v, i) => Math.min(v - lo[i], hi[i] - 1 - v) < shell));
+
+// Axis snap, like TPT's constrained line, in three dimensions. Keeping the
+// largest component means exactly one row of cells at the minimum brush size.
+export function snapLine(a, b) {
+  const delta = b.map((v, i) => Math.abs(v - a[i]));
+  const axis = delta.indexOf(Math.max(...delta));
+  return a.map((v, i) => i === axis ? b[i] : v);
+}
+export const lineRadius = radius => radius - 0.5;
+
+export const BUILDER_MODES = ['freehand', 'line', 'box', 'hollow'];
+export const nextBuilderMode = mode => BUILDER_MODES[(BUILDER_MODES.indexOf(mode) + 1) % BUILDER_MODES.length];
+export const builderKind = mode => mode === 'hollow' ? 'box' : mode;
+
+// The same stages serve explicit clicks (either view) and a modified god-view
+// drag (button-up advances the first stage). RMB starts a solid cut when idle
+// and cancels an active selection; LMB advances either a build or a cut.
+export function builderPress(mode, draft, { secondary = false, carve = secondary, cell, face = 2 } = {}) {
+  if (draft) {
+    if (secondary) return { action: 'cancel' };
+    if (draft.phase === 'footprint') return { action: 'extrude', draft: { ...draft, phase: 'extrude', depth: 0 } };
+    return { action: 'commit', draft };
+  }
+  const kind = builderKind(mode);
+  if (kind === 'freehand') return { action: 'freehand' };
+  if (!cell) return { action: 'ignore' };
+  const axis = Math.floor(face / 2), normal = face % 2 ? -1 : 1;
+  const start = cell.map((v, i) => v + (i === axis && !carve ? normal : 0));
+  return { action: 'start', draft: { kind, axis, sign: carve ? -normal : normal, start, end: start, depth: 0,
+    plane: cell[axis] + (normal > 0 ? 1 : 0), phase: kind === 'box' ? 'footprint' : 'line', carve, hollow: kind === 'box' && mode === 'hollow' && !carve } };
+}
+
+export function previewBuilder(draft, { point, depth }, lo, hi) {
+  const { phase, axis, start, sign } = draft;
+  const limit = (v, i) => Math.max(lo[i], Math.min(hi[i] - 1, v));
+  if (phase === 'extrude') {
+    const maxDepth = sign > 0 ? hi[axis] - 1 - start[axis] : start[axis] - lo[axis];
+    return { ...draft, depth: Math.min(maxDepth, Math.max(0, Math.round(depth))) };
+  }
+  // Snap before clipping so an out-of-bounds aim does not switch which axis won.
+  const b = point.map(Math.floor);
+  const end = (phase === 'line' ? snapLine(start, b) : b.map((v, i) => i === axis ? start[i] : v)).map(limit);
+  return { ...draft, end };
+}
+
+// Intersect the visible ray, including the presentation bend, in world cells.
+export function builderPlanePoint(ray, axis, level) {
+  const t = planeRoots(ray, axis, level).find(v => Number.isFinite(v) && v >= 0);
+  return t == null ? null : rayPoint(ray, t);
+}
+
+// The extrusion guide is a second plane containing the normal through B,
+// frozen when B is picked. Offset its result by that first aim so the slab
+// starts one cell thick. Looking straight into the face foreshortens its
+// normal, so in that case raising the aim extends the box at the captured depth.
+export function builderExtrudeGuide(draft, ray, dir, up) {
+  const { axis, end } = draft;
+  const tangents = [0, 1, 2].filter(i => i !== axis).sort((a, b) => Math.abs(dir[b]) - Math.abs(dir[a]));
+  const side = tangents[0], level = end[side] + 0.5;
+  const initial = Math.abs(dir[side]) >= 0.2 ? builderPlanePoint(ray, side, level) : null;
+  if (initial) return { side, level, initial: initial[axis] };
+  return { dir, up, reach: Math.max(1, Math.hypot(...end.map((v, i) => v + 0.5 - ray.C[i]))) };
+}
+
+export function builderExtrudeDepth(draft, guide, ray, dir) {
+  if (guide.side == null) return guide.reach * dir.reduce((sum, v, i) => sum + (v - guide.dir[i]) * guide.up[i], 0);
+  const p = builderPlanePoint(ray, guide.side, guide.level);
+  return p ? draft.sign * (p[draft.axis] - guide.initial) : draft.depth;
+}
+
+export function builderBox(draft, radius) {
+  const { start, end, axis, sign, depth } = draft;
+  return boxFromCorners(start, end.map((v, i) => i === axis ? start[i] + sign * depth : v), radius);
 }
 
 // Brush centres covering a stroke, for the particle tools (rays.js), which
