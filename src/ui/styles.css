@@ -125,6 +125,17 @@ button { font: inherit; color: inherit; }
 .toolbar .industry-build { color: #dcbc74; padding-inline: 12px; }
 .toolbar .industry-build.on { background: #dcbc74; color: #1a1408; }
 .toolbar .industry-build[hidden] { display: none; }
+.slice-controls {
+  position: absolute; top: calc(100% + 4px); right: 0;
+  display: flex; align-items: center; gap: 6px; padding: 3px 6px;
+  background: #1b2027; border-radius: 8px; box-shadow: 0 4px 14px #0004; white-space: nowrap;
+}
+.slice-controls[hidden] { display: none; }
+.slice-controls input { width: clamp(5rem, 22vw, 10rem); }
+.slice-caption { font-size: 12px; font-variant-numeric: tabular-nums; }
+@media (max-width: 530px) {
+  .toolbar .icon-btn { width: clamp(25px, 7.8vw, 34px); }
+}
 
 kbd {
   display: inline-grid; place-items: center;

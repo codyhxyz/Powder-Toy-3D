@@ -68,7 +68,7 @@ const sim = {
   load() { events.push('legacy load'); },
 };
 const app = {
-  settings: {}, sim, day: { clock: 0 },
+  settings: {}, sim, day: { clock: 0 }, mapKind: { streamed: false },
   // (mode: the engine a save records; only a pre-cutover build's save says 'v1', forged here)
   get physics() { return { mode, v2: engine }; },
   camState: () => 'pov', setSimModes() {}, resetSimModes() {}, updateSun() {},
@@ -142,17 +142,20 @@ assert.deepEqual((await decodeSave(new DataView(wrapper.buffer, 4, saved.length)
 // window and restored through the actual WorldWindow.loadSaved path.
 sim.origin = { x: 0, y: 0, z: 0, set(x, y, z) { Object.assign(this, { x, y, z }); } };
 sim.dropHistory = () => {};
+sim.loadNative = () => events.push('native load');
 const world = Object.assign(Object.create(WorldWindow.prototype), {
   sim, scene: {}, loaded: true, pending: null, size: [64, 32, 64], epoch: 0,
   store: new BrickStore([16, 8, 16]), nativeStore: new NativeBrickStore([16, 8, 16]), planted: new Uint8Array(16 * 16),
   // main's World render source (src/world/renderSource.js): not under test here
   gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {}, needsLiveCopy() { return false; }, commitStoreRevision() {} }, storeRevisions: new Map(), storeReads: new Set(),
+  leaveQueue: { busy: false, clear() {} },
 });
 const nativeBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 0x12345, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-321));
 world.nativeStore.put(7, nativeBrick); world.planted[4] = 1;
 const worlds = createSaves({
   settings: app.settings, getSim: () => sim, getWin: () => world,
   header: () => ({ name: 'native world', size: 'test', world: { scene: 'island', seed: 9 } }),
+  captureNativeOnly: () => true, nativeLoad: (_h, sections) => !sections.has('cells'),
   prepareCapture: () => engine.ready,
   prepare() { events.push('prepare'); return true; }, finish() {}, onSettings() {},
 });
@@ -168,6 +171,21 @@ for (const change of [h => { h.sections.find(s => s.key === 'worldNativeStore').
   await assert.rejects(worlds.apply(editHeader(worldSave, change)), /[Nn]ative/);
   assert(!events.includes('prepare'), 'native world corruption rejects before any scene mutation');
 }
+events.length = 0;
+const checkpoint = await worlds.captureCheckpoint();
+assert.deepEqual(events, ['compact capture'], 'the checkpoint skips the redundant legacy grid read');
+sim.origin.set(16, 0, 16);
+world.nativeStore.clear(); world.planted.fill(0);
+for (let i = 0; i < 2; i++) {
+  await worlds.restoreCheckpoint(checkpoint, { prepare: () => true });
+  assert.deepEqual([sim.origin.x, sim.origin.y, sim.origin.z], [0, 0, 0]);
+  assert.deepEqual(world.nativeStore.map.get(7), nativeBrick);
+  assert.equal(world.planted[4], 1);
+  assert.deepEqual(restored.cells, state.cells);
+  assert.deepEqual(restored.aux, state.aux);
+  world.nativeStore.clear();
+}
+assert.equal(events.filter(e => e === 'native load').length, 2);
 world.persistenceError = new Error('readback failed');
 await assert.rejects(worlds.capture('must not lose data'), /readback failed/);
 console.log('v2 saves CPU checks passed: raw words/clock/activity, real section + container round trips, V1-made saves import, old saves, native world retained state, pre-mutation corruption rejection');

@@ -2284,11 +2284,16 @@ ${SOURCE_APPEARANCE_ENABLED && sourceAppearance === true ? sourceShadeWGSL : sou
 // own arguments there; what only a surface takes is left out for it.
 fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fd: vec4f) -> vec3f {
   var s = s0;
+  let a = u32(FU.cutaway.z);
+  let section = !onFloor && FU.cutaway.w != 0.0 && abs(s.p[a] - FU.cutaway.x) <= 0.001 && s.ng[a] * FU.cutaway.y > 0.99;
+  // Removed material still exists for physical lighting. Fill the inspection
+  // face so a shadow from the hidden half cannot make its layers unreadable.
+  let sectionFill = select(vec3f(0.0), s.albedo * 0.25, section);
   if (!onFloor) {
     digMark(&s);
     if (s.sourceKind != 0u) {
-      return sourceShade(worldPos(s.p), normalize(s.sourceNormal), rd, s.albedo, s.rough, s.metal, s.f0, s.sourceKind, s.sourceFlags) + s.emit
-        + s.albedo * (sampleLight(s.p) * FU.lightGain + wandLight(s.p));
+      return sourceShade(worldPos(s.p), select(normalize(s.sourceNormal), s.ng, section), rd, s.albedo, s.rough, s.metal, s.f0, s.sourceKind, s.sourceFlags) + s.emit
+        + s.albedo * (sampleLight(s.p) * FU.lightGain + wandLight(s.p)) + sectionFill;
     }
   }
   let up = vec3f(0.0, 1.0, 0.0);
@@ -2410,7 +2415,7 @@ fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fd: vec4f) -> vec3f 
     c += kL * lit.diff + lit.spec * msK;
     lamps = lit.diff;
   }
-  var shaded = c + s.emit;
+  var shaded = c + s.emit + sectionFill;
   if (onFloor) {
     // the floor: its grid's albedo, lit by the sun from straight overhead's share and the rest as above
     shaded = floorAlb(fhp, fd) * (FU.sunCol * max(FU.sun.y, 0.0) * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT) + lamps);

@@ -214,7 +214,7 @@ export class NativeParticles {
    * @returns {boolean} recorded (false: nothing flies, or the pass is building)
    */
   // shift: the rays' frame less the window's cells; transient: a one-pick output buffer, whose group isn't kept
-  recordPick(frame, { ring, ro, rd, slot, n, origin, shift = [0, 0, 0], transient = false }) {
+  recordPick(frame, { ring, ro, rd, slot, n, origin, shift = [0, 0, 0], cutaway = [], transient = false }) {
     if (!this.isReady || this.pickPipe.state !== 'ready' || this.source.isIdle === true || this.source.active === false || !(n > 0)) return false;
     if (n > PICK_RAYS) throw new RangeError('native particle pick batch too large');
     const s = validateNativeParticleSource(this.state);
@@ -228,7 +228,7 @@ export class NativeParticles {
     const group = cached ? cached.group : make();
     const air = this.air();
     this.pickPipe.dispatch(frame,[n,1,1],{ bind: [this.fu.group,group,air.group],
-      params: { ro, rd, slot, n, origin: vector(origin), capacity: s.capacity, shift: vector(shift), lag: this.view?.lag ?? 0, ...air.params } });
+      params: { ro, rd, cutaway, slot, n, origin: vector(origin), capacity: s.capacity, shift: vector(shift), lag: this.view?.lag ?? 0, ...air.params } });
     return true;
   }
   dispose() {

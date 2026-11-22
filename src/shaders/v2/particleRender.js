@@ -1,3 +1,4 @@
+import { cutawayWGSL } from '../../cutaway.js';
 import { ELEMENTS, K, R } from '../../elements.js';
 import { LOOK, MEDIA } from '../../gfx/materials.js';
 import { INCAND_KNOTS, incandescenceGLSL } from '../../gfx/incandescence.js';
@@ -245,6 +246,7 @@ fn blockyFragment(o: Out, eye: vec3f, direction: vec3f) -> Surface {
   }
   let depth = hitClip.z / hitClip.w;
   if (depth < 0.0 || depth > 1.0 || hitClip.w <= 0.0) { discard; }
+  if (!cutawayKeepsPoint(hit, FU.cutaway)) { discard; }
   var n = vec3f(0.0);
   n[axis] = sgn;
   let id = o.id;
@@ -289,6 +291,7 @@ fn coverageHash(input: u32) -> u32 {
 // Pure presentation: never write or reorder the native physics records.
 export const nativeParticleWGSL = (rays = false) => /* wgsl */ `
 ${frameBindings()}
+${cutawayWGSL}
 ${NativeParticleParams.wgsl}
 @group(3) @binding(1) var<uniform> P: NativeParticleParams;
 // Three vec4u preserve the exact 48B mixed float/integer ABI (no padding).
@@ -387,6 +390,7 @@ struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${r
   }
   let depth = hitClip.z / hitClip.w;
   if (depth < 0.0 || depth > 1.0 || hitClip.w <= 0.0) { discard; }
+  if (!cutawayKeepsPoint(hit, FU.cutaway)) { discard; }
   var out: Surface; out.depth = depth;
   ${rays ? `
   let falloff = d / (o.radius*o.radius);
@@ -452,6 +456,7 @@ const PICK_THREADS = 64;
 const PICK_FACE_FLOOR = 2;    // render.js pickFrag PICK_FACE_FLOOR
 export const ParticlePickParams = uniformStruct('ParticlePickParams', {
   ro: `array<vec4f, ${PICK_RAYS}>`, rd: `array<vec4f, ${PICK_RAYS}>`, slot: `array<vec4u, ${PICK_RAYS / 4}>`,
+  cutaway: `array<vec4f, ${PICK_RAYS}>`,
   origin: 'vec3f', n: 'u32', grid: 'vec4u', supers: 'vec4u', capacity: 'u32', lag: 'f32',
   // the rays' frame less the window's cells: 0 for the volume's pick (window cells)
   shift: 'vec3f',
@@ -459,6 +464,7 @@ export const ParticlePickParams = uniformStruct('ParticlePickParams', {
 export const PARTICLE_PICK_LAYOUT = [ro(0, STAGE.COMPUTE), { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const particlePickWGSL = () => /* wgsl */ `
 ${frameBindings()}
+${cutawayWGSL}
 ${ParticlePickParams.wgsl}
 @group(3) @binding(1) var<uniform> P: ParticlePickParams;
 struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
@@ -529,7 +535,7 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
     for (var i = li; i < P.capacity; i += ${PICK_THREADS}u) {
       var nrm: vec3f;
       let t = pickParticle(i, ro, rd, P.rd[r].w != 0.0, &nrm);
-      if (t >= 0.0 && t < best) { best = t; bestI = i; }
+      if (t >= 0.0 && t < best && cutawayKeepsPoint(ro + rd * t, P.cutaway[r])) { best = t; bestI = i; }
     }
   }
   wgT[li] = best;

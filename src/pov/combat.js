@@ -111,6 +111,10 @@ export function createCombat(shell) {
 
   return {
     frags,
+    reset() {
+      frags.clear(); queued = red = false; wait = hitT = 0;
+      lob?.dispose(); lob = null;
+    },
     // every POV frame. s: { dt, player, eye, dir (grid, unit), tool (the held key), live (alive, in the eyes, input on), stepsPerFrame }
     update(s) {
       const { dt, player } = s;

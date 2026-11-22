@@ -223,10 +223,10 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * as gfx/volume.js pick resolves them ({ valid, cell (world cells), face, id, T, P, life }). Queued and
      * recorded with the frame's compute (recordPicks), or on its own in a microtask.
      */
-    pick(ro, rd, skipLiquids = false) {
+    pick(ro, rd, skipLiquids = false, cutaway = [0, 0, 0, 0]) {
       if (!view.picks) return Promise.reject(new Error('world pick: no world copy'));
       const v3 = (v) => (Array.isArray(v) ? [...v] : [v.x, v.y, v.z]);
-      const p = new Promise((resolve, reject) => picker.queue.push({ ro: v3(ro), rd: v3(rd), skipLiquids, resolve, reject }));
+      const p = new Promise((resolve, reject) => picker.queue.push({ ro: v3(ro), rd: v3(rd), skipLiquids, cutaway, resolve, reject }));
       if (!picker.scheduled) {
         picker.scheduled = true;
         queueMicrotask(() => { picker.scheduled = false; if (!disposed && picker.queue.length) recordPicksQuietly(); });
@@ -250,7 +250,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
             bind: [sim.tables, copy, picker.group],
             params: {
               ro: batch.map((b) => [...b.ro, 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
-              warp: batch.map(() => [0, 0, 0, 1]), slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
+              cutaway: batch.map(b => b.cutaway), warp: batch.map(() => [0, 0, 0, 1]), slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
             },
           });
         } catch (e) {
@@ -381,6 +381,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       if (!windowValues) frame.camera.updateMatrixWorld();
       const values = frameUniformValuesFor(windowValues ?? frameUniformValues(frame), frame.camera, worldModelMatrix(frame.model, o));
       const shift = (v) => { v[0] += o[0]; v[1] += o[1]; v[2] += o[2]; };
+      if (values.cutaway[3]) values.cutaway = [values.cutaway[0] + o[values.cutaway[2]], ...values.cutaway.slice(1)];
       values.lampPos.forEach(shift);
       for (const w of values.wandLightPosition) { w.x += o[0]; w.y += o[1]; w.z += o[2]; }
       if (values.digMax[3] > 0) { shift(values.digMin); shift(values.digMax); }
