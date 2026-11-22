@@ -31,6 +31,7 @@ const pov = {
       get nativeToolSteps() { return app.nativeToolSteps; },
       coopMove: (after) => app.coopMove?.(after),
       getSim: () => app.sim, getVolume: () => app.volume, getScale: () => app.scale,
+      checkpointRestoring: app.checkpointRestoring,
       hover: app.hover, pointerHover: () => app.pointerInside && !app.uiHover, pickRay: app.pickRay,
       presentationPoint: app.presentationPoint,   // a grid point where a presentation effect shows it (the aim's displayed eye)
       getSpawners: () => app.spawners,

@@ -1,3 +1,4 @@
+import { cutawayWGSL } from '../cutaway.js';
 import { BLOCK_PLAIN_ABSORB, BLOCK_PLAIN_ADD, blockClassesWGSL, blockVisibilityWGSL, blockFaceMetadataWGSL, blockFaceAOWGSL, blockLookConstantsWGSL, blockLookHelpersWGSL, blockLookWGSL } from './blockPlainShared.js';
 // The blocks renderer's WGSL (the Plain view; gfx/blocks.js runs it): the
 // world drawn as the visible faces of its cells, the way Minecraft draws its
@@ -75,6 +76,7 @@ export const MeshParams = uniformStruct('MeshParams', {
   capT: 'u32',   // ... and the translucent half (it starts at capO)
   edge: 'u32',   // 1: a world's window (beyond its x and z sides is more ground: no faces there); 0: a box (air)
   slot: 'u32',   // finish: the readback ring's slot for the raw counts
+  cutaway: 'vec4f',
 });
 /** The sun's shadow map: texels per side for grid g. */
 export const sunMapRes = (g) => Math.min(2048, Math.max(1024, 16 * Math.max(g.nx, g.ny, g.nz)));
@@ -190,6 +192,7 @@ const CLASSES_WGSL = blockClassesWGSL;
 export const meshWGSL = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${MeshParams.wgsl}
+${cutawayWGSL}
 @group(3) @binding(1) var<uniform> P: MeshParams;
 ${FACE_WGSL}
 @group(2) @binding(0) var<storage, read_write> faces: array<Face>;
@@ -202,6 +205,7 @@ ${CLASSES_WGSL}
 // box (and a world's bedrock) is opaque, the sky above is air, beyond a box's
 // sides is air and beyond a world window's is more ground.
 fn classAt(c: vec3i) -> u32 {
+  if (!cutawayKeepsCell(c, P.cutaway)) { return CL_NONE; }
   if (c.y < 0) { return CL_OPAQUE; }
   if (c.y >= NY) { return CL_NONE; }
   if (c.x < 0 || c.z < 0 || c.x >= NX || c.z >= NZ) { return select(CL_NONE, CL_OPAQUE, P.edge != 0u); }
@@ -227,8 +231,8 @@ var<workgroup> wgBase: array<u32, 2>;
     let a = fetchAs(s);
     let id = eid(a);
     let me = classOf(id);
-    if (me != CL_NONE) {
-      let p = cellOf(s);
+    let p = cellOf(s);
+    if (me != CL_NONE && cutawayKeepsCell(p, P.cutaway)) {
       k = select(1u, 0u, me == CL_OPAQUE);
       pos = u32(p.x) | (u32(p.y) << 10u) | (u32(p.z) << 20u);
       heat = pack2x16float(vec2f(a.y, a.z));
@@ -294,6 +298,7 @@ ${prelude(g, { state: false })}
 ${frameBindings()}
 ${materialsGLSL()}
 ${BlockDrawParams.wgsl}
+${cutawayWGSL}
 @group(3) @binding(1) var<uniform> P: BlockDrawParams;
 ${FACE_WGSL}
 @group(1) @binding(0) var<storage, read> faces: array<Face>;
@@ -378,6 +383,7 @@ struct FloorOut {
 @fragment fn fsFloor(v: FloorOut) -> @location(0) vec4f {
   let q = v.grid.xz / BK_FLOOR_GRID;
   let w = max(fwidth(q), vec2f(1e-4));
+  if (!cutawayKeepsPoint(v.grid, FU.cutaway)) { discard; }
   let gq = abs(fract(q - 0.5) - 0.5) / w;
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
   var c = BK_GROUND_ALB * (FU.sunCol * max(FU.sun.y, 0.0) * sunVisible(v.grid, vec3f(0.0, 1.0, 0.0)) + FU.skyUp) + FU.caveAmbient;

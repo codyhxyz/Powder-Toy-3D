@@ -20,6 +20,7 @@ import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.j
 import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
 import { glassWGSL, glassShapeWGSL } from './gfx/glass.js';
 import { presentationNearWGSL } from './gfx/presentation.js';
+import { cutawayWGSL } from '../cutaway.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
 import { DETAIL, COST, detailDefines, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
@@ -159,6 +160,7 @@ export const VolumeParams = uniformStruct('VolumeParams', {
 // tracer's events, soft blobs and the filmic curve the materials call back
 // (gfx/surface.js shows their stand-ins), its constants, and its params.
 const tracerWGSL = (params = VolumeParams) => /* wgsl */ `
+${cutawayWGSL}
 ${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
 
@@ -226,19 +228,24 @@ const march = (name, air, body, floor, hooks = {}, curved = false) => {
   // the body and hooks run as they do flat, and tEnter, tHit are the displayed
   // ray's t, so the caller's depth is unchanged.
   return /* wgsl */ `
-fn ${name}(ro0: vec3f, rd0: vec3f, t0: f32, ax0: i32) -> DataMarch {
+fn ${name}(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> DataMarch {
   var ro = ro0;
   var rd = rd0;
   var col = vec3f(0.0);
   var trans = 1.0;
   var tHit = -1.0;
-  var ax = ax0;
+  var ax = i32(bh.z);
+  let endT = ${curved ? '1e30' : 'select(1e30, bh.y, FU.cutaway.w != 0.0)'};
   var istp: vec3i;
   var tDelta: vec3f;
   var cell: vec3i;
   var tMax: vec3f;
   ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
+  if (cutawayEnters(ro + rd * t0, rd, FU.cutaway)) {
+    cell = cutawayCell(cell, FU.cutaway);
+    ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+  }
   var prevId = E_EMPTY;
   var lastB = vec3i(-1);
   var occ = 0u;
@@ -259,7 +266,7 @@ ${decl}
     istp = vec3i(sign(rd));
     tMax = vec3f(WARP_INF);
     tMax[exitAxis] = tEnter + chord;` : ''}
-    if (outside(cell)) { break; }
+    if (outside(cell) || tEnter >= endT || !cutawayKeepsCell(cell, FU.cutaway)) { break; }
     let bc = cell / BS;
     if (${curved ? 'true' : 'any(bc != lastB)'}) {   // (curved: every chord, the brick's hooks read its ray)
       lastB = bc;
@@ -275,7 +282,7 @@ ${flush}
       let tB0 = tEnter;
       ${curved ? `tEnter = min(tMax.x, min(tMax.y, tMax.z));
       warpAdvance(&walk);` : 'ax = skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
-      let tB1 = tEnter;
+      let tB1 = min(tEnter, endT);
 ${airBrick}
       prevId = E_EMPTY;
       if (tHit < 0.0 && trans < DATA_DEPTH_TRANS) { tHit = tB0; }
@@ -283,7 +290,7 @@ ${airBrick}
       continue;
     }
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
-    let seg = tExit - tEnter;
+    let seg = min(tExit, endT) - tEnter;
     let a = fetchA(cell);
     let id = eid(a);
     var n = vec3f(0.0);
@@ -303,7 +310,7 @@ ${flush}${curved ? `
   var floorP: vec3f;
   var floorT: f32;
   let onFloor = warpFloor(walk, &floorP, &floorT);` : ''}
-  if (trans >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
+  if (trans >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0 && -ro.y / rd.y <= endT'}) {
     let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
     let hp = ${curved ? 'floorP' : 'ro + rd * tf'};
     col += trans * (${floor});
@@ -730,7 +737,7 @@ const DATA_CODE = { heat: HEAT, pressure: PRESSURE, flow: FLOW, xray: XRAY };
 // became mostly opaque, else where it leaves the box.
 const dataView = (view) => /* wgsl */ `
 fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
-  let m = ${DATA_MARCH[view]}(ro, rd, t0, i32(bh.z));
+  let m = ${DATA_MARCH[view]}(ro, rd, t0, bh);
   var o: VolumeHit;
   let alpha = 1.0 - m.trans;
   o.hit = alpha >= DATA_MIN_ALPHA;
@@ -879,6 +886,12 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   var ax = i32(bh.z);
+  let slice = FU.cutaway;
+  ${curved ? '' : `let sliceEntry = t0 <= bh.x && cutawayEnters(ro + rd * t0, rd, slice);
+  if (sliceEntry) {
+    cell = cutawayCell(cell, slice);
+    ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+  }`}
 
   var col = vec3f(0.0);
   var trans = vec3f(1.0);
@@ -905,14 +918,16 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // this keeps the ways into liquid to one copy: docs/march-spill.md)
   var lightRefAt = false;
   let liqDither = (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * LIQ_ID_DITHER;   // spatiotemporal, not white: no speckle on mixed liquids (noise.js)
-  var bends = 0;
+  // Secondary bent rays would need a fresh interval; keep optical media straight in a slice.
+  var bends = select(0, MAX_BENDS, slice.w != 0.0);
   // Mark terminal surfaces explicitly. On Metal, a post-loop hitK test
   // dropped opaque shading in some lanes, losing both colour and opacity.
   // Use the same boolean for traversal and shading (check-opaque-surface.mjs).
   var stop = false;
   // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
   // tCut is in the current ray's t, which restarts at every bend.
-  var tCut = meshCutT(rd);${curved ? `
+  var tCut = meshCutT(rd);
+  ${curved ? '' : 'if (slice.w != 0.0 && rd[u32(slice.z)] * slice.y > 0.0) { tCut = min(tCut, (slice.x - ro[u32(slice.z)]) / rd[u32(slice.z)]); }'}${curved ? `
   // Depth measures the displayed ray; convert it to the curved path's length.
   // Keep the remaining budget across chords, brick skips and optical restarts.
   var meshBudget = MESH_CUT_NONE;
@@ -965,7 +980,13 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 
 ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cuts it open
   // (unless a mesh stands in front of the wall).
-  if (tEnter < tCut) {
+  var entryId = E_EMPTY;
+  if (sliceEntry) { entryId = eid(fetchA(cell)); }
+  if (sliceEntry && tEnter < tCut && !isGasLike(entryId)) {
+    hitK = HIT_CRISP; stop = true; anyHit = true;
+    hitP = ro + rd * tEnter; hitP[u32(slice.z)] = slice.x; hitPos = hitP;
+    hitN[u32(slice.z)] = slice.y; hitCell = cell; hitId = entryId; hitA = fetchA(cell);
+  } else if (tEnter < tCut && !sliceEntry) {
     let opaque = surfInsideOpaque(phiA);
     let ch = select(select(-1, CH_LIQUID, phiA.x >= SURF_ISO), opaque, opaque >= 0);
     if (ch >= 0) {
@@ -985,7 +1006,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           gSkyIn = skyInAt(probeAt(hp));
         } else {
           // refracted in at the march's first step (liquidInterface(hp, n0, n0, true, lid, false, ...))
-          ifPend = true; ifEntry = true; ifStraight = false; ifFilm = false; ifP = hp; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
+          ifPend = true; ifEntry = true; ifStraight = slice.w != 0.0; ifFilm = false; ifP = hp; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
         }
         lightRef = select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x); lightRefAt = true;   // inside: the map carries the liquid above
         lightY = hp.y;
@@ -1069,8 +1090,16 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     tMax = vec3f(WARP_INF);
     tMax[exitAxis] = chord;
     phiA = surfSample(ro);
-    phiStale = true;` : ''}
-    if (stop | outside(cell)) { break; }
+    phiStale = true;
+    if (tEnter < tCut && cutawayEnters(ro, rd, slice)) {
+      let entryId = eid(fetchA(cell));
+      if (!isGasLike(entryId)) {
+        hitK = HIT_CRISP; stop = true; anyHit = true;
+        hitP = ro; hitP[u32(slice.z)] = slice.x; hitPos = hitP;
+        hitN[u32(slice.z)] = slice.y; hitCell = cell; hitId = entryId; hitA = fetchA(cell);
+      }
+    }` : ''}
+    if (stop | outside(cell) | !cutawayKeepsCell(cell, slice)) { break; }
     if (tEnter >= tCut) { cut = true; break; }${curved ? `
     let bc = cell / BS;
     if (any(bc != lastB)) {
@@ -1641,7 +1670,7 @@ ${!hasLiq && !hasMedia ? '\n      // (out of liquid and media: this variant stop
       var floorT: f32;
       let onFloor = warpFloor(walk, &floorP, &floorT)
         && (meshBudget >= MESH_CUT_NONE || warpArc(walk.ray, 0.0, floorT) < meshBudget);` : ''}
-      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
+      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0 && cutawayKeepsPoint(ro + rd * (-ro.y / rd.y), slice)'}) {
         let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
         floorHp = ${curved ? 'floorP' : 'ro + rd * tf'};${curved ? `
         rd = normalize(warpSlope(walk.ray, tf));` : ''}
@@ -1786,11 +1815,12 @@ struct VolumeFrag {
   gCubicPixAng = gPixAng;${view === 'flow' ? `
   gPix = length(abs(gRdDx) + abs(gRdDy)) * FU.pixScale;   // fwidth(rd), from surfView's derivatives` : ''}
   var o: VolumeFrag;${curved ? `
+  gWarpCutaway = FU.cutaway;
   let walk = warpWalk(ro, rd, P.marchNear);
   let bh = vec3f(walk.spans.xy, f32(walk.axis));
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0 || t0 >= WARP_INF) { discard; return o; }` : `
-  let bh = boxHit(ro, rd);
+  let bh = cutawaySpan(ro, normalize(v.grid - ro), boxHit(ro, rd), FU.cutaway);
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0) { discard; return o; }`}
   let h = traceView(ro, rd, t0, bh);
@@ -1950,6 +1980,7 @@ export const PICK_RESULT_BYTES = 32;
 export const PickParams = uniformStruct('PickParams', {
   ro: `array<vec4f, ${PICK_BATCH}>`,     // ray origins, grid cells; w: the rolling log's k (0: a flat ray)
   rd: `array<vec4f, ${PICK_BATCH}>`,     // directions (normalised here); w: skip liquids
+  cutaway: `array<vec4f, ${PICK_BATCH}>`, // per-ray, in the ray origin's cells
   warp: `array<vec4f, ${PICK_BATCH}>`,   // the rolling log's anchor (xy) and direction (zw), world cells
   slot: `array<vec4u, ${PICK_BATCH / 4}>`,   // each ray's ring slot, four to a vec4u
   n: 'u32',                              // rays queued
@@ -1960,6 +1991,7 @@ export const pickFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${ddaGLSL(g)}
+${cutawayWGSL}
 ${presentationNearWGSL({ skip: false })}
 ${PickParams.wgsl}
 @group(2) @binding(0) var<storage, read_write> picks: array<vec4f>;   // the ring: two per slot
@@ -1974,10 +2006,10 @@ struct Pick {
 fn pickStops(id: i32, skipLiquids: bool) -> bool {
   return !isGasLike(id) && (!skipLiquids || KIND(id) != K_LIQUID);
 }
-fn pickRay(ro: vec3f, rd0: vec3f, skipLiquids: bool) -> Pick {
+fn pickRay(ro: vec3f, rd0: vec3f, skipLiquids: bool, slice: vec4f) -> Pick {
   let rd = safeDir(normalize(rd0));
   let miss = Pick(vec4f(0.0, 0.0, 0.0, -1.0), vec4f(0.0, 0.0, 0.0, -1.0));
-  let bh = boxHit(ro, rd);
+  let bh = cutawaySpan(ro, normalize(rd0), boxHit(ro, rd), slice);
   let t0 = max(bh.x, 0.0);
   if (bh.y <= t0) { return miss; }
   var istp: vec3i;
@@ -1986,10 +2018,14 @@ fn pickRay(ro: vec3f, rd0: vec3f, skipLiquids: bool) -> Pick {
   var tMax: vec3f;
   ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var ax = i32(bh.z);
+  if (t0 <= bh.x && cutawayEnters(ro + rd * t0, rd, slice)) {
+    cell = cutawayCell(cell, slice);
+    ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+  }
   // Exact cell traversal: one ray is cheap, and it must not depend on the
   // presentation's brick map (a preview or a one-off pick can precede its rebuild).
   for (var i = 0; i < MAX_STEPS; i++) {
-    if (outside(cell)) { break; }
+    if (outside(cell) || !cutawayKeepsCell(cell, slice)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
     if (pickStops(id, skipLiquids)) {
@@ -1998,7 +2034,7 @@ fn pickRay(ro: vec3f, rd0: vec3f, skipLiquids: bool) -> Pick {
     }
     ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
-  if (cell.y < 0 && rd.y < 0.0) {
+  if (cell.y < 0 && rd.y < 0.0 && cutawayKeepsPoint(ro + rd * (-ro.y / rd.y), slice)) {
     // floor hit
     return Pick(vec4f(f32(cell.x), -1.0, f32(cell.z), f32(PICK_FACE_FLOOR)), vec4f(-1.0, AMBIENT, 0.0, 0.0));
   }
@@ -2014,7 +2050,7 @@ fn pickCurved(ro: vec3f, rd: vec3f, skipLiquids: bool) -> Pick {
     let a = fetchA(cell);
     let id = eid(a);
     if (pickStops(id, skipLiquids)) {
-      let axis = warpEntryAxis(walk.ray, walk.t);
+      let axis = walk.axis;
       let face = 2 * axis + select(0, 1, warpSlope(walk.ray, walk.t)[axis] > 0.0);
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
     }
@@ -2024,7 +2060,7 @@ fn pickCurved(ro: vec3f, rd: vec3f, skipLiquids: bool) -> Pick {
     walk.axis = i32(ex.y);
     walk.boundary = true;
     let p = warpAt(walk.ray, walk.t);
-    if (p.y <= WARP_EPS && warpSlope(walk.ray, walk.t).y < 0.0) {
+    if (p.y <= WARP_EPS && warpSlope(walk.ray, walk.t).y < 0.0 && cutawayKeepsPoint(p, gWarpCutaway)) {
       return Pick(vec4f(floor(p.x), -1.0, floor(p.z), f32(PICK_FACE_FLOOR)), vec4f(-1.0, AMBIENT, 0.0, 0.0));
     }
   }
@@ -2034,10 +2070,11 @@ fn pickCurved(ro: vec3f, rd: vec3f, skipLiquids: bool) -> Pick {
 @compute @workgroup_size(${PICK_BATCH}) fn main(@builtin(local_invocation_index) i: u32) {
   if (i >= P.n) { return; }
   var r: Pick;
+  gWarpCutaway = P.cutaway[i];
   if (P.ro[i].w != 0.0) {
     warpUse(P.ro[i].w, P.warp[i].xy, P.warp[i].zw);
     r = pickCurved(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0);
-  } else { r = pickRay(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0); }
+  } else { r = pickRay(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0, P.cutaway[i]); }
   let s = P.slot[i / 4u][i % 4u] * 2u;
   picks[s] = r.at;
   picks[s + 1u] = r.what;

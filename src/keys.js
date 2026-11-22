@@ -45,6 +45,12 @@ export const KEYS = {
   deco: ['Ctrl+b'],       // TPT's
   undo: ['Mod+z'],
   find: ['/'],
+  slice: ['KeyJ'],
+  sliceFlip: ['KeyK'],
+  sliceBack: ['Alt+KeyJ'],
+  sliceForward: ['Alt+KeyK'],
+  checkpointSave: ['KeyN'],
+  checkpointReset: ['KeyM'],
 
   // the simulation and the interface
   escape: ['Escape'],     // closes menus; with none open, pauses (Sandbox) or the menu (a gamemode)

@@ -367,13 +367,13 @@ fn marchSpan(ro: vec3f, rd: vec3f) -> vec3f {
     bh.y = min(bh.y, w.y);
     gMarchExit = w.y;
   }
-  return bh;
+  return cutawaySpan(ro, rd, bh, FU.cutaway);
 }
 // Whether the march draws a ray from t0: never one that comes into the window inside matter (from under
 // the ground outside it), which would draw the box's cut face; the far view's hit, nearer, fills it.
 // Gas is not matter here (the media draw through the face).
 fn marchEnters(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> bool {
-  if (!gMarchFace || t0 > bh.x) { return true; }   // (a small map's walls, as live; the eye or its near clip inside)
+  if (!gMarchFace || t0 > bh.x || cutawayEnters(ro + rd * t0, rd, FU.cutaway)) { return true; }   // (a small map's walls, as live; the eye or its near clip inside)
   if (!isGasLike(wcId(wcCell(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))))))) { return false; }
   let p = ro + rd * t0;
   fieldPickAt(p);
@@ -686,7 +686,8 @@ const marchEpilogueWGSL = (lean, kernel = false) => /* wgsl */ `
     return none;
   }` : ''}
   var floorLit = false;
-  if (!stop && !cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
+  if (!stop && !cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0
+      && cutawayKeepsPoint(ro + rd * (-ro.y / rd.y), FU.cutaway)) {
     let tf = -ro.y / rd.y;
     hitP = ro + rd * tf;   // (the floor's point, in the hit's slot: a pixel on the floor has no other hit)
     if (!anyHit) { anyHit = true; hitPos = hitP; }
@@ -776,7 +777,7 @@ fn shadeView(ro0: vec3f, rd0: vec3f, px: vec2i) -> VolumeHit {
 // floor's test and point are the march's (GB_FLOOR, G0).
 const shadeTail = (tail) => rewrite(tail, [
   ['let owed = reflectResolve();', 'var owed = vec3f(0.0);\n  if ((gf & GB_REFL) != 0u) { owed = textureLoad(gbO, px, 0).xyz; }'],
-  ['cell.y < 0 && rd.y < 0.0', 'gbFloor'],
+  ['cell.y < 0 && rd.y < 0.0 && cutawayKeepsPoint(ro + rd * (-ro.y / rd.y), slice)', 'gbFloor'],
   ['floorHp = ro + rd * tf;', 'floorHp = hitP;'],
 ], 'the realistic tracer\'s shading tail');
 

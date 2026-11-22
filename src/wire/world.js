@@ -149,7 +149,7 @@ const world = {
       if (app.mp.replica || app.win !== w || app.sim !== sim || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
       if (!w.loaded) sim.clear();   // (the blank window it fills, as a box's load starts from)
       w.load(world.worldStart(app));
-      world.buildWorldCopy(app, w);
+      world.buildWorldCopy(app, w)?.catch(err => console.error('world copy: not attached', err));
       app.placeVolume();
       app.post.reset();
       app.pov?.worldReplaced();
@@ -160,10 +160,11 @@ const world = {
 
   // world mode: start the world over with the window at `origin` (world cells)
   worldLoad(app, origin) {
-    if (app.mp.replica) return;
+    if (app.mp.replica || app.checkpointRestoring?.()) return;
     app.resetWeather?.();
+    app.clearCheckpoint?.();
     app.win.load(origin);
-    world.buildWorldCopy(app, app.win);
+    world.buildWorldCopy(app, app.win)?.catch(err => console.error('world copy: not attached', err));
     app.placeVolume();
     app.post.reset();
     app.pov?.worldReplaced();
@@ -174,11 +175,11 @@ const world = {
   buildWorldCopy(app, w) {
     const view = app.worldView;
     if (!view) return;
-    view.build(w).then((copy) => {
+    return view.build(w).then((copy) => {
       if (app.win !== w || !copy?.bindGroup) return;
       w.far?.useWorldCopy?.(copy);   // the far field, built from it and kept current from its changes (world/far.js)
       return w.attachWorldCopy(copy, { wgsl: worldCopyWGSL });
-    }).then(() => app.wakeLoop(), (err) => console.error('world copy: not attached', err));
+    }).then(() => app.wakeLoop());
   },
 
   // World: the window's first origin (world cells): centred on the column its

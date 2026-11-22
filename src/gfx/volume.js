@@ -454,10 +454,10 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @param {boolean} [skipLiquids] Aim through liquids for non-liquid hand tools.
      * @returns {Promise<{ valid: boolean, cell: number[], face: number, id: number, T: number, P: number, life: number, raw: Float32Array }>}
      */
-    pick(ro, rd, warp = null, skipLiquids = false) {
+    pick(ro, rd, warp = null, skipLiquids = false, cutaway = [0, 0, 0, 0]) {
       const v3 = (v) => (Array.isArray(v) ? [...v] : [v.x, v.y, v.z]);
       const w = isCurved(warp) ? { k: warp.k, anchor: [...warp.anchor], dir: [...warp.dir] } : null;   // (as asked: the parameters move with the camera)
-      const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), warp: w, skipLiquids, resolve, reject }));
+      const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), warp: w, skipLiquids, cutaway, resolve, reject }));
       if (!pickScheduled) {
         pickScheduled = true;
         queueMicrotask(() => { pickScheduled = false; if (!disposed && pickQueue.length) recordPicksQuietly(); });
@@ -497,7 +497,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
           slots.forEach((s, i) => { words[i] = s; });
           const rays = {
             ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
-            slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
+            cutaway: batch.map((b) => b.cutaway), slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
           };
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
             bind: [sim.tables, read, pickGroup], header: sim.readHeader({ physical: true }),

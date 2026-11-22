@@ -82,6 +82,7 @@ export const FRAME_UNIFORMS = [
   ['bending', 'u32', 'uBending (bool): real refraction, else a straight look with a nudge'],
   // appended: the small maps' scanned floor (gfx/materials.js FLOOR_TEX; shaders/gfx/surface.js floorAlb)
   ['floorTex', 'f32', 'the floor photo\'s first layer in the material textures, -1 until it loads'],
+  ['cutaway', 'vec4f', 'cell boundary, clipped-side sign, axis, enabled'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));

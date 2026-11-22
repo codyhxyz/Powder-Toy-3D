@@ -322,7 +322,7 @@ export function createPov(app) {
     if (!editing && active() && !app.isTyping()) swapView();
   });
   addEventListener('keydown', (e) => {
-    if (editing || !active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (editing || !active() || app.checkpointRestoring?.() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }   // (Space would scroll the page)
     if (is(e, KEYS.view)) {
       e.preventDefault();
@@ -392,7 +392,7 @@ export function createPov(app) {
   }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
-    if (editing || !active()) return;
+    if (editing || !active() || app.checkpointRestoring?.()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
     if (coop()) { coopHint(); return; }
     if (village.enabled && !village.canAct) return;
@@ -1232,11 +1232,18 @@ export function createPov(app) {
       return vehicles.pending || !!sp?.list.some((s) => !s.consumed && (s.oneShot || !game.running) && ENEMY_KINDS.includes(s.kind) && !npcs.has(s.id)
         && (!kindOfGrid(app.getSim()?.g).streamed || sp.feet(s)));   // (a World's spawner outside the window waits for it)
     },
+    resetPlaytestEffects() {
+      releaseInput();
+      player?.invalidateProbe();
+      combat.reset();
+      toolbelt?.ballistics.clear();
+      vfx?.clear();
+    },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
-    worldReplaced: () => {
+    worldReplaced: ({ preserveMode = false } = {}) => {
       controlGeneration++; app.onWorldReplaced?.();
-      mission.end();
-      village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
+      if (!preserveMode) { mission.end(); village.setEnabled(false); }
+      toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
       for (const n of npcs.values()) { scene.remove(n.root); n.dispose(); }
       npcs.clear();
       npcBallistics?.clear();

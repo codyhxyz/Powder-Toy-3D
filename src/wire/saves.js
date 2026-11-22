@@ -91,7 +91,11 @@ const savesWire = {
     });
     registerSaveSection('physicsV2Dynamics', {
       strict: true,
-      save: () => nativeCapture?.then(s => s.dynamic ? encodeDynamicState(s.dynamic) : undefined),
+      save: () => {
+        const snapshot = nativeCapture;
+        nativeCapture = null;   // do not pin the last checkpoint's readback after it is cleared
+        return snapshot?.then(s => s.dynamic ? encodeDynamicState(s.dynamic) : undefined);
+      },
       validate: (data, h) => {
         const listed = h.sections?.some(s => s.key === 'physicsV2Dynamics');
         if (h.nativeDynamicsVersion !== undefined && h.nativeDynamicsVersion !== 1) throw new Error('Unsupported native dynamics save version');
@@ -121,6 +125,7 @@ const savesWire = {
         await app.physics.v2?.ready;
         await app.electronics?.settle();
       },
+      captureNativeOnly: () => app.physics.mode === 'v2' && app.physics.v2?.isReady && app.physics.v2 === app.sim.compact,
       nativeLoad: nativeSaveLoad(app),
       header: () => {
         if (app.electronics?.pending) throw new SaveRefused('Wait for physical control activation before saving.');
@@ -138,16 +143,18 @@ const savesWire = {
       },
       thumbnail: () => saveThumbnail(app),
       prepare: (h) => prepareSave(app, h),
-      finish: () => {
+      finish: async (_header, checkpointOptions) => {
         if (app.mapKind.streamed) app.placeVolume();
         app.post.reset();
-        app.pov?.worldReplaced();
+        app.pov?.worldReplaced({ preserveMode: !!checkpointOptions });
+        checkpointOptions?.onRestored();
         app.toolbar.setUndoEnabled(app.gamemode !== 'factory' && app.sim.canUndo);
         app.dock.sync();
         app.hud.setPaused(settings.paused);
         app.settingsPanel.sync();
         app.save();
         app.requestRender();
+        if (checkpointOptions?.rebuildWorld) await app.rebuildWorldCopy();
       },
       onSettings: () => { app.sim.gravity = settings.gravity; },
     });
@@ -177,6 +184,66 @@ const savesWire = {
     });
     registerSaveSection('spawners', { save: () => app.spawners?.toJSON(), load: (d) => app.spawners?.fromJSON(d) });
     registerSaveSection('perkOrbs', { save: () => app.perkOrbs?.toJSON(), load: (d) => app.perkOrbs?.fromJSON(d) });
+  },
+
+  async captureCheckpoint(app) {
+    if (saving || loadingSave) throw new SaveRefused('Wait for the current save or load');
+    if (app.industry?.pending) throw new SaveRefused('Wait for the current Industry transfer');
+    const sim = app.sim, win = app.win;
+    const player = app.pov?.active && app.pov.player;
+    const feet = player ? player.pos.clone().add(sim.origin) : null;
+    const sea = app.boxSea, worldIdentity = win?.historyIdentity;
+    saving = true;
+    try {
+      const state = await saves.captureCheckpoint();
+      return { state, sim, win, worldIdentity, shift: win?.last, feet, sea };
+    } finally { saving = false; }
+  },
+  async restoreCheckpoint(app, checkpoint, valid) {
+    if (saving || loadingSave) throw new SaveRefused('Wait for the current save or load');
+    if (app.industry?.pending || app.electronics?.pending) throw new SaveRefused('Wait for the current machine or control operation');
+    const { state, sim, win, feet, sea } = checkpoint;
+    const sameMap = () => valid() && app.sim === sim && app.win === win && win?.historyIdentity === checkpoint.worldIdentity
+      && app.settings.preset === (state.header.preset ?? app.settings.preset)
+      && app.mp.role === 'solo' && !app.mp.replica;
+    if (!sameMap()) return false;
+    loadingSave = true;
+    const release = win?.acquireReadLock();
+    try {
+      await Promise.all([sim.nativeTransition, app.physics.v2?.integrationReady, app.physics.v2?.dynamicsReady]);
+      while (win?.pending || sim.deco?.pending) await Promise.all([win?.pending, sim.deco?.pending]);
+      if (!sameMap()) return false;
+      const origin = sim.origin.clone(), pov = app.pov, walking = pov?.active && pov.player;
+      // With no window move, all changes since the checkpoint were resident:
+      // its normal whole-grid writeback refreshes W. Otherwise regenerate W
+      // from the saved retained stores as well, removing abandoned edits.
+      const rebuildWorld = !!win && win.last !== checkpoint.shift;
+      const options = {
+        rebuildWorld,
+        skip: walking ? new Set(['camera']) : null,
+        prepare: () => {
+          if (!sameMap()) return false;
+          app.electronics?.reset();
+          return true;
+        },
+        onRestored() {
+          app.boxSea = sea;
+          if (walking) {
+            const shift = sim.origin.clone().sub(origin);
+            if (shift.x || shift.z) pov.windowShifted(shift.x, shift.z);
+            if (feet) walking.teleport(feet.clone().sub(sim.origin));
+            else walking.invalidateProbe();
+          }
+          pov?.resetPlaytestEffects();
+        },
+      };
+      const header = await saves.restoreCheckpoint(state, options);
+      if (header) {
+        checkpoint.shift = win?.last;
+        checkpoint.worldIdentity = win?.historyIdentity;   // loadSaved also invalidates ordinary terrain history
+      }
+      return !!header;
+    } finally { release?.(); loadingSave = false; }
   },
 
   // Save the game into the Saves list. Resolves to the save's meta (saves/local.js), or null.
@@ -272,6 +339,7 @@ export async function prepareSave(app, h) {
   if (app.mp.guard()) return false;
   if (app.industry?.pending) throw new SaveRefused('Wait for the current Industry transfer before loading.');
   if (app.electronics?.pending) throw new SaveRefused('Wait for physical control activation before loading.');
+  app.clearCheckpoint?.();
   app.electronics?.reset();
   app.painting = false;
   app.pov?.exit(true);   // the body is left out of a save; you come back in the god view

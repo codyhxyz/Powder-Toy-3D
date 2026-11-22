@@ -38,8 +38,7 @@ export class SaveRefused extends Error {}
 export function createSaves(app) {
   const { settings } = app;
 
-  // Capture the game now: resolves to the save's bytes. name: the save's name.
-  async function capture(name) {
+  async function captureState(name, checkpoint = false) {
     const sim = app.getSim(), win = app.getWin();
     const release = win?.acquireReadLock(), identity = win?.historyIdentity;
     try {
@@ -51,15 +50,22 @@ export function createSaves(app) {
         if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
       }
       // the conversion to the atlas order, built before the moment
-      await Promise.all([sim.prepare(sim.saveStatePass ?? 'toAtlas'), app.prepareCapture?.()]);
+      let nativeOnly = false;
+      if (checkpoint) {
+        await app.prepareCapture?.();
+        nativeOnly = !!app.captureNativeOnly?.();
+        if (!nativeOnly) await sim.prepare(sim.saveStatePass ?? 'toAtlas');
+      } else await Promise.all([sim.prepare(sim.saveStatePass ?? 'toAtlas'), app.prepareCapture?.()]);
       // Interaction readbacks can begin during preparation too.
       while (win?.pending || sim.deco?.pending) await Promise.all([win?.pending, sim.deco?.pending]);
+      if (win?.persistenceError) throw new SaveRefused('World readback failed; saving would lose retained material');
       if (sim !== app.getSim() || sim.disposed || win !== app.getWin() || identity !== win?.historyIdentity) throw new SaveRefused('The map changed while saving');
       // ---- from here to the readbacks, one task: everything below is the same moment ----
       const g = sim.g;
       // (V2: its own cells, read as V1's builds read `cells`: sim.readSaveState)
-      const reads = [sim.readSaveState ? sim.readSaveState() : sim.readState()];
-      const scene = app.header(), thumbnail = app.thumbnail?.() ?? null;
+      const scene = app.header();
+      const read = nativeOnly ? null : (sim.readSaveState ? sim.readSaveState() : sim.readState());
+      const thumbnail = checkpoint ? null : app.thumbnail?.() ?? null;
       const header = {
         name, created: new Date().toISOString(), ...scene,
         dims: [g.nx, g.ny, g.nz],
@@ -72,13 +78,26 @@ export function createSaves(app) {
       if (win?.scene.interactionState) core.push({ key: 'worldInteractions', data: win.scene.interactionState.snapshot() });
       const extra = collectSections();
       // ---- (the moment ends) ----
-      const [[A, B], extras] = await Promise.all([reads[0], extra]);
+      const [planes, extras] = await Promise.all([read, extra]);
       header.thumbnail = await thumbnail;
-      const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
-      const sections = [{ key: 'cells', data: cells }, ...core];
-      sections.push(...extras);
-      return await encodeSave(header, sections);
+      return { header, sections: [...core, ...extras], planes, g };
     } finally { release?.(); }
+  }
+
+  async function capture(name) {
+    const { header, sections, planes, g } = await captureState(name);
+    const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), planes);
+    return encodeSave(header, [{ key: 'cells', data: cells }, ...sections]);
+  }
+
+  // A checkpoint never goes through gzip, the file chooser, IndexedDB, or a
+  // thumbnail frame. Native saves already own exact cells, their air state,
+  // and live dynamics; the redundant legacy projection isn't needed here.
+  async function captureCheckpoint() {
+    const { header, sections, planes } = await captureState('Checkpoint', true);
+    header.sections = sections.map(({ key }) => ({ key }));
+    return { header, planes, sections: new Map(sections.map(({ key, data }) =>
+      [key, ArrayBuffer.isView(data) ? data : structuredClone(data)])) };
   }
 
   // Load a save's bytes. Resolves to its header, or null if the app refused
@@ -90,11 +109,16 @@ export function createSaves(app) {
         || header.dims.some(n => !Number.isSafeInteger(n) || n <= 0)
         || !Number.isSafeInteger(header.dims.reduce((a, n) => a * n, 32))
         || cells.length !== header.dims.reduce((a, n) => a * n, 32)) throw new Error('this save has an invalid grid');
+    return applyState({ header, sections });
+  }
+
+  async function applyState({ header, sections, planes }, options = null) {
+    const cells = sections.get('cells');
     if (header.world) decodeWorldState(header.world, header.dims, sections.get('worldStore'), sections.get('worldPlanted'), sections.get('worldNativeStore'));
     else if (['worldStore', 'worldPlanted', 'worldNativeStore', 'decoStore'].some(key => sections.has(key))) throw new Error('World sections require a world');
     validateDecorationState(sections, header);
     await validateSections(sections, header);
-    if (!await app.prepare(header)) return null;
+    if (options ? !(await options.prepare(header, sections)) : !(await app.prepare(header))) return null;
     const sim = app.getSim(), win = app.getWin(), g = sim.g;
     if ([g.nx, g.ny, g.nz].some((n, i) => n !== header.dims[i])) throw new Error(`the save is ${header.dims.join('×')}, the grid ${g.nx}×${g.ny}×${g.nz}`);
     // A save whose V2 section restores V2's exact cells in a session V2 presents (app.nativeLoad):
@@ -102,7 +126,9 @@ export function createSaves(app) {
     const native = !!app.nativeLoad?.(header, sections);
     let fill;
     if (native) fill = () => sim.loadNative();
+    else if (options && planes) fill = () => sim.load(...planes);
     else {
+      if (options) throw new SaveRefused('The checkpoint’s physics engine is not ready');
       const [A, B] = sim.blankState();   // (texels past the last cell keep a blank state's values)
       unpackCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), cells, [A, B]);
       fill = () => sim.load(A, B);
@@ -123,10 +149,10 @@ export function createSaves(app) {
       for (const k of savedSettingKeys()) if (k in saved) settings[k] = saved[k];
       app.onSettings();
     }
-    await applySections(sections, header);
-    app.finish(header);
+    await applySections(sections, header, options?.skip);
+    await app.finish(header, options);
     return header;
   }
 
-  return { capture, apply };
+  return { capture, apply, captureCheckpoint, restoreCheckpoint: applyState };
 }

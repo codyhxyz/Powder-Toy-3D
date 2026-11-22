@@ -39,6 +39,8 @@ export const ICON = {
   reset: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/></svg>',
   sphere: svg('<circle cx="12" cy="12" r="7.5"/><path d="M4.5 12c2 2.2 13 2.2 15 0"/>'),
   cube: svg('<path d="M12 3.5l7.5 4.3v8.4L12 20.5l-7.5-4.3V7.8z"/><path d="M4.5 7.8L12 12l7.5-4.2M12 12v8.5"/>'),
+  slice: svg('<path d="M4 6h16v12H4zM12 3v18M15 8l3 3M15 12l3 3"/>'),
+  checkpoint: svg('<path d="M6 4h12v16l-6-4-6 4zM9 9h6m-3-3v6"/>'),
   replace: svg('<path d="M5 9h11l-3-3M19 15H8l3 3"/>'),
   // an eraser on its edge: specific delete (TPT's SPECIFIC_DELETE)
   eraser: svg('<path d="M14.5 4.5l5 5-9 9H6l-2.5-2.5z"/><path d="M9.5 9.5l5 5M10.5 18.5H20"/>'),

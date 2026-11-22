@@ -55,6 +55,8 @@ import { createCameraRig, bindCameraMouse } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
 import { createMeshFrames } from './gfx/meshFrames.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
+import { cutawayParams, newCutaway } from './cutaway.js';
+import { createCheckpoint } from './checkpoint.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createElementInspector } from './lab/inspector.js';
@@ -394,6 +396,14 @@ function applyOutputRatio() {
 let sim, derived, vol, scale;
 // The material views' march in world cells, on every map (gfx/worldView.js, docs/seamless-world.md)
 let worldView = null;
+let cutaway = newCutaway(), sliceRevision = 0;
+const localCutaway = () => cutawayParams(cutaway, sim.origin.toArray());
+const checkpoint = createCheckpoint({
+  capture: () => wire('saves').captureCheckpoint(ctx),
+  restore: (state, valid) => wire('saves').restoreCheckpoint(ctx, state, valid),
+  onChange: state => { toolbar.setCheckpoint(state); pacer.wake(); },
+});
+const checkpointRestoring = () => checkpoint.state.busy === 'restoring';
 // The blocks renderer (gfx/blocks.js) draws the Plain view (src/views.js):
 // the world as its cells' visible faces, Minecraft's way, and nothing that
 // only feeds the volume's march runs (the derived passes, GI, the volume's
@@ -570,6 +580,9 @@ let replicaMap = null;
 let boxSea = null;
 const STATE_RGBA = 4;   // floats a texel of a CPU-built state: id, °C, life, ctype (sim.js load)
 function build(savedWorldSize = null) {
+  clearCheckpoint();
+  cutaway = newCutaway(); sliceRevision++;
+  toolbar.setSlice(cutaway);
   if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
@@ -748,6 +761,7 @@ function pickedNow(cell, o) {
 
 // Multiplayer guests follow the host's grid size (a box: never World).
 function setGrid(dims, meta = null) {
+  if (checkpointRestoring()) return false;
   // Replica terrain is not proof of this client's authored map identity.
   // Keep its local manifest disabled even if the guest later plays on solo.
   if (mp.replica) savedScenePlaques = [];
@@ -781,6 +795,7 @@ function gridFits(dims) {
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
 function setSize(size, savedWorldSize = null) {
+  if (checkpointRestoring()) return false;
   // Only an explicitly supported historical size can override a map's current size.
   if (savedWorldSize && (!(size in WORLDS) || !sceneByKey(settings.scene).legacySize?.every((n, i) => n === savedWorldSize[i]))) return false;
   if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
@@ -805,6 +820,7 @@ function useMap(m) {
 // The start menu's Start over a running game (src/main.js): the map, loaded
 // fresh (the current one starts over), then its gamemode.
 function openMap(key, mode = 'sandbox') {
+  if (checkpointRestoring()) return false;
   if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key), kind = m && kindOfMap(m);
@@ -851,6 +867,7 @@ function currentMap() {
 // first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  if (checkpointRestoring()) return false;
   // (mapKind.js coopSandboxOnly)
   if (mode !== 'sandbox' && mapKind.coopSandboxOnly && mp.role && mp.role !== 'solo') { hud.toast('World co-op supports Sandbox exploration, not matches or progression.'); return; }
   const epoch = ++modeEpoch;
@@ -950,6 +967,7 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  if (checkpointRestoring()) return false;
   name = freshPresetKey(name);
   if (mp.frozen && undoable) { mp.resumeSolo(); replicaMap = null; }
   if (mp.replica) return false;
@@ -975,6 +993,7 @@ function loadPreset(name, undoable = true) {
       ...(scenePlaques ? { scenePlaques: { preset: settings.preset, records: decodeScenePlaques(scenePlaques) } } : {}),
     };
   }
+  clearCheckpoint();
   settings.preset = name;
   savedScenePlaques = null;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
@@ -1039,7 +1058,7 @@ let releasePending = false;   // its button went up before it had: it stops afte
 let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
 let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
 let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
-let dragY = 0;
+let dragAxis = 1, dragCoord = 0;  // world cells, even if the window shifts
 // A big map's god view works where you aim (Minecraft's simulation distance follows the player; an editor's
 // player is its cursor): a press anywhere on the map brings physics' window there (workFocus, world cells
 // [x, z], wire/world.js godFocus), and it stays while you work there. It goes back to following the eye once
@@ -1092,9 +1111,12 @@ function screenCurve(ray) {
 }
 function screenAt(ray, t, out) { return out.fromArray(rayPoint(screenCurve(ray), t)); }
 // Where the screen's ray meets height `height` (grid cells), or null.
-function screenPlane(ray, height, out) {
-  if (!presentation.active) return ray.intersectPlane(plane.set(plane.normal, -height), out);
-  const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
+function screenPlane(ray, height, out, axis = 1) {
+  if (!presentation.active) {
+    const n = plane.normal.set(0, 0, 0).setComponent(axis, 1);
+    return ray.intersectPlane(plane.set(n, -height), out);
+  }
+  const r = screenCurve(ray), t = planeRoots(r, axis, height).find((x) => x >= 0);
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
 function requestPick() {
@@ -1104,11 +1126,11 @@ function requestPick() {
   const ray = fromPov ? povRay : gridRay();
   const skipLiquids = fromPov && skipPickLiquids();
   pickPending = true;
-  const from = sim, o = sim.origin.clone(), revision = presentation.revision;
+  const from = sim, o = sim.origin.clone(), revision = presentation.revision, slice = sliceRevision;
   const whole = !fromPov && worldAim();   // (the whole map: its cell comes back in world cells)
-  (whole ? worldView.pick(ray.origin.clone().add(o), ray.direction) : vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids)).then((hit) => {
+  (whole ? worldView.pick(ray.origin.clone().add(o), ray.direction, false, cutawayParams(cutaway)) : vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids, localCutaway())).then((hit) => {
     pickPending = false;
-    if (from !== sim || revision !== presentation.revision || skipLiquids !== skipPickLiquids()) return;   // a new grid/effect/tool since
+    if (from !== sim || revision !== presentation.revision || slice !== sliceRevision || skipLiquids !== skipPickLiquids()) return;   // a new grid/effect/tool since
     hover.valid = hit.valid;
     if (hover.valid && whole) hover.cell.fromArray(hit.cell).sub(sim.origin);   // (window cells now; it may lie past the window)
     else if (hover.valid) {
@@ -1131,16 +1153,16 @@ function requestPick() {
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
 // whole: on a big map's god view, the whole map (worldAim): its cell may lie past the window.
 function pickRay(ro, rd, visible = false, whole = false) {
-  const o = sim.origin.clone(), from = sim, revision = presentation.revision;
+  const o = sim.origin.clone(), from = sim, revision = presentation.revision, slice = sliceRevision;
   if (visible && whole && worldAim()) {
-    return worldView.pick(new THREE.Vector3().copy(ro).add(o), rd).then((hit) => {
+    return worldView.pick(new THREE.Vector3().copy(ro).add(o), rd, false, cutawayParams(cutaway)).then((hit) => {
       const cell = new THREE.Vector3().fromArray(hit.cell).sub(sim.origin);
-      return { valid: from === sim && revision === presentation.revision && hit.valid, cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
+      return { valid: from === sim && revision === presentation.revision && slice === sliceRevision && hit.valid, cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
     });
   }
-  return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
+  return vol.pick(ro, rd, visible ? warpNow() : null, false, visible ? localCutaway() : undefined).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
-    return { valid: from === sim && (!visible || revision === presentation.revision) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
+    return { valid: from === sim && (!visible || (revision === presentation.revision && slice === sliceRevision)) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
   });
 }
 
@@ -1148,11 +1170,19 @@ function pickRay(ro, rd, visible = false, whole = false) {
 const isTool = () => settings.tool < 0;
 
 // an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
+function hoverOnSlice() {
+  if (!cutaway.enabled || !hover.valid || hover.id < 0) return false;
+  const { axis, sign, coord } = cutaway;
+  return hover.face === axis * 2 + (sign < 0 ? 1 : 0)
+    && hover.cell.getComponent(axis) + sim.origin.getComponent(axis) + (sign > 0 ? 1 : 0) === coord;
+}
 function hoverBrushCenter(out, tool = settings.tool) {
   const axis = Math.floor(hover.face / 2);
   const sign = hover.face % 2 === 0 ? 1 : -1;
   out.copy(hover.cell).addScalar(0.5);
-  if (tool >= 0 || hover.id < 0) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
+  // On a cut the adjacent cell in the normal direction is hidden. Centre
+  // the brush on the retained face instead, like heat and erase already do.
+  if (!hoverOnSlice() && (tool >= 0 || hover.id < 0)) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
   return out;
 }
 
@@ -1201,7 +1231,7 @@ function updateBrush() {
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
 // Where the pointer's ray meets the paint plane (the height a press started at), if in the grid's window.
 function planePoint(out) {
-  return !!screenPlane(gridRay(), dragY, out) && (!mapKind.streamed || worldAim() || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
+  return !!screenPlane(gridRay(), dragCoord - sim.origin.getComponent(dragAxis), out, dragAxis) && (!mapKind.streamed || worldAim() || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
 }
 
 // ---------------------------------------------------------------- TPT's editing tools (src/editing.js)
@@ -1374,6 +1404,7 @@ function fillAt() {
   const tool = settings.tool, st = brushStroke(tool);
   let cell, id, maxY = sim.g.ny - 1;
   if (tool >= 0 && !settings.replace && !settings.specificDelete) {
+    if (hoverOnSlice()) { hud.toast('Use Replace to fill an exposed material'); return; }
     cell = hover.cell.clone().add(faceNormal(hover.face));
     id = FILL_AIR;
     maxY = Math.floor(hoverBrushCenter(tmpV).y + settings.radius - 0.5);
@@ -1387,7 +1418,8 @@ function fillAt() {
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
   if (mp.isGuest) { mp.fill(req); return; }
-  runFill(sim, req, { openSides: mapKind.fillOpenSides, before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
+  const revision = sliceRevision;
+  runFill(sim, req, { openSides: mapKind.fillOpenSides, valid: () => revision === sliceRevision && !checkpointRestoring(), before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
     .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`, { kind: r.error ? 'error' : 'generic' }); })
     .catch((err) => { console.error('Fill failed', err); hud.toast('The fill failed'); });
 }
@@ -1558,6 +1590,11 @@ function pickHovered() {
 const actions = {
   togglePause: () => setPaused(!settings.paused),
   toggleIndustryBuild: () => ctx.industry?.toggle(),
+  slice: () => changeSlice('cycle'),
+  sliceFlip: () => changeSlice('flip'),
+  sliceDepth: (coord) => changeSlice('depth', coord),
+  saveCheckpoint: () => playtestCheckpoint('save'),
+  resetCheckpoint: () => playtestCheckpoint('reset'),
   undo,
   // (in a world, over where the camera is looking: home is wherever you are)
   resetCamera: () => {
@@ -1595,7 +1632,7 @@ const actions = {
   renderThumb,
 };
 // (greyed out until their subsystems are ported: src/wire)
-const toolbar = createToolbar({ actions, available: { camera: !!wire('pov') } });
+const toolbar = createToolbar({ actions, available: { camera: !!wire('pov'), saves: !!wire('saves') } });
 // Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
 // you're on the world: with the mouse held by the body, or nothing focused (a click on the world
 // lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
@@ -1869,7 +1906,7 @@ function setBlocks(on) {
 }
 
 async function undo() {
-  if (ctx.descent?.terrainPending) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
+  if (ctx.descent?.terrainPending || checkpointRestoring()) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (ctx.electronics?.pending) { hud.toast('Wait for the control interaction before undoing.'); return; }
@@ -1881,6 +1918,7 @@ async function undo() {
   if (restored) {
     if (entry && 'edgeSea' in entry) boxSea = entry.edgeSea;   // (a box's: the sea past its walls when it was taken, build)
     if (shrine) perkOrbs?.removeShrine(shrine);
+    if (note?.scene || note?.industry || note?.scenePlaques) clearCheckpoint();
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     if (note?.industry) {
       settings.preset = note.industry.preset;
@@ -1901,6 +1939,52 @@ async function undo() {
   toolbar.setUndoEnabled(sim.canUndo);
 }
 
+// ---------------------------------------------------------------- playtest controls
+function changeSlice(action, coord) {
+  if (!sim || checkpointRestoring()) return;
+  if (action === 'depth' && !Number.isFinite(coord)) return;
+  const size = win?.size ?? [sim.g.nx, sim.g.ny, sim.g.nz];
+  if (action === 'cycle') {
+    if (cutaway.enabled && cutaway.axis === 2) cutaway = newCutaway();
+    else {
+      const axis = cutaway.enabled ? cutaway.axis + 1 : 0;
+      const origin = sim.origin.getComponent(axis);
+      const span = [sim.g.nx, sim.g.ny, sim.g.nz][axis];
+      const aim = hover.valid ? hover.cell.getComponent(axis) + origin : origin + span / 2;
+      // Open on the work, and remove the side toward the current eye.
+      const depth = Math.max(1, Math.min(size[axis] - 1, Math.round(aim)));
+      const eye = camera.position.clone().applyMatrix4(invVolume.copy(volume.matrixWorld).invert()).getComponent(axis) + origin;
+      cutaway = { enabled: true, axis, sign: eye >= depth ? 1 : -1, coord: depth };
+    }
+  } else if (!cutaway.enabled) return;
+  else if (action === 'flip') cutaway.sign *= -1;
+  else {
+    const depth = Math.max(1, Math.min(size[cutaway.axis] - 1, Math.round(coord)));
+    if (depth === cutaway.coord) return;
+    cutaway.coord = depth;
+  }
+  toolbar.setSlice(cutaway, size[cutaway.axis]);
+  invalidateScreenPicks();
+  meshFrames.drop(); post.reset(); pacer.wake();
+}
+function invalidateScreenPicks() {
+  sliceRevision++; hover.valid = false; pointerPickDirty = true;
+  painting = false; parked = heldCenter = shapeDrag = null;
+}
+function clearCheckpoint() { checkpoint.clear(); }
+async function playtestCheckpoint(action) {
+  if (!wire('saves') || !sim || checkpoint.state.busy || ctx.descent?.terrainPending) return;
+  // A checkpoint rewinds the whole playtest; it is not a network undo.
+  if (mp.role !== 'solo' || mp.replica) { hud.toast('Checkpoints are for solo play'); return; }
+  if (action === 'reset') {
+    if (!checkpoint.state.ready) { hud.toast('No checkpoint saved'); return; }
+    invalidateScreenPicks(); stepOnce = false; workFocus = null;
+  }
+  try {
+    if (await checkpoint[action]()) hud.toast(action === 'save' ? 'Checkpoint saved' : 'Reset to checkpoint');
+  } catch (error) { hud.toast(error.message, { kind: 'error' }); }
+}
+
 // ---------------------------------------------------------------- saves (src/wire/saves.js)
 // ⌘S or the toolbar's Save keeps the game in the Saves list; the map menu's
 // Saves (Esc, ⌘O) loads one. Resolves to the save's meta, or null.
@@ -1911,6 +1995,7 @@ function saveGame(name) {
 }
 // Load a save: a local save's id, or a save file's bytes. Resolves to whether it loaded.
 function openSave(what) {
+  if (checkpointRestoring()) return Promise.resolve(false);
   const s = wire('saves');
   if (!s) { hud.toast(notYet('Loading a save'), { kind: 'error' }); return Promise.resolve(false); }
   return s.openSave(ctx, what);
@@ -2017,7 +2102,7 @@ function warmThumb(viewId) {
 
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
-const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
+const canEraseClick = () => !checkpointRestoring() && !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
   && !signs?.editing && !painting && !shapeDrag;
 // A grid cell's centre in the scene, where the view shows it.
 const cellInScene = (cell) => presentationPoint(cell.clone().addScalar(0.5)).applyMatrix4(volume.matrixWorld);
@@ -2088,6 +2173,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
   else press(e);
 });
 function press(e) {
+  if (checkpointRestoring()) return;
   if (selectedMode === 'factory' || ctx.industry?.building) {
     if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('Use Build for machines, or choose 1st to mine.');
     return;
@@ -2118,7 +2204,9 @@ function press(e) {
   if (clickTool() !== null) return;
   // TPT's PropertyTool does nothing until its window holds a value that reads
   if (settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
-  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
+  dragAxis = hoverOnSlice() ? cutaway.axis : 1;
+  dragCoord = (hover.valid ? hoverBrushCenter(tmpV).getComponent(dragAxis) : isTool() ? 0.5 : settings.radius)
+    + sim.origin.getComponent(dragAxis);
   const mode = drawModeOf(e);
   if (mode === 'fill' && fills(settings.tool)) { fillAt(); return; }
   if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(settings.tool);
@@ -2220,7 +2308,7 @@ const toolGun = {
   aim() { toolGunOut = true; },
   // a button went down: 'stroke' while a stroke runs until release(), 'click' for one-click tools, null if nothing happened
   press({ erase = false } = {}) {
-    if (selectedMode === 'factory' || ctx.industry?.building) return null;
+    if (checkpointRestoring() || selectedMode === 'factory' || ctx.industry?.building) return null;
     if (signs?.editing) { document.activeElement?.blur?.(); return null; }   // as in the god view, the click that ends a sign's edit does nothing else
     if (!erase) {
       const done = clickTool();
@@ -2311,8 +2399,14 @@ function onNextFrame(fn) { frameWaiters.push(fn); pacer.wake(); }
 const wantFrame = () => wantShot || frameWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
-  if (pov?.editingWand) return;
-  if (isTyping()) return;
+  if (pov?.editingWand || isTyping() || checkpointRestoring()) return;
+  if (is(e, KEYS.slice)) { e.preventDefault(); if (!e.repeat) actions.slice(); return; }
+  if (is(e, KEYS.sliceFlip)) { e.preventDefault(); if (!e.repeat) actions.sliceFlip(); return; }
+  if (is(e, KEYS.sliceBack) || is(e, KEYS.sliceForward)) {
+    e.preventDefault(); actions.sliceDepth(cutaway.coord + (is(e, KEYS.sliceBack) ? -1 : 1) * (e.shiftKey ? 8 : 1)); return;
+  }
+  if (is(e, KEYS.checkpointSave)) { e.preventDefault(); if (!e.repeat) actions.saveCheckpoint(); return; }
+  if (is(e, KEYS.checkpointReset)) { e.preventDefault(); if (!e.repeat) actions.resetCheckpoint(); return; }
   const mod = e.metaKey || e.ctrlKey;
   if (is(e, KEYS.undo)) { e.preventDefault(); undo(); return; }
   // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
@@ -2535,6 +2629,7 @@ function frameValues(cam, view, jitter) {
   return {
     camera: cam, model: volume.matrixWorld, sun: SUN, view, shadowRes: vol.shadowRes, time: viewTime, lightGain: GLOW_GAIN,
     shadows: true, sea: win?.P?.sea ?? 0, jitter,
+    cutaway: localCutaway(),
     sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
   };
 }
@@ -2662,7 +2757,9 @@ let frameBoxed = false;
 // cutBox, unsnapped: the far view fades in across its band, shaders/world/reach.js CUT_BAND)
 let frameCut = null;
 function marchBoxed(view, curved) {
-  return !truthView && !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
+  // The exact world copy draws both the window and its distance in a slice.
+  // Do not composite a coarse far-field hit in front of that exposed face.
+  return !cutaway.enabled && !truthView && !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
 }
 // A big map's far view (world/far.js drawPass): its own pass, 'far view', after three's opaque meshes and
 // the world march's stages, before the scene pass, into the scene target with its depth (drew: the meshes
@@ -2773,7 +2870,7 @@ const frameHooks = {
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
-      blocks.update({ sun: SUN });
+      blocks.update({ sun: SUN, cutaway: localCutaway() });
     } else if (frameDerived && worldLit()) {
       windowLightStale = true;   // (L lights this frame and everything in it: worldLit)
     } else if (frameDerived) {
@@ -2936,7 +3033,7 @@ function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
   // A terrain handoff drains GPU snapshots/restores, but no state writer may
   // run meanwhile (paused alone still allows tools, scripts and stepOnce).
-  renderOnly ||= !!ctx.descent?.terrainPending;
+  renderOnly ||= !!ctx.descent?.terrainPending || checkpointRestoring();
   settledSleep = false;
   if (!coreReady && !(mapKind.stepKernelsLater && worldDrawReady)) return false;   // (the grid's pipelines wake the loop when they are built)
   // A big map before its simulation's step kernels are built (build: worldDrawReady): its World
@@ -2947,7 +3044,7 @@ function tick(now, renderOnly = false) {
   const t0 = performance.now();
   lastIdle = false;
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
-  if ((!renderOnly || ctx.descent?.terrainPending || simPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
+  if ((!renderOnly || ctx.descent?.terrainPending || checkpointRestoring() || simPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
   if (prof.on !== settings.profiler) applyProfiler();
   applyOutputRatio();
   prof.beginFrame(now);
@@ -3091,7 +3188,7 @@ function tick(now, renderOnly = false) {
   runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}|${vol.packetShadowKey}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}|${sliceRevision}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
   runView = present && pacer.view(viewV, runDerived || wantFrame() || betweenTicks);
@@ -3267,6 +3364,10 @@ function tick(now, renderOnly = false) {
   get scoreboard() { return scoreboard; }, get prof() { return prof; }, actions,
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
+  clearCheckpoint, checkpointRestoring,
+  cutawayEnabled: () => cutaway.enabled,
+  rebuildWorldCopy: () => wire('world')?.buildWorldCopy(ctx, win),
+  get boxSea() { return boxSea; }, set boxSea(v) { boxSea = v; },
   inspectElement: (key) => elementInspector.show(key),
   getScenePlaques: () => !mp.replica && mapKind.presets && settings.preset === 'preservationLab' ? (savedScenePlaques ?? preservationManifest().plaques) : null,
   setScenePlaques: (records) => { savedScenePlaques = decodeScenePlaques(records); },
