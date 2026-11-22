@@ -43,15 +43,17 @@ test('fresh legacy generation is normalized without mutating a saved snapshot he
 
 test('the actual scene-plaque getter refuses unrelated replica terrain', () => {
   const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  const expression = source.match(/getScenePlaques: \(\) => ([^\n]+)/)[1].replace(/,$/, '');
-  const invoke = new Function('mp', 'mapKind', 'settings', 'preservationManifest', 'savedScenePlaques', `return (${expression});`);
-  const records = [{ elementKey: 'SAND' }], manifest = () => ({ plaques: records });
+  const getter = source.match(/getScenePlaques: ([\s\S]*?),\n  setScenePlaques:/)[1];
+  const invoke = new Function('mp', 'mapKind', 'settings', 'PRESET_PLAQUES', 'savedScenePlaques', `return (${getter})();`);
+  const records = [{ elementKey: 'SAND' }], reactor = [{ text: 'COOLANT ON' }];
+  const manifests = new Map([['preservationLab', () => ({ plaques: records })], ['nuclearReactor', () => ({ plaques: reactor })]]);
   const settings = { preset: 'preservationLab' }, kind = { presets: true };
-  assert.equal(invoke({ replica: true }, kind, settings, manifest), null);
-  assert.equal(invoke({ replica: false }, kind, settings, manifest), records);
-  assert.equal(invoke({ replica: false }, kind, { preset: 'lab' }, manifest), null);
+  assert.equal(invoke({ replica: true }, kind, settings, manifests), null);
+  assert.equal(invoke({ replica: false }, kind, settings, manifests), records);
+  assert.equal(invoke({ replica: false }, kind, { preset: 'nuclearReactor' }, manifests), reactor);
+  assert.equal(invoke({ replica: false }, kind, { preset: 'lab' }, manifests), null);
   const saved = [{ elementKey: 'SAND', cell: [12, 2, 16] }];
-  assert.equal(invoke({ replica: false }, kind, settings, manifest, saved), saved);
+  assert.equal(invoke({ replica: false }, kind, settings, manifests, saved), saved);
 });
 
 test('regeneration then undo restores the old snapshot manifest, independent of Industry', async () => {

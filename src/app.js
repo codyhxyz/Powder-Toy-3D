@@ -47,6 +47,7 @@ import { enterAuthoredMap } from './lab/entry.js';
 import { decodeScenePlaques } from './lab/scenePlaques.js';
 import { preservationManifest } from './lab/preservation/index.js';
 import { destroyableCityManifest } from './scenes/destroyableCity.js';
+import { nuclearReactorManifest } from './scenes/nuclearReactor.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -110,7 +111,12 @@ const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], 
   valley: ARENA_PRESETS.damValley.size };
 // Authored fixed-size presets switch to their grid; ordinary box scenes
 // switch back. Their grids aren't in the Grid size row.
-const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley', destroyableCity: 'valley' };
+const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley', destroyableCity: 'valley', nuclearReactor: 'valley' };
+const PRESET_PLAQUES = new Map([
+  ['preservationLab', preservationManifest],
+  ['destroyableCity', destroyableCityManifest],
+  ['nuclearReactor', nuclearReactorManifest],
+]);
 const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset
 const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
@@ -3270,10 +3276,8 @@ function tick(now, renderOnly = false) {
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
   inspectElement: (key) => elementInspector.show(key),
   getScenePlaques: () => {
-    if (mp.replica || !mapKind.presets) return null;
-    if (settings.preset === 'preservationLab') return savedScenePlaques ?? preservationManifest().plaques;
-    if (settings.preset === 'destroyableCity') return savedScenePlaques ?? destroyableCityManifest().plaques;
-    return null;
+    const manifest = !mp.replica && mapKind.presets && PRESET_PLAQUES.get(settings.preset);
+    return manifest ? (savedScenePlaques ?? manifest().plaques) : null;
   },
   setScenePlaques: (records) => { savedScenePlaques = decodeScenePlaques(records); },
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it

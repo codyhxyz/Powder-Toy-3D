@@ -5,6 +5,7 @@ import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
 import { buildQuarry } from './industry/quarry.js';
 import { buildPreservation, PRESERVATION_SIZE } from './lab/preservation/index.js';
 import { buildDestroyableCity, DESTROYABLE_CITY_SIZE } from './scenes/destroyableCity.js';
+import { buildNuclearReactor, NUCLEAR_REACTOR_SIZE } from './scenes/nuclearReactor.js';
 
 // Arena presets (src/arenas): handmade maps for team games, each built for one
 // grid size (app.js switches to it). Their layouts (spawns, flags, zones...)
@@ -24,6 +25,9 @@ export function buildPreset(name, sim) {
   }
   if (name === 'destroyableCity' && DESTROYABLE_CITY_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
     throw new RangeError(`Destroyable City requires a ${DESTROYABLE_CITY_SIZE.join('×')} grid.`);
+  }
+  if (name === 'nuclearReactor' && NUCLEAR_REACTOR_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
+    throw new RangeError(`Nuclear Reactor requires a ${NUCLEAR_REACTOR_SIZE.join('×')} grid.`);
   }
   const [A, B] = sim.blankState();
   const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
@@ -50,7 +54,9 @@ export function buildPreset(name, sim) {
   if (name === 'preservationLab') {
     layout = buildPreservation({ box, set });
   } else if (name === 'destroyableCity') {
-    buildDestroyableCity({ box, set });
+    layout = buildDestroyableCity({ box, set });
+  } else if (name === 'nuclearReactor') {
+    layout = buildNuclearReactor({ box, set });
   } else if (name === 'quarry') {
     buildQuarry({ g, set, box });
   } else if (name in ARENA_PRESETS) {
