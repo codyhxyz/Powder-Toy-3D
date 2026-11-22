@@ -64,6 +64,15 @@ assert.equal(co[0].args.bind[0], owner.nativeDynamics.group, 'the commit writes 
 assert(calls.indexOf('sync') < calls.indexOf(ev[0]), 'pending edits import before the frozen view is read');
 assert.equal(sim.version, 1); assert.equal(owner.seenVersion, 1, 'a native write is not a legacy edit to import');
 assert(owner.legacyPending && calls.includes('externalWork'));
+// Shell thickness reaches both native brush variants (also used by World).
+for (const [brush, stage] of [['WALL', 'nativePaintEvaluate'], ['VACUUM', 'nativePaintForceForceEvaluate']]) {
+  calls.length = 0;
+  const tool = brush === 'WALL' ? E.WALL : TOOLS.find(t => t.key === brush).id;
+  assert(Simulation.prototype.paint.call(sim, { center, radius: 2, shape: 1, grow: [3, 2, 4], shell: 2, tool, rate: 1 }));
+  const params = calls.find(c => c.name === stage).args.params;
+  assert.equal(params.shell, 2);
+  assert.deepEqual(params.grow, [3, 2, 4]);
+}
 // A big fill splits into chunks: every chunk evaluates before any commits.
 gpu.limits.maxStorageBufferBindingSize = 16 * 16 * 16 * NATIVE_PAINT_RESULT_BYTES;
 calls.length = 0; retired.length = 0;

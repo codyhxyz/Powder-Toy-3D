@@ -1209,6 +1209,77 @@ const defs = [
   { key: 'CONTACTOR', traits: ['electrical-receiver'], abbr: 'CTCT', name: 'Contactor', kind: K.SOLID, render: R.OPAQUE, color: '#394f68', var: 0.04,
     cond: 0.1, cap: 0.85, melt: 1500, meltInto: 'METAL', hard: 60, breakInto: 'SCRAP', sound: 'ping',
     desc: 'Contactor. Machine-input receiver. A touching battery or live conductor renews its short input hold. Never transmits sparks or powers a wire.' },
+  // Ore densities: Handbook of Mineralogy, mineral entries. Hardness is in
+  // pickaxe energy units (30 per blow), not Mohs. Ore conductances are rock
+  // approximations; extracting a metal in one step abstracts crushing and refining.
+  // Hematite: 5.26 g/cm³; cp 104.05 J/(mol·K) at 298 K (Robie & Hemingway,
+  // USGS Bull. 2131, 1995). 1500 °C is the sim's iron/steel smelting point.
+  { key: 'IRON_ORE', abbr: 'FEOR', name: 'Iron ore', kind: K.SOLID, render: R.OPAQUE, color: '#884d3e', var: 0.16,
+    dens: 52.6, cond: 0.065, cap: capOf(5.26, 104.05 / 159.692), melt: 1500, meltInto: 'METAL',
+    hard: 28, breakInto: 'SCRAP', sound: 'crack', mossBed: true,
+    desc: 'Iron ore. Red hematite-rich rock. Breaks into scrap metal and smelts into metal above 1500 °C.' },
+  // Copper (CRC): 8.96 g/cm³, cp 0.385 J/(g·K), k ~400 W/(m·K),
+  // electrical conductivity 5.96e7 S/m, and melting point 1084.62 °C.
+  // Conductance is capped at Metal's practical value; a coal fire is hotter than the melt.
+  { key: 'COPPER', abbr: 'COPR', name: 'Copper', kind: K.SOLID, render: R.OPAQUE, color: '#c37a53', var: 0.05,
+    dens: 89.6, cond: 0.1, cap: 0.82, melt: 1085, hard: 26, breakInto: 'COPPER_SCRAP', sound: 'ping', conducts: true, elec: 5.96e7,
+    desc: 'Copper. Reddish metal, conducts electricity. Breaks into copper scrap. Melts above 1085 °C, just below a coal fire.' },
+  // Malachite: 3.6–4.05 g/cm³ (Handbook of Mineralogy). Copper's melting
+  // point stands in for smelting; the carbonate itself decomposes before that.
+  { key: 'COPPER_ORE', abbr: 'CUOR', name: 'Copper ore', kind: K.SOLID, render: R.OPAQUE, color: '#497965', var: 0.22,
+    dens: 39, cond: 0.035, cap: 0.65, melt: 1085, meltInto: 'COPPER', hard: 18, breakInto: 'COPPER_SCRAP', sound: 'crack', mossBed: true,
+    desc: 'Copper ore. Green malachite and copper in rock. Breaks into copper scrap and smelts into copper above 1085 °C.' },
+  { key: 'COPPER_SCRAP', abbr: 'CUSR', name: 'Copper scrap', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#ab6948', var: 0.14,
+    dens: 89.6, cond: 0.07, cap: 0.82, drag: 0.04, slide: 0.65, melt: 1085, meltInto: 'COPPER',
+    conducts: true, elec: 5.96e7, sound: 'ping',
+    desc: 'Copper scrap. Heavy, conductive fragments. Melts above 1085 °C and sets as solid copper.' },
+  // Rhombic sulfur (CRC, ICSC 1166): 2.07 g/cm³, cp ~0.71 J/(g·K),
+  // k ~0.2 W/(m·K), autoignition ~232 °C. No liquid sulfur here; the
+  // dust burns faster than the crystal and both leave no ash.
+  { key: 'SULFUR', abbr: 'SULF', name: 'Sulfur', kind: K.SOLID, render: R.OPAQUE, color: '#e0bf27', var: 0.12,
+    dens: 20.7, cond: 0.01, cap: capOf(2.07, 0.71), hard: 10, breakInto: 'SULFUR_DUST', sound: 'crack',
+    ignite: 235, burnRate: 0.0025, burnHeat: 4, flameT: 900, life: 1, ash: false,
+    desc: 'Sulfur. Yellow brimstone crystal. Breaks into sulfur dust. Lights at 235 °C and burns without ash.' },
+  { key: 'SULFUR_DUST', abbr: 'SFDT', name: 'Sulfur dust', kind: K.POWDER, dig: 'sand', render: R.OPAQUE, color: '#eace43', var: 0.12,
+    dens: 20.7, cond: 0.008, cap: capOf(2.07, 0.71), drag: 0.04, slide: 0.84,
+    ignite: 235, burnRate: 0.005, burnHeat: 5, flameT: 900, life: 1, ash: false,
+    desc: 'Sulfur dust. Yellow powder, burns without ash at 235 °C. Makes gunpowder with broken coal and acid with water or steam when hot.' },
+  // Halite (CRC): 2.165 g/cm³, cp 0.864 J/(g·K), melting point 801 °C.
+  { key: 'ROCK_SALT', abbr: 'HLTE', name: 'Rock salt', kind: K.SOLID, render: R.OPAQUE, color: '#e3dfd5', var: 0.1,
+    dens: 21.65, cond: 0.07, cap: capOf(2.165, 0.864), melt: 801, meltInto: 'SALT', hard: 10, breakInto: 'SALT', sound: 'crack',
+    desc: 'Rock salt. Pale halite crystal. Breaks into salt and slowly dissolves in water. Melts above 801 °C.' },
+  // Cinnabar: HgS, 8.1 g/cm³ (Handbook of Mineralogy); cp ~0.22 J/(g·K)
+  // from the classical 6R per mole of HgS. The 580 °C roast represents
+  // mercury recovery with one cell per product; only mercury is tracked.
+  { key: 'CINNABAR', abbr: 'CNBR', name: 'Cinnabar', kind: K.SOLID, render: R.OPAQUE, color: '#aa2d20', var: 0.14,
+    dens: 81, cond: 0.03, cap: capOf(8.1, 0.22), hard: 12, breakInto: 'CINNABAR_DUST', sound: 'crack',
+    hot: { T: 580, into: [['MERCURY', 0.65], ['MERCURY_VAPOR', 0.35]], latent: 45, puff: 280 },
+    desc: 'Cinnabar. Vermilion mercury sulfide. Breaks into cinnabar dust. Roasts into mercury and mercury vapour at 580 °C.' },
+  { key: 'CINNABAR_DUST', abbr: 'CBND', name: 'Cinnabar dust', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#bf3829', var: 0.12,
+    dens: 81, cond: 0.02, cap: capOf(8.1, 0.22), drag: 0.04, slide: 0.72, sound: 'crack',
+    hot: { T: 580, into: [['MERCURY', 0.65], ['MERCURY_VAPOR', 0.35]], latent: 45, puff: 280 },
+    desc: 'Cinnabar dust. Heavy red grains. Roasts into mercury and mercury vapour at 580 °C.' },
+  // Spodumene: LiAlSi₂O₆, 3.18 g/cm³ and vitreous lilac or pale cleavage
+  // faces (Handbook of Mineralogy). Mining gives lithium directly; the ore itself is water-stable.
+  { key: 'LITHIUM_ORE', abbr: 'SPOD', name: 'Spodumene', kind: K.SOLID, render: R.OPAQUE, color: '#b3a3bd', var: 0.12,
+    dens: 31.8, cond: 0.035, cap: 0.56, melt: 1423, hard: 26, breakInto: 'LITHIUM', sound: 'crack', mossBed: true,
+    desc: 'Spodumene. Pale lilac lithium ore. Does not react with water until mined into lithium. Melts above 1423 °C.' },
+  // Pitchblende is massive uraninite, normally less dense than pure UO₂
+  // (10.96 g/cm³ from Robie & Hemingway, USGS Bull. 2131; cp ~0.24 J/(g·K)).
+  // Its 1132 °C smelting point is uranium metal's, not uraninite's.
+  { key: 'URANIUM_ORE', abbr: 'UORE', name: 'Pitchblende', kind: K.SOLID, render: R.OPAQUE, color: '#3f4135', var: 0.12,
+    dens: 95, cond: 0.075, cap: capOf(9.5, 0.24), melt: 1132, meltInto: 'URANIUM', hard: 38, breakInto: 'URANIUM', sound: 'crack',
+    desc: 'Pitchblende. Dark, heavy uranium ore. Takes two pickaxe blows to break into uranium. Smelts into uranium above 1132 °C.' },
+  // Wolframite: iron and manganese tungstates, ~7.1–7.5 g/cm³ (Handbook of
+  // Mineralogy, Ferberite/Hübnerite). 2300 °C is a game smelting threshold
+  // below thermite's 2500 °C, not tungsten's melting point. The mined
+  // concentrate uses pure tungsten's density and heat capacity (CRC).
+  { key: 'TUNGSTEN_ORE', abbr: 'WORE', name: 'Wolframite', kind: K.SOLID, render: R.OPAQUE, color: '#4e4038', var: 0.15,
+    dens: 73, cond: 0.035, cap: 0.77, melt: 2300, meltInto: 'TUNGSTEN', hard: 46, breakInto: 'WOLFRAM_DUST', sound: 'ping', dig: 'rock',
+    desc: 'Wolframite. Dark tungsten ore. Takes two pickaxe blows to break into wolfram dust. Smelts into tungsten above 2300 °C.' },
+  { key: 'WOLFRAM_DUST', abbr: 'WDST', name: 'Wolfram dust', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#655a50', var: 0.16,
+    dens: 193, cond: 0.07, cap: 0.61, drag: 0.04, slide: 0.66, melt: 2300, meltInto: 'TUNGSTEN', sound: 'ping',
+    desc: 'Wolfram dust. Very heavy particles. Smelts above 2300 °C into tungsten, which stands up to acid and blasts.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1420,15 +1491,15 @@ export const wandPresetForTool = (id) => WAND_STARTERS.find((item) => item.id ==
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'COOKED_MEAT', 'MEAT', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
+  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'SULFUR_DUST', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'COOKED_MEAT', 'MEAT', 'SCRAP', 'COPPER_SCRAP', 'CINNABAR_DUST', 'WOLFRAM_DUST', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
   { name: 'Liquids', items: ['WATER', 'SALTWATER', 'WHISKEY', 'LIQUID_NITROGEN', 'ACID', 'TOXIC', 'OIL', 'SLIME', 'BLOOD', 'MUD', 'LAVA', 'MERCURY'] },
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANKS', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'IRON_ORE', 'COPPER_ORE', 'SULFUR', 'ROCK_SALT', 'CINNABAR', 'LITHIUM_ORE', 'URANIUM_ORE', 'TUNGSTEN_ORE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANKS', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
-  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'BUTTON', 'CONTACTOR', 'INSULATOR', 'TSNS', 'PCLN'] },
+  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'COPPER', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'BUTTON', 'CONTACTOR', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)
@@ -1581,6 +1652,14 @@ export const REACTIONS = [
   { a: 'TOXIC', b: 'WATER', into: ['WATER', 'SAME'], chance: NT_RATE(13) },
   { a: 'SLIME', b: 'WHISKEY', into: ['SMOKE', 'SAME'], chance: NT_RATE(30) },
   { a: 'LEVITATIUM', b: 'SLIME', into: ['FIRE', 'STEAM'], chance: NT_RATE(50) },
+  // Game recipes, not real chemistry: coal and sulfur alone do not make
+  // gunpowder. Hot sulfur with water models sulfur oxides making acid; ACID
+  // stands in for that acid rather than introducing a second liquid acid.
+  { a: 'SULFUR_DUST', b: 'BROKENCOAL', into: ['GUNPOWDER', 'GUNPOWDER'], chance: 0.04 },
+  { a: 'SULFUR_DUST', b: 'STEAM', into: ['ACID', 'ACID'], minT: 235, chance: 0.08 },
+  { a: 'SULFUR_DUST', b: 'WATER', into: ['ACID', 'SAME'], minT: 235, chance: 0.04 },
+  // Solid halite exposes less surface than the loose powder.
+  { a: 'ROCK_SALT', b: 'WATER', into: [[['SALTWATER', 0.25], ['SAME', 0.75]], 'SALTWATER'], chance: 0.008, heat: -SALT_SOLUTION_HEAT },
 ];
 
 // `into` 'SAME' (reactions): the cell stays as it is.

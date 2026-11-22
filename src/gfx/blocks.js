@@ -99,15 +99,15 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
      * the last mesh (and the kernels are built). True when it recorded one.
      * @param {{ force?: boolean }} [opts]
      */
-    update({ force = false, sun: light = null } = {}) {
+    update({ force = false, sun: light = null, cutaway = [0, 0, 0, 0] } = {}) {
       if (disposed || mesh.state !== 'ready' || finish.state !== 'ready') return false;
-      const key = `${sim.version}|${sim.cur}|${sim.origin.x},${sim.origin.y},${sim.origin.z}`;
+      const key = `${sim.version}|${sim.cur}|${sim.origin.x},${sim.origin.y},${sim.origin.z}|${cutaway}`;
       if (key === lastKey && !force) { if (light) drawSun(light); return false; }
       lastKey = key;
       sunDrawn = false;
       const f = gpu.frame;
       const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.readHeader();
-      const params = { capO: cap.o, capT: cap.t, edge: world ? 1 : 0, slot: 0 };
+      const params = { capO: cap.o, capT: cap.t, edge: world ? 1 : 0, slot: 0, cutaway };
       mesh.dispatch(f, fold(g.nbricks), { bind, header, params });
       const slot = ring.next();
       finish.dispatch(f, [1, 1, 1], { bind, header, params: { ...params, slot } });

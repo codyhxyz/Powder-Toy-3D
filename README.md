@@ -33,6 +33,8 @@ Where a key comes from another game (The Powder Toy, Garry's Mod, Minecraft, Rob
 table says which.
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
+Use the toolbar's cutaway to inspect and edit a cross-section, or its checkpoint buttons to repeat a destructive
+playtest. See [Playtest tools](docs/playtest-tools.md).
 
 ## Editing tools
 
@@ -472,7 +474,7 @@ A small GPU probe pass reads those values and dims signs that are hidden behind 
 
 ## Saves
 
-⌘S (Ctrl+S) or the floppy in the toolbar saves the game, named for its map and the time, with a picture of the view.
+⌘S (Ctrl+S) or Save in Settings saves the game, named for its map and the time, with a picture of the view.
 The map menu (Esc, or ⌘O) lists your saves under **Saves**, Garry's Mod's menu item: load one, export it as a
 `.tpt3d` file, delete it, or *Open file…* to load a file (it joins the list). Saves live in the browser (IndexedDB),
 so export the ones you want to keep elsewhere.

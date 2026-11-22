@@ -123,29 +123,26 @@ function force(sim,name,box,values,source,opts) {
 // null means this router does not own the tool. false is an explicit refusal:
 // never run a legacy B writer and report success when native import ignores it.
 export function routeNativePaint(sim, stroke) {
-  const { tool, prop, center, end = center, radius, shape, grow, mask, filter = -1, erase } = stroke;
+  const { tool, prop, center, end = center, radius, shape, grow, shell = 0, mask, filter = -1, erase } = stroke;
+  const grid = nativeCellPaint(stroke);
+  const forced = pendingPaint.has(tool) || (tool === PROP_TOOL && [PROP.VX, PROP.VY, PROP.PRESSURE, PROP.VZ].includes(prop?.field));
+  if (!grid && !forced) return null;
+  // (no drag, no wind: V1's paint pass pushes by P.wind, zero then, and changes nothing)
+  if (tool === ids.WIND && !(stroke.wind && Math.hypot(...stroke.wind))) return true;
   const erases = tool === ids.ERASE || (tool >= 0 && erase) || (tool === PROP_TOOL && prop?.field === PROP.TYPE && prop.value === E.EMPTY);
-  if (nativeCellPaint(stroke)) {
-    const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
-    const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
+  const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>Math.max(0,radius+(grow?.[k]??0)));
+  const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
+  if (grid) {
     // (V1's paint counter seeds the stroke: sim.js paint's this.paints++, so its spawn pattern is V1's)
     const accepted=forceKernel(sim,'nativePaint').run(box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid:true,particles:erases||particleRule(stroke)});
+      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],shell,masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid:true,particles:erases||particleRule(stroke)});
     sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native paint kernel not ready or empty bounds'};
     return accepted;
   }
-  // (no drag, no wind: V1's paint pass pushes by P.wind, zero then, and changes nothing)
-  if (tool === ids.WIND && !(stroke.wind && Math.hypot(...stroke.wind))) return true;
-  if (pendingPaint.has(tool) || (tool === PROP_TOOL && [PROP.VX, PROP.VY, PROP.VZ, PROP.PRESSURE].includes(prop?.field)))
-  {
-    const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
-    const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
-    return force(sim,'nativePaintForce',box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},
-      // (the fill's mask is one shared buffer each fill rewrites: a stroke held for the dynamics' build keeps its own bytes)
-      mask?(bytes=>()=>sim._paintMask(bytes))(mask.data.slice()):sim.noMask);
-  }
-  return null;
+  return force(sim,'nativePaintForce',box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
+    frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],shell,masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},
+    // (the fill's mask is one shared buffer each fill rewrites: a stroke held for the dynamics' build keeps its own bytes)
+    mask?(bytes=>()=>sim._paintMask(bytes))(mask.data.slice()):sim.noMask);
 }
 export function routeNativePOV(sim, name, box, values) {
   if (forceSpecs[name]) return force(sim,name,box,values,undefined,{defer:deferred.has(name)});

@@ -149,6 +149,8 @@ fn nativeEditCommit(r: PaintResult, before: Material) -> Material {
  return m;
 }`;
 export function nativePaintUpdateWGSL() {
+  // Box and World both inherit strokeDist (including the hollow shell) for
+  // native cells and particles. Only Mix needs to expose its paired cell.
   const parts = paintUpdateWGSL.split(MIX_PARTNER);
   if (parts.length !== 2) throw new Error('passes.js mixCell no longer computes its partner as expected');
   return parts.join(`${MIX_PARTNER}\n  paintPartner = q;`);

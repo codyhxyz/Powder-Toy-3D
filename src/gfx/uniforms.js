@@ -174,7 +174,7 @@ const eyeIn = (camera, model) => new Vector3().setFromMatrixPosition(camera.matr
  */
 // Pure value construction: the caller updates camera matrices first. Returned
 // matrices, vectors and arrays are owned snapshots; no GPU or shared-last write.
-export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
+export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false, cutaway = [0, 0, 0, 0] }) {
   const viewProj = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   const invViewProj = viewProj.clone().invert();
   const cam = eyeIn(camera, model);
@@ -183,7 +183,7 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
     viewProj, invViewProj, model,
     lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value), lampShape: vec4s(u.uLampShape.value),
     wandLightPosition: u.uWandLightPosition.value, wandLightColor: u.uWandLightColor.value,
-    cam, time, sun, lightGain, sourceAppearance, sourceStyle: !!sourceStyle,
+    cam, time, sun, lightGain, cutaway, sourceAppearance, sourceStyle: !!sourceStyle,
     sunExt: u.uSunExt.value, simClock: u.uSimClock.value, sunCol: u.uSunCol.value, pixScale: u.uPixScale.value,
     skyUp: u.uSkyUp.value, cloudSea: u.uCloudSea.value, ground: u.uGround.value, sea,
     keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, materialStyle: materialStyleForView(view) ?? 0, jitter, cloudShift: u.uCloudShift.value,
@@ -191,7 +191,8 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
-    reflections: !!u.uReflections.value, bending: !!u.uBending.value, floorTex: FLOOR_TEX.layer,
+    // A cutaway exposes material, without secondary rays seeing the hidden side.
+    reflections: !cutaway[3] && !!u.uReflections.value, bending: !cutaway[3] && !!u.uBending.value, floorTex: FLOOR_TEX.layer,
     clouds: !!u.uClouds.value, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
   };
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, copyValue(value)]));

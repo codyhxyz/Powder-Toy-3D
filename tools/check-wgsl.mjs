@@ -18,7 +18,8 @@
 //   --curve: the compile-time curve of synthetic kernels on this device, with
 //       the GPU process's log lines when one loses the device (W23).
 //
-// usage: node tools/check-wgsl.mjs [--time] [--no-build] [--only name,…] [--file part]
+// usage: node tools/check-wgsl.mjs [--cpu] [--time] [--no-build] [--only name,…] [--file part]
+// --cpu checks generation, bindings, limits, and dispatch without Vite or a browser.
 //        [--grid 32,64] [--budget ms] [--port N] [--browser-arg --some-switch]
 //        [--curve [--family straight,branchy,ssa,swaps] [--sizes 200,400]]
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -352,6 +353,14 @@ function addVariants(features) {
   setShaderFeatures(CORE_FEATURES);
 }
 addVariants(CORE_FEATURES);
+
+if (flag('--cpu')) {
+  if (CURVE) throw new Error('--curve requires a GPU and cannot be used with --cpu');
+  for (const entry of entries) for (const problem of entry.dispatchProblems) fail(`${entry.name}: ${problem}`);
+  for (const v of variants) for (const problem of v.problems) fail(`${v.key}: ${problem}`);
+  console.log(`check-wgsl: CPU preflight, ${variants.length} generated variants; ${failures} failure(s) (no Tint or pipeline builds)`);
+  process.exit(failures ? 1 : 0);
+}
 
 const vite = await startVite({ harness: true });
 const log = [];

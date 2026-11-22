@@ -9,10 +9,22 @@ import { createPov } from '../pov/index.js';
 import { isGearTool } from '../elements.js';
 import { QUARRY_SPAWN } from '../industry/catalog.js';
 import { PRESERVATION_SPAWN } from '../lab/preservation/index.js';
+import { DESTROYABLE_CITY_SPAWN } from '../scenes/destroyableCity.js';
+import { NUCLEAR_REACTOR_SPAWN } from '../scenes/nuclearReactor.js';
+import { NUCLEAR_BUNKER_SPAWN } from '../scenes/nuclearBunker.js';
+import { VOLCANO_TOWN_SPAWN } from '../scenes/volcanoTown.js';
 import { Vector3 } from 'three';
 
 const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
-const PRESET_SPAWNS = { quarry: QUARRY_SPAWN, preservationLab: PRESERVATION_SPAWN, labStudies: [128, 2, 16] };
+const PRESET_SPAWNS = {
+  quarry: QUARRY_SPAWN,
+  preservationLab: PRESERVATION_SPAWN,
+  labStudies: [128, 2, 16],
+  destroyableCity: DESTROYABLE_CITY_SPAWN,
+  nuclearReactor: NUCLEAR_REACTOR_SPAWN,
+  nuclearBunker: NUCLEAR_BUNKER_SPAWN,
+  volcanoTown: VOLCANO_TOWN_SPAWN,
+};
 let factoryBelt = null;
 
 const pov = {
@@ -31,6 +43,7 @@ const pov = {
       get nativeToolSteps() { return app.nativeToolSteps; },
       coopMove: (after) => app.coopMove?.(after),
       getSim: () => app.sim, getVolume: () => app.volume, getScale: () => app.scale,
+      checkpointRestoring: app.checkpointRestoring,
       hover: app.hover, pointerHover: () => app.pointerInside && !app.uiHover, pickRay: app.pickRay,
       presentationPoint: app.presentationPoint,   // a grid point where a presentation effect shows it (the aim's displayed eye)
       getSpawners: () => app.spawners,

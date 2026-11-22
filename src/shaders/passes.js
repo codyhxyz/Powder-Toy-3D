@@ -48,6 +48,7 @@ export const PaintParams = uniformStruct('PaintParams', {
   wind: 'vec3f',    // Wind: cells the brush moved since the stroke's last paint
   end: 'vec3f',     // a line (Shift-drag): the brush swept from center to here (center for a dab)
   grow: 'vec3f',    // a box (Ctrl-drag): the brush grown by this much along each axis (0 for a dab)
+  shell: 'u32',     // a box shell's thickness in cells, 0 for a filled stroke
   masked: 'u32',    // a flood fill (Ctrl+Shift-click): the cells the mask marks, not the brush's
   filter_: 'i32',   // only cells of this element; -1: any ('filter' is reserved in WGSL)
   del: 'u32',       // specific delete: an element brush erases instead (TPT's SPECIFIC_DELETE)
@@ -107,7 +108,13 @@ fn strokeDist(p: vec3i) -> f32 {
     if (maskOff(p)) { return P.radius + 1.0; }
     return 0.0;
   }
-  return strokeDistance(vec3f(p)+0.5,P.center,P.end,P.grow,P.shape);
+  let at = vec3f(p) + 0.5;
+  if (P.shell != 0u) {
+    // Interior cells do not take any edit (including erase/replace and Mix).
+    let distanceToFace = vec3f(P.radius) + P.grow - abs(at - P.center);
+    if (min(distanceToFace.x, min(distanceToFace.y, distanceToFace.z)) > f32(P.shell)) { return P.radius + 1.0; }
+  }
+  return strokeDistance(at,P.center,P.end,P.grow,P.shape);
 }
 fn inBrush(p: vec3i) -> bool { return strokeDist(p) <= P.radius; }
 // a push dv given to the air, as the cell (id at T) takes it, capped at V_MAX

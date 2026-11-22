@@ -5,7 +5,8 @@ import { prepareMesh } from './gfx/meshLight.js';
 import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
 import { ICON } from './ui/icons.js';
-import { runGenerator, bake, newSeed, makeRng, turnPoint, MAX_FOOT } from './constructions/runtime.js';
+import { runGenerator, bake, newSeed, makeRng, turnPoint } from './constructions/runtime.js';
+import { writeBakedStamp } from './constructions/stampWriter.js';
 import { BUILTINS, SHRINE_ALTARS } from './constructions/builtins.js';
 import sharedSource from './constructions/shared.js?raw';
 import builtinsOnlySource from './constructions/builtins.js?raw';
@@ -364,24 +365,7 @@ export class Constructions {
       }, () => {});
       return;
     }
-    // the baked cells into the stamp's buffer, in order with the edits around it (gpu.write)
-    const gpu = sim.gpu, bytes = s.data.byteLength;
-    let old = null;
-    if (!this.stampBuf || this.stampBuf.size < bytes || this.stampGpu !== gpu) {
-      old = this.stampGpu === gpu ? this.stampBuf : null;
-      const size = Math.max(64 * 1024, 2 ** Math.ceil(Math.log2(bytes)));
-      this.stampBuf = gpu.createBuffer({ label: 'construction stamp', size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-      this.stampGpu = gpu;
-    }
-    gpu.write(this.stampBuf, 0, s.data);
-    // (the write flushed every command that bound the old buffer: it goes once the queue is done with them)
-    if (old) gpu.queue.onSubmittedWorkDone().then(() => old.destroy(), () => old.destroy());
-    const foot = Math.min(s.foot, MAX_FOOT);
-    const at = [Math.floor(origin.x), Math.floor(origin.y), Math.floor(origin.z)];
-    // the stamp's box, its footings below it included; what it builds over
-    // loses its decoration, as a TPT stamp replaces particles (scrub, src/deco.js)
-    kernel.write({ lo: [at[0], at[1] - foot, at[2]], hi: [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1] },
-      { at, foot, size: [s.w, s.h, s.d], seed: newSeed() }, this.stampBuf);
+    writeBakedStamp(sim, kernel, this, s, [Math.floor(origin.x), Math.floor(origin.y), Math.floor(origin.z)], newSeed());
   }
 
   // New seed (and, when shuffling, maybe a new variant) for the next placement.

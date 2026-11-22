@@ -10,9 +10,9 @@ export default {
     app.electronics = createElectronicsInteractions({
       getSim: () => app.sim, getWorld: () => app.win,
       getSceneKey: () => JSON.stringify([app.settings.preset, app.settings.scene, app.worldSeed]),
-      canMutate: () => !app.mp?.replica,
+      canMutate: () => !app.mp?.replica && !app.checkpointRestoring?.(),
       guestUse: intent => app.mp?.requestControlUse?.(intent) ?? false,
-      pickRay: (...args) => app.pickRay(...args), parts,
+      pickRay: (ro, rd) => app.pickRay(ro, rd, app.cutawayEnabled?.() && app.mp.role === 'solo'), parts,
       requestRender: () => app.requestRender(),
       rejectContact: reason => app.hud.toast(reason),
     });

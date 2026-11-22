@@ -8,7 +8,7 @@ import { createChat, MAX_CHAT_CHARS } from './chat.js';
 import { sessionToken } from '../account.js';
 import { h } from '../ui/dom.js';
 import './net.css';
-import { stamp, validPose, leash, NET_VERSION, MIN_GUEST_VERSION, UPDATE_GAME } from './protocol.js';
+import { stamp, validPose, leash, NET_VERSION, MIN_GUEST_VERSION, UPDATE_GAME, PAINT_SHELL, validPaintShell } from './protocol.js';
 import { SMALL_MAP } from '../mapKind.js';
 import { CONTROL_VERSION, validControlContext, validControlPose, createControlIntentGuard, controlIntentRay, validControlBaseline, controlBaselineMatches } from './controlActivation.js';
 
@@ -297,6 +297,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         break;
       }
       case 'paint':
+      case PAINT_SHELL:
         if (role === 'host' && from?.role === 'guest' && strokes.length < 128 && validContext(m) && validStroke(m)) strokes.push(m);
         break;
       case 'fill':
@@ -356,7 +357,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       && (m.tool !== PROP_TOOL || (Array.isArray(m.p) && Number.isInteger(m.p[0]) && m.p[0] >= 0 && m.p[0] < PROP_FIELDS.length && !propRangeError(m.p[0], m.p[1])));
   }
   function validStroke(m) {
-    return bounded(m.c) && PAINTABLE.has(m.tool) &&
+    return bounded(m.c) && PAINTABLE.has(m.tool) && validPaintShell(m, MAX_BRUSH_RADIUS) &&
       Number.isFinite(m.r) && Number.isFinite(m.rate) && m.rate >= 0 && m.rate <= 100 && BRUSH_SHAPES.has(m.shape) && validEdits(m);
   }
   function validFill(m) {
@@ -606,8 +607,9 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       return send({ t: 'control-use', v: CONTROL_VERSION, to: 'host', source, seq: ++controlSeq,
         poseSeq: pose.seq, context: c.id, cell: cell.slice(), material });
     },
-    paint({ center, radius, shape, tool, rate, replace, wind, ...edits }) {
-      send({ t: 'paint', context: context(), to: 'host', c: xyz(center), r: radius, shape, tool, rate, replace, w: wind, ...editsOut(edits) });
+    paint({ center, radius, shape, tool, rate, replace, wind, shell = 0, ...edits }) {
+      send({ t: shell ? PAINT_SHELL : 'paint', ...(shell ? { h: shell } : {}), context: context(), to: 'host', c: xyz(center),
+        r: radius, shape, tool, rate, replace, w: wind, ...editsOut(edits) });
     },
     // ...and their flood fills (src/editing.js runFill's request), which the host reads its world for.
     fill({ cell, id, maxY, stroke: { radius, shape, tool, rate, replace, ...edits } }) {

@@ -2,6 +2,13 @@ import { h } from '../ui/dom.js';
 import { TOUCH_MEDIA } from './touch.js';
 import { KEYS, label } from '../keys.js';
 
+// The Tool Gun's readout uses the same selection text as the god-view ghost.
+export function builderNote({ mode, size, radius, phase, hollow, carving }) {
+  const hint = phase === 'footprint' ? 'Set footprint' : phase === 'extrude' ? 'Aim for depth, click to place'
+    : phase === 'line' ? 'Aim, click to place' : `${label(KEYS.builderMode)}: mode`;
+  return [mode, carving ? 'CARVE' : null, size?.join('×'), hollow ? '[HOLLOW]' : null, `Brush ${radius}`, hint].filter(Boolean).join(' · ');
+}
+
 // The POV HUD: crosshair (with its bloom, and Halo's red on an enemy in range) and hitmarker, Halo's grenade count, the Energy Shield (Halo's bar over health, and its flare on the screen's edge), health and breath, the perks held (Noita's row of
 // icons), screen effects for what the body feels, the pointer-lock prompt, the death screen. Styles
 // in pov.css. update() runs every frame and only touches the DOM when a

@@ -14,12 +14,21 @@ import { presentationWGSL } from '../../gfx/presentationMath.js';
 // var: the functions that advance it take a pointer to it (H1.11).
 export const presentationNearWGSL = ({ skip = true } = {}) => /* wgsl */ `
 ${presentationWGSL}
+var<private> gWarpCutaway: vec4f;
 struct WarpWalk { ray: WarpRay, spans: vec4f, t: f32, end: f32, axis: i32, endAxis: i32, boundary: bool }
 fn warpWalk(ro: vec3f, rd: vec3f, nearT: f32) -> WarpWalk {
   let o = vec3f(H.origin);
   var r = warpRay(ro + o, rd);
   r.C -= o;
-  let spans = warpSpans(r, vec3f(0.0), vec3f(GRID), nearT, WARP_INF);
+  var lo = vec3f(0.0);
+  var hi = vec3f(GRID);
+  if (gWarpCutaway.w != 0.0) {
+    let a = u32(gWarpCutaway.z);
+    if (gWarpCutaway.y > 0.0) { hi[a] = min(hi[a], gWarpCutaway.x); }
+    else { lo[a] = max(lo[a], gWarpCutaway.x); }
+  }
+  var spans = vec4f(WARP_INF);
+  if (all(lo < hi)) { spans = warpSpans(r, lo, hi, nearT, WARP_INF); }
   return WarpWalk(r, spans, spans.x, spans.x, warpEntryAxis(r, spans.x), -1, spans.x > nearT);
 }
 fn warpRestart(w: ptr<function, WarpWalk>, p: vec3f, d: vec3f) {
@@ -38,7 +47,11 @@ fn warpLocate(w: ptr<function, WarpWalk>, cell: ptr<function, vec3i>) -> bool {
   if ((*w).t >= WARP_INF) { return false; }
   if ((*w).boundary) { *cell = warpCellAfter((*w).ray, (*w).t, (*w).axis); }
   else { *cell = warpCell((*w).ray, (*w).t); }
-  return !outside(*cell);
+  if (cutawayEnters(warpAt((*w).ray, (*w).t), warpSlope((*w).ray, (*w).t), gWarpCutaway)) {
+    (*w).axis = i32(gWarpCutaway.z);
+    *cell = cutawayCell(*cell, gWarpCutaway);
+  }
+  return !outside(*cell) && cutawayKeepsCell(*cell, gWarpCutaway);
 }
 fn warpSegment(w: ptr<function, WarpWalk>, cell: ptr<function, vec3i>, ro: ptr<function, vec3f>, rd: ptr<function, vec3f>,
                lengthT: ptr<function, f32>, exitAxis: ptr<function, i32>) -> bool {
@@ -74,6 +87,7 @@ fn warpFloor(w: WarpWalk, p: ptr<function, vec3f>, t: ptr<function, f32>) -> boo
   *t = roots.x;
   *p = warpAt(w.ray, *t);
   return *t >= 0.0 && *t < WARP_INF && w.t >= *t - WARP_EPS && warpSlope(w.ray, *t).y < 0.0
+    && cutawayKeepsPoint(*p, gWarpCutaway)
     && all((*p).xz >= vec2f(0.0)) && all((*p).xz < vec2f(GRID.xz));
 }
 fn warpGridPoint(p: vec3f) -> vec3f { return warpPoint(p + vec3f(H.origin)) - vec3f(H.origin); }

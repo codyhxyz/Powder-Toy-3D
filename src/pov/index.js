@@ -251,6 +251,10 @@ export function createPov(app) {
   }
   const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({
     active: active(), player, toolbelt, sprintMusic: app.settings.sprintMusic,
+    // World and Box both use the same cached player.cellAt probe for ambience.
+    caveActive: live() && !figureShown && !vehicles.seated && !village.bus.holding &&
+      !(app.mp.replica && (app.mp.stale || networkPending)),
+    paused: app.settings.paused,
   }) });
   connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
   announceMatches();            // ...and calls the matches' moments
@@ -269,7 +273,7 @@ export function createPov(app) {
     locked = document.pointerLockElement === canvas;
     document.body.classList.toggle('pov-locked', locked);
     if (locked) setMenu(false);
-    if (!locked) releaseInput();
+    if (!locked) { releaseInput(); app.toolGun?.cancel(); }
     app.requestRender();
   });
   function releaseInput() {
@@ -322,7 +326,7 @@ export function createPov(app) {
     if (!editing && active() && !app.isTyping()) swapView();
   });
   addEventListener('keydown', (e) => {
-    if (editing || !active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (editing || !active() || app.checkpointRestoring?.() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }   // (Space would scroll the page)
     if (is(e, KEYS.view)) {
       e.preventDefault();
@@ -392,7 +396,7 @@ export function createPov(app) {
   }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
-    if (editing || !active()) return;
+    if (editing || !active() || app.checkpointRestoring?.()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
     if (coop()) { coopHint(); return; }
     if (village.enabled && !village.canAct) return;
@@ -982,6 +986,7 @@ export function createPov(app) {
       ctx.nativeDt = sim.compact ? (app.nativeToolSteps ?? 0) / 60 : undefined;
       ctx.stepsPerFrame = app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps);
       const use = !editing && (village.enabled ? village.canAct && !!village.tool && (isLocked() || touch.enabled || villageToolTap) : canUse()) && !app.industryBuilding?.();
+      ctx.toolUse = use;
       if (village.enabled && !use) toolbelt.tool(toolbelt.selectedKey)?.deselect?.();
       // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
       const tapped = touch.enabled || villageToolTap;
@@ -1232,11 +1237,18 @@ export function createPov(app) {
       return vehicles.pending || !!sp?.list.some((s) => !s.consumed && (s.oneShot || !game.running) && ENEMY_KINDS.includes(s.kind) && !npcs.has(s.id)
         && (!kindOfGrid(app.getSim()?.g).streamed || sp.feet(s)));   // (a World's spawner outside the window waits for it)
     },
+    resetPlaytestEffects() {
+      releaseInput();
+      player?.invalidateProbe();
+      combat.reset();
+      toolbelt?.ballistics.clear();
+      vfx?.clear();
+    },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
-    worldReplaced: () => {
+    worldReplaced: ({ preserveMode = false } = {}) => {
       controlGeneration++; app.onWorldReplaced?.();
-      mission.end();
-      village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
+      if (!preserveMode) { mission.end(); village.setEnabled(false); }
+      toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
       for (const n of npcs.values()) { scene.remove(n.root); n.dispose(); }
       npcs.clear();
       npcBallistics?.clear();

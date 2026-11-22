@@ -1,3 +1,4 @@
+import { cutawayWGSL } from '../cutaway.js';
 import { prelude, LAYOUT, BRICK } from './common.js';
 import { lib, libLayouts } from './gfx/lib.js';
 import { RENDER_LAYOUT } from './bindings.js';
@@ -1245,6 +1246,7 @@ export const farFrag = (g, L, { curved = false, sourceAppearance = false, mixed 
 // far view${curved ? ', curved' : ''}${mixed ? ', mixed resolution' : ''}
 ${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: worldLit ? 'LIGHTING_FAR' : 'LIGHTING', far: true, aeration: false })}
 ${presentationWGSL}
+${cutawayWGSL}
 ${reachWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
@@ -1923,12 +1925,23 @@ struct FarOut {
   if (P.march != 0u) { cutLo = cutInnerLo(P.cutLo); cutHi = cutInnerHi(P.cutHi, vec3f(WORLD)); }
   var tw = windowSpan(ro, rd, cutLo, cutHi).xy;
   if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
+  var slice = FU.cutaway;
+  ${curved ? `if (slice.w != 0.0) { slice.x += winLo[u32(slice.z)]; }` : ''}
   let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
-  var t0 = max(tb.x, 0.0);
-  var t1 = tb.y;${curved ? `
+  let span = cutawaySpan(ro, rd, vec3f(tb, 0.0), slice);
+  var t0 = max(span.x, 0.0);
+  var t1 = span.y;${curved ? `
   // the parabola's spans in the window (the volume's) and in the world (up to two each)
   gFarWindow = warpSpans(gFarRay, winLo, winLo + vec3f(GRID), 0.0, WARP_INF);
-  gFarWorld = warpSpans(gFarRay, vec3f(0.0), vec3f(WORLD), 0.0, WARP_INF);
+  var lo = vec3f(0.0);
+  var hi = vec3f(WORLD);
+  if (slice.w != 0.0) {
+    let a = u32(slice.z);
+    if (slice.y > 0.0) { hi[a] = min(hi[a], slice.x); }
+    else { lo[a] = max(lo[a], slice.x); }
+  }
+  gFarWorld = vec4f(WARP_INF);
+  if (all(lo < hi)) { gFarWorld = warpSpans(gFarRay, lo, hi, 0.0, WARP_INF); }
   tw = gFarWindow.xy;
   t0 = gFarWorld.x;
   t1 = select(gFarWorld.y, gFarWorld.w, gFarWorld.z < WARP_INF);` : ''}
@@ -1948,7 +1961,7 @@ struct FarOut {
   var tSea = farSeaHit(ro, rd, level, &ps, &seaOut);
   if (plain && !seaOut) { tSea = farSeaHit(ro, rd, 0.0, &ps, &seaOut); }
   let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
-  let ocean = tSea < NO_HIT && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
+  let ocean = tSea < NO_HIT && cutawayKeepsPoint(ps, slice) && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
 
   var col: vec3f;
   var o: FarOut;
@@ -1981,7 +1994,12 @@ struct FarOut {
     let v = farSample(p);
     // (the world march's frames: a ray that comes out of the window inside opaque coarse ground, where the
     // fine ground lies lower or was dug, is shaded as that ground's surface: the window's probes aren't kept)
-    if (cut && !(P.march != 0u && v.r >= v.g)) {
+    if (cutawayEnters(p, localRd, slice)) {
+      var n = vec3f(0.0);
+      n[u32(slice.z)] = slice.y;
+      let id = select(farElement(p, n), farLiquidOf(farIds(p).y), v.g > v.r);
+      col = ALBEDO(id) * (vec3f(0.25) + FU.sunCol * max(0.0, dot(n, FU.sun)));
+    } else if (cut && !(P.march != 0u && v.r >= v.g)) {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
       // the sun, in the probes' light just inside the window (none in a cave).
@@ -2024,7 +2042,7 @@ struct FarOut {
       }
       let flatShore = fgH(farOcc[fgAt0(vec2i(floor(pf.xz)))]) > flatY;
       let water = v.g > v.r && !(nearFlat && flatShore);
-      if (water && nearFlat) {
+      if (water && nearFlat && cutawayKeepsPoint(pf, slice)) {
         lq = FAR_LQ_SURFACE; lqP = pf; lqRd = farDirection(rd, tf); lqId = flatId; lqSun = farSunLit(pf, 0); lqBedY = farGroundBed(pf, flatY);
         pHit = pf; tH = tf;
       }
@@ -2036,12 +2054,12 @@ struct FarOut {
         let tE = tHit + gh.s;
         // ground under the sea's level past where the ray meets the sea, with the sea's water over it there:
         // the sea's surface in front (the shore's other side)
-        let seaFirst = nearFlat && !flatShore && tf < select(tHit, tE, gh.ok) && farIds(pf - vec3f(0.0, FAR_ID_INSET, 0.0)).y != E_EMPTY;
+        let seaFirst = nearFlat && cutawayKeepsPoint(pf, slice) && !flatShore && tf < select(tHit, tE, gh.ok) && farIds(pf - vec3f(0.0, FAR_ID_INSET, 0.0)).y != E_EMPTY;
         if (seaFirst) {
           lq = FAR_LQ_SURFACE; lqP = pf; lqRd = farDirection(rd, tf); lqId = flatId; lqSun = farSunLit(pf, 0); lqBedY = farGroundBed(pf, flatY);
           pHit = pf; tH = tf;
         }
-        else if (gh.ok && (tE < w0 || tE >= tw.y) && tE > t0) {
+        else if (gh.ok && (tE < w0 || tE >= tw.y) && tE > t0 && cutawayKeepsPoint(p + localRd * gh.s, slice)) {
           pHit = p + localRd * gh.s;
           tH = tE;
           let fp = footprint(pHit);

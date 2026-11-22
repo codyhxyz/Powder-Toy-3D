@@ -6,7 +6,11 @@ import { nativeFillWGSL, nativeFillSize, NATIVE_WRITE_LAYOUT, NativeFillParams }
 import { BRICK, LAYOUT } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
 import { sceneLayout, SCENE_BINDING, PRE_MARGIN, PreParams, preWords } from './scenes/sceneGpu.js';
-import { worldParams } from './generator.js';
+import { TREE, worldParams } from './generator.js';
+import { buildStampWriter } from '../shaders/construction.js';
+import { bake, runGenerator } from '../constructions/runtime.js';
+import { BUILTINS } from '../constructions/builtins.js';
+import { writeBakedStamp } from '../constructions/stampWriter.js';
 import { island } from './scenes/island.js';
 import { WORLD_SCENES } from './scenes/index.js';
 
@@ -14,9 +18,9 @@ import { WORLD_SCENES } from './scenes/index.js';
 // one simulation grid: a window of the world at a world-cell origin. It fills
 // cells through the scene's sceneCell (an edit over a box: shaders/generate.js
 // fillEdit), compares the slab about to leave the window with it
-// (sceneDiffFrag: one kernel that diffs and gathers) and stamps the scene's
-// trees, if it has any (scene.trees: the island's), through the stamper
-// below. The box's Island preset is a world the size of the grid at origin 0
+// (sceneDiffFrag: one kernel that diffs and gathers). A streamed world's trees
+// are stamped by its source producer; the Islet uses the construction writer.
+// The box's Island preset is a world the size of the grid at origin 0
 // (loadIsland below); the massive world's window (docs/scaling.md D11) fills
 // the slabs a shift uncovers with fill(..., min, max).
 //
@@ -140,10 +144,6 @@ export class SceneGpu {
     for (const b of [this.uniforms.buffer, this.data]) if (b) this.sim._retire(b);
   }
 }
-
-// ---------------------------------------------------------------- stamps
-// (V1's tree stamper went with V1: a world's trees are its render source producer's, native on V2's
-// cells: world/renderSourceProducer.js)
 
 // ---------------------------------------------------------------- V2's world writers
 // The group V2's world writers bind (shaders/worldWrite.js): the owner's cores, banks and activity.
@@ -308,6 +308,23 @@ export class IslandGenerator extends WorldGenerator {
   constructor(sim, P = worldParams({ size: [sim.g.nx, sim.g.ny, sim.g.nz] })) {
     super(sim, island, P);
   }
+
+  plantTrees(writer) {
+    const { nx, ny, nz } = this.sim.g, r = TREE.REACH;
+    for (const t of this.scene.trees.treesIn(-r, -r, nx + r, nz + r, this.P)) {
+      const s = bake(runGenerator(BUILTINS.TREE, { size: t.size, seed: t.seed, variant: t.variant }), t.quarter);
+      if (!s) continue;
+      const at = [t.x - s.base.x, t.y - s.base.y, t.z - s.base.z];
+      const hi = [at[0] + s.w, at[1] + s.h, at[2] + s.d];
+      if (hi.some((v) => v <= 0) || at[0] >= nx || at[1] - s.foot >= ny || at[2] >= nz) continue;
+      if (writeBakedStamp(this.sim, writer, this, s, at, t.seed) === false) throw new Error('Islet tree stamp was rejected');
+    }
+  }
+
+  dispose() {
+    if (this.stampBuf) this.sim._retire(this.stampBuf);
+    super.dispose();
+  }
 }
 
 // One generator, for the app's current simulation (a new grid replaces it), per world.
@@ -336,20 +353,28 @@ export function releaseGenerator(sim) {
  * caller's, src/wire/world.js). The old WebGL load was synchronous; this one
  * waits at least a microtask, so whatever is loaded meanwhile must win.
  * @param {import('../sim.js').Simulation} sim
- * @param {{ seed?: number, still?: () => boolean }} [opts]
+ * @param {{ seed?: number, still?: () => boolean, onLoaded?: (P: object) => void }} [opts]
  */
-export async function loadIsland(sim, { seed, still = null } = {}) {
+export async function loadIsland(sim, { seed, still = null, onLoaded = null } = {}) {
   const { nx, ny, nz } = sim.g;
   const P = worldParams({ size: [nx, ny, nz], seed });
   const gen = generatorFor(sim, P);
-  await gen.ready;
-  if (current !== gen || sim.disposed || (still && !still())) return null;   // (replaced or overtaken meanwhile)
-  gen.fill(P);
-  gen.plantTrees(P);
+  const currentLoad = () => current === gen && !sim.disposed && (!still || still());
+  let owner = sim.compact, writer = buildStampWriter(sim);
+  await Promise.all([gen.ready, writer.ready, owner?.ready]);
+  // The native owner may have taken over while the pipelines were building.
+  while (currentLoad() && sim.compact !== owner) {
+    owner = sim.compact;
+    writer = buildStampWriter(sim);
+    await Promise.all([writer.ready, owner?.ready]);
+  }
+  if (!currentLoad() || gen.fill(P) === false) return null;
+  gen.plantTrees(writer);
   // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
   sim.fieldReset = true;
   sim.giReset = true;
   sim.stillFlow();
+  onLoaded?.(P);
   return P;
 }
 

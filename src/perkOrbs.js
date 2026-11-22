@@ -125,15 +125,16 @@ export class PerkOrbs {
 
   // The orbs for a save (saves/game.js), feet in world cells, and back. A
   // loaded shrine gets a fresh id, so it never shares one with a shrine
-  // placed since (taking one orb takes its shrine's others).
+  // placed since (taking one orb takes its shrine's others). In-session undo
+  // preserves the ids, since older placement snapshots still refer to them.
   toJSON() { return this.list.map((o) => ({ key: o.key, shrine: o.shrine, world: o.world.toArray() })); }
-  fromJSON(arr) {
+  fromJSON(arr, { preserveShrineIds = false } = {}) {
     this.clear();
     const ids = new Map();
     const origin = this.getSim().origin;
     for (const o of arr ?? []) {
       if (!PERK[o?.key] || !Array.isArray(o.world) || this.list.length >= MAX_ORBS) continue;   // (a perk this build lacks: skipped)
-      const shrine = o.shrine ? (ids.get(o.shrine) ?? ids.set(o.shrine, nextShrine++).get(o.shrine)) : 0;
+      const shrine = !o.shrine || preserveShrineIds ? o.shrine || 0 : (ids.get(o.shrine) ?? ids.set(o.shrine, nextShrine++).get(o.shrine));
       this.add(o.key, new THREE.Vector3().fromArray(o.world).sub(origin), shrine);
     }
   }

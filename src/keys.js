@@ -37,6 +37,8 @@ export const KEYS = {
   brushSmaller: ['['],
   brushBigger: [']'],
   brushShape: ['b'],
+  builderMode: ['l'],
+  builderHollow: ['\\'],      // next to [ / ] brush size; H drinks, J/K/N/M own cutaway & checkpoints
   replaceMode: ['x', ';', 'Insert'],              // TPT's ; and Insert
   specificDelete: ['Delete', 'Backspace', 'Mod+;'],   // TPT's Delete and Ctrl+; (a Mac's delete key is Backspace)
   target: ['Alt+KeyI'],   // (⌥I types a dead key on a Mac: by its code)
@@ -45,6 +47,12 @@ export const KEYS = {
   deco: ['Ctrl+b'],       // TPT's
   undo: ['Mod+z'],
   find: ['/'],
+  slice: ['KeyJ'],
+  sliceFlip: ['KeyK'],
+  sliceBack: ['Alt+KeyJ'],
+  sliceForward: ['Alt+KeyK'],
+  checkpointSave: ['KeyN'],
+  checkpointReset: ['KeyM'],
 
   // the simulation and the interface
   escape: ['Escape'],     // closes menus; with none open, pauses (Sandbox) or the menu (a gamemode)

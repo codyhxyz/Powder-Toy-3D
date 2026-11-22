@@ -148,6 +148,19 @@ int stUnitAt(float x, float z, float s) {
   return STRATA_UNIT_SANDSTONE;
 }
 int stUnit(float x, float y, float z) { return stUnitAt(x, z, stHeight(x, y, z)); }
+// Sandstone immediately under a real (not pinched out) seam. Ironstone
+// nodules in the Coal Measures follow bedding rather than cutting across it.
+bool stUnderCoal(float x, float y, float z, float reach) {
+  float s = stHeight(x, y, z), top = stLimeTop();
+  if (s < top) return false;
+  for (int k = 0; k < STRATA_CYCLES; k++) {
+    top += stCycle(k);
+    if (s >= top) continue;
+    float seam = stCoal(k, x, z), gap = top - seam - s;
+    return seam >= 0.5 && gap > 0.0 && gap <= reach;
+  }
+  return false;
+}
 int stElement(int unit) {
   if (unit == STRATA_UNIT_LIMESTONE) return E_LIMESTONE;
   if (unit == STRATA_UNIT_SANDSTONE) return E_SANDSTONE;

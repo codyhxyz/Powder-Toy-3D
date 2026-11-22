@@ -62,8 +62,9 @@ export async function validateSections(data, header) {
 }
 
 // Hand each registered section its data (a Map from decodeSave), or absent().
-export async function applySections(data, header) {
+export async function applySections(data, header, skip = null) {
   for (const [key, s] of sections) {
+    if (skip?.has(key)) continue;
     try {
       if (data.has(key)) await s.load(data.get(key), header);
       else await s.absent?.(header);

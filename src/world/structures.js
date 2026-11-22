@@ -4,7 +4,9 @@ import { E, ELEMENTS, K } from '../elements.js';
 import { runGenerator, bake, turnPoint, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS, SHRINE_ALTARS } from '../constructions/builtins.js';
 import { islandTwin, layersAt, pcg, TREE } from './generator.js';
+import { CAVE } from './island/caves.js';
 import { LANDFORMS } from './island/landforms.js';
+import { HUMAN } from '../constructions/shared.js';
 import { bakeFor, structureWorker } from './bake.js';
 import { appearanceOf, materialWord, materialId } from '../appearance.js';
 
@@ -22,8 +24,8 @@ import { appearanceOf, materialWord, materialId } from '../appearance.js';
 //
 // Each placed structure is its construction (constructions/builtins.js,
 // structures.js) baked at its size, quarter and seed, its base on the highest
-// ground under it (footings fill the rest) or, for the dock, the mine and the
-// campfire, on the ground at its origin. The scene draws them in its sceneCell
+// ground under it (footings fill the rest), on the ground at its origin (dock,
+// mine, campfire), or at a cave's floor or waterline. The scene draws them in its sceneCell
 // (STRUCT_GLSL structureCell): one texel of a brick-column index finds the
 // structure over a column, a cell atlas holds every structure's cells, and a
 // footing grows from the base down to the ground exactly as the stamp pass's
@@ -31,13 +33,13 @@ import { appearanceOf, materialWord, materialId } from '../appearance.js';
 // an edit), the far field and every window move see them alike, seamlessly.
 //
 // Trees give way: a tree candidate whose trunk stands within TREE.REACH of a
-// structure's box is dropped before thinning (generator.js treeCandidate, the
+// surface structure's box is dropped before thinning (generator.js treeCandidate, the
 // far field's sceneTreeCandidate: the index's clearing channel), so no crown
 // reaches into one.
 //
 // Stability: only constructions that are still as generated are placed (no lit
 // fire, CLONE, ice, or plants by water; constructions/structures.js), and site
-// rules keep them off water.
+// rules keep their floors above water or on anchored stilts.
 
 export const SITE = 64;               // cells: the side of a site square (one candidate per kind each)
 const SITE_TRIES = 6;                 // hashed points tried per square and kind
@@ -50,6 +52,25 @@ const UNIT32 = 4294967296;
 const MAX_SLOTS = 255;                // structures a world holds (the index's 8-bit slot)
 const SEEDS = 8;                      // construction seeds a kind draws from: variety enough, and the bakes are kept
 const ATLAS_W = 2048;                 // the cell atlas' widest row, cells (a 3D texture's guaranteed size)
+const CAVE_STEP = 12;                 // cave sites use one shared lattice, independent of the surface sites
+const CAVE_Y_STEP = 3;                // less than the minimum headroom; a hit is traced down to the real floor
+const CAVE_FOOT = 5;                  // max dry-chamber footing, even for the reused surface shrine
+
+// Island params without an explicit structure start come from worldParams
+// (including the Box/Islet generator); they get the same cave rooms and shrines.
+// An explicit configuration also enables the existing surface settlements.
+export const hasIslandStructures = (P) => Boolean(P.structures ?? (P.landforms != null && Array.isArray(P.axis) && Number.isFinite(P.feature)));
+
+// Walk from the island's centre toward the god view to find the shore, then
+// step back inland by a quarter of the window. Both maps site their shrine here.
+export const ISLAND_VIEW_XZ = [11, 13];  // app.js WORLD_VIEW_DIR's x, z
+export function islandStart(P, win, T = islandTwin(P)) {
+  const len = Math.hypot(...ISLAND_VIEW_XZ), d = ISLAND_VIEW_XZ.map((v) => v / len);
+  const at = (r) => [P.center[0] + d[0] * r, P.center[1] + d[1] * r];
+  let r = 0;
+  while (r < Math.max(P.size[0], P.size[2]) / 2 && T.genColumnHeight(...at(r)) >= P.sea) r += 16;
+  return at(r - 0.25 * Math.max(...win));
+}
 
 // Site rules' numbers, cells unless noted (shares of the relief are of P.relief).
 export const STRUCT = {
@@ -121,7 +142,7 @@ export const STRUCT = {
 // try instead of the squares' (a lattice scan for rare ground, a landform's
 // own places), or null for the squares'.
 const KINDS = [
-  { kind: 'shrine', cap: 1, spacing: 0, sites: (T, P) => shrineSites(P) },   // the world's perk shrine, near where it starts
+  { kind: 'shrine', cap: 1, spacing: 0, sites: shrineSites },   // the world's perk shrine, near where it starts
   { kind: 'lighthouse', cap: 1, spacing: 400, sites: (T, P) => lattice(P, STRUCT.LATTICE, (x, z) => T.genTop(x, z) >= P.sea + STRUCT.LIGHT_ABOVE[0]) },
   { kind: 'bridge', cap: 1, spacing: 400, sites: (T, P) => gorgeCrossings(T, P) },
   { kind: 'stones', cap: 1, spacing: 400 },
@@ -136,6 +157,16 @@ const KINDS = [
   { kind: 'house', cap: 6, spacing: 96 },
 ];
 
+// The index holds one structure per brick column. Keep all the original
+// surface sites first, then fit cave rooms into the remaining columns.
+const CAVE_KINDS = [
+  { kind: 'deepShrine', key: 'SHRINE', cap: 2, spacing: 220, cheese: true },
+  { kind: 'stope', key: 'STOPE', cap: 3, spacing: 72 },
+  { kind: 'pumproom', key: 'PUMPROOM', cap: 2, spacing: 72 },
+  { kind: 'grotto', key: 'GROTTO', cap: 2, spacing: 72 },
+  { kind: 'cove', key: 'COVE', cap: 2, spacing: 72, coastal: true },
+];
+
 // ---------------------------------------------------------------- geometry
 // quarter q turns a construction's front (+z) to face FRONT[q] (runtime.js turnCells)
 const FRONT = [[0, 1], [1, 0], [0, -1], [-1, 0]];
@@ -143,9 +174,13 @@ const quarterFacing = (dx, dz) => (Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? 1 : 3
 
 const seedOf = (h) => 1 + (pcg(h) % SEEDS);
 const baked = new Map();   // key|variant|quarter|seed → baked construction (runtime.js bake)
-function bakeOf(key, variant, quarter, seed) {
-  const k = `${key}|${variant}|${quarter}|${seed}`;
-  if (!baked.has(k)) baked.set(k, bake(runGenerator(BUILTINS[key], { size: SIZE, seed, variant }), quarter));
+function bakeOf(key, variant, quarter, seed, underground = false) {
+  const k = `${key}|${variant}|${quarter}|${seed}|${underground}`;
+  if (!baked.has(k)) {
+    const s = bake(runGenerator(BUILTINS[key], { size: SIZE, seed, variant }), quarter);
+    if (underground && key === 'SHRINE') s.foot = CAVE_FOOT;
+    baked.set(k, s);
+  }
   return baked.get(k);
 }
 
@@ -285,10 +320,10 @@ const RULES = {
   },
 
   // the world's shrine: the flattest dry spot near the start
-  shrine(T, P, x, z, h) {
+  shrine(T, P, x, z, h, start) {
     const st = site(T, 'SHRINE', undefined, 0, 1, x, z);
     if (st.wet || st.rise > STRUCT.SHRINE_RISE || st.lo < P.sea + STRUCT.SHRINE_DRY || st.y + st.s.h + TOP_MARGIN >= P.size[1]) return null;
-    const [sx, sz] = P.structures.start;
+    const [sx, sz] = start;
     return { score: -(st.rise + STRUCT.SHRINE_FAR_COST * Math.hypot(x - sx, z - sz)), parts: [st] };
   },
 
@@ -368,26 +403,24 @@ function lattice(P, step, keep) {
 }
 
 // Lattice points round the world's start for its shrine (none without a start).
-function shrineSites(P) {
-  const st = P.structures?.start, S = STRUCT;
-  if (!st) return [];
+function shrineSites(T, P) {
+  const S = STRUCT, [w, , d] = P.size;
+  const st = P.structures?.start ?? islandStart(P, [Math.min(128, w), Math.min(128, d)], T);
   const out = [];
   for (let dz = -S.SHRINE_SEARCH; dz <= S.SHRINE_SEARCH; dz += S.SHRINE_STEP)
-    for (let dx = -S.SHRINE_SEARCH; dx <= S.SHRINE_SEARCH; dx += S.SHRINE_STEP) out.push({ x: Math.round(st[0] + dx), z: Math.round(st[1] + dz) });
+    for (let dx = -S.SHRINE_SEARCH; dx <= S.SHRINE_SEARCH; dx += S.SHRINE_STEP) out.push({ x: Math.round(st[0] + dx), z: Math.round(st[1] + dz), c: st });
   return out;
 }
 
-// The world's shrine's altars (constructions/builtins.js SHRINE_ALTARS), in
-// world cells, for the app's perk orbs; null if the world placed none.
-export function shrineAltars(P) {
-  const s = structuresOf(P).find((r) => r.kind === 'shrine');
-  if (!s) return null;
-  const y0 = s.y - s.s.base.y;
-  return SHRINE_ALTARS.map(([x, y, z]) => {
-    const [X, Z] = turnPoint(x, z, s.quarter);
-    return new THREE.Vector3(s.x0 + s.s.base.x + X + 0.5, y0 + s.s.base.y + y, s.z0 + s.s.base.z + Z + 0.5);
-  });
-}
+const ALTAR_KINDS = new Set(['shrine', 'deepShrine']);
+const altarPositions = (s) => SHRINE_ALTARS.map(([x, y, z]) => {
+  const [X, Z] = turnPoint(x, z, s.quarter);
+  return new THREE.Vector3(s.x + X + 0.5, s.y + y, s.z + Z + 0.5);
+});
+
+// One array of world-cell positions per shrine (the surface offer first).
+export const allShrineAltars = P => structuresOf(P).filter((s) => ALTAR_KINDS.has(s.kind)).map(altarPositions);
+export const shrineAltars = P => allShrineAltars(P)[0] ?? null;
 
 // Places round each tarn for a hermit's cabin: HERMIT_ANGLES on a ring past its clearance.
 function tarnSites(P) {
@@ -450,27 +483,142 @@ function overlaps(a, b) {
   return a.x0 - GAP < b.x0 + b.s.w && b.x0 - GAP < a.x0 + a.s.w && a.z0 - GAP < b.z0 + b.s.d && b.z0 - GAP < a.z0 + a.s.d;
 }
 
+// ---------------------------------------------------------------- cave sites
+
+function caveSites(T, P) {
+  const dry = [], coast = [], { sea } = P;
+  const min = Math.max(sea + 1, CAVE.BOTTOM + CAVE_FOOT);
+  const air = (x, y, z) => T.islandCellBare(x, y, z) === E.EMPTY;
+  // A tighter scan on small islands costs little and finds narrow sea mouths.
+  const step = Math.min(CAVE_STEP, Math.max(2, Math.floor(Math.min(P.size[0], P.size[2]) / 64)));
+  for (const { x, z } of lattice(P, step, (x, z) => T.genTop(x, z) >= sea + 8)) {
+    const g = T.genTop(x, z);
+    if (T.column(x, z)[3] > g || T.caveLakeClear(x, z)) continue;
+    if (g <= sea + CAVE.SEA_INLAND && sea - 9 >= CAVE.BOTTOM &&
+        T.islandCellBare(x, sea - 1, z) === E.WATER && air(x, sea, z) && air(x, sea + 4, z)) {
+      coast.push({ x, y: sea - 1, z, score: 0 });
+    }
+    let next = min + 1;
+    // Probe the lower tunnels, the cheese layer and the upper tunnels, not
+    // every voxel in the column. Skip past each opening once found.
+    for (let t = min + 1; t <= Math.min(g - 8, sea + CAVE.UPPER_FLOOR + CAVE.UPPER_AMP + CAVE.TUN_H_MAX); t += CAVE_Y_STEP) {
+      if (t < next || !air(x, t, z) || !air(x, t + 3, z)) continue;
+      let y = t - 1;
+      while (y >= min && air(x, y, z)) y--;
+      next = t + 1;
+      while (next < g && air(x, next, z)) next++;
+      const head = next - y - 1;
+      if (y < min || head < HUMAN.HEADROOM || !bears(T.islandCellBare(x, y, z))) continue;
+      const cheese = !T.caveCheeseSolid(x + 0.5, y + 4.5, z + 0.5, g, sea, g - CAVE.ROOF);
+      dry.push({ x, y, z, cheese, score: Math.min(head, 16) });
+    }
+  }
+  return { dry, coast };
+}
+
+function caveRoomSite(T, P, K, c, quarter, list, wall) {
+  const seed = 1;   // these player-scale rooms have no randomized cells
+  const { y } = c, { key, kind, coastal } = K, s = bakeOf(key, undefined, quarter, seed, true);
+  const [fx, fz] = FRONT[quarter];
+  const reach = fx ? (fx > 0 ? s.w - s.base.x : s.base.x + 1) : (fz > 0 ? s.d - s.base.z : s.base.z + 1);
+  // If a room does not fit centred on the cave floor, seat it in the flank
+  // and put its entrance at the sampled floor instead. Its AIR cuts the room.
+  const x = c.x - wall * fx * reach, z = c.z - wall * fz * reach;
+  const x0 = x - s.base.x, z0 = z - s.base.z, top = y + s.h;
+  const st = { kind, key, quarter, seed, s, x, y, z, x0, z0, lo: y, hi: y, rise: 0, wet: !!coastal, underground: true };
+  if (x0 < 1 || z0 < 1 || x0 + s.w >= P.size[0] || z0 + s.d >= P.size[2] || y - s.foot < CAVE.BOTTOM) return null;
+  if (list.some((o) => overlaps(o, st))) return null;
+  const at = (cx, yy, cz) => T.islandCellBare(cx, yy, cz);
+  const cover = coastal ? 2 : K.cheese ? CAVE.CHEESE_ROOF : CAVE.ROOF;
+
+  // The construction cuts its own interior, but its open front must lead
+  // back into the natural cavern, not into a rock face or over a drop.
+  for (let i = -1; i <= 1; i++) {
+    const cx = x + fx * reach + fz * i, cz = z + fz * reach + fx * i;
+    const floor = coastal ? y + 1 : bears(at(cx, y + 1, cz)) ? y + 1 : y;
+    if (!coastal && !bears(at(cx, floor, cz)) && !bears(at(cx, floor - 1, cz))) return null;
+    for (let h = 1; h <= HUMAN.HEADROOM - 1; h++) if (at(cx, floor + h, cz) !== E.EMPTY) return null;
+  }
+
+  // Verify every column is below the terrain. Require a real rock lid at
+  // room scale as well, so a surface shaft isn't mistaken for a chamber.
+  if (T.genTop(x, z) < top + cover) return null;
+  for (let j = 0; j < s.d; j++) for (let i = 0; i < s.w; i++) {
+    const cx = x0 + i, cz = z0 + j, g = T.genTop(cx, cz);
+    if (g < top + cover || T.column(cx, cz)[3] > g) return null;
+    if (i % SAMPLE === 0 && j % SAMPLE === 0 &&
+        (!bears(at(cx, g - 1, cz)) || !bears(at(cx, g - 2, cz)))) return null;
+    // Only real stilt columns can grow a footing. A cove must not float
+    // above the sea floor; dry slabs bridge only bounded local gaps.
+    if (s.data[(j * s.h * s.w + i) * 4 + 3] &&
+        (coastal || (i % SAMPLE === 0 && j % SAMPLE === 0))) {
+      let f = 1;
+      while (f <= s.foot && !bears(at(cx, y - f, cz))) f++;
+      if (f > s.foot) return null;
+    }
+  }
+  // A room can carve air or introduce reactive materials. Include its
+  // footings and keep the same diagonal clearance as natural reservoirs.
+  for (let cz = z0 - CAVE.SEAL; cz < z0 + s.d + CAVE.SEAL; cz++)
+    for (let cx = x0 - CAVE.SEAL; cx < x0 + s.w + CAVE.SEAL; cx++)
+      for (let yy = y - s.foot - CAVE.SEAL; yy < top + CAVE.SEAL; yy++) {
+        const id = at(cx, yy, cz);
+        if (id === E.OIL || id === E.PROPANE || id === E.HEALTHIUM) return null;
+        // Distinguish geode interiors and shells from ordinary cave air and
+        // crystals. The sentinel leaves the surrounding host rock unmarked.
+        if ((id === E.EMPTY || id === E.CRYSTAL || id === E.BASALT || id === E.DIAMOND) &&
+            T.caveSealed(cx, yy, cz, -2) >= 0) return null;
+        if (id === E.LIMESTONE) {
+          const ore = T.islandNature(cx, yy, cz, id);
+          if (ore === E.ROCK_SALT || ore === E.SULFUR) return null;
+        }
+      }
+  return st;
+}
+
+function placeCaveRooms(T, P, list, stream) {
+  const { dry, coast } = caveSites(T, P);
+  for (const K of CAVE_KINDS) {
+    const sites = K.coastal ? coast : K.cheese ? dry.filter((c) => c.cheese) : dry;
+    const tries = sites.map((c) => ({ ...c, hash: pcg(c.x + pcg(c.z + stream)) }));
+    tries.sort((a, b) => b.score - a.score || a.hash - b.hash);
+    const kept = [];
+    // Prefer a footprint centred on the natural floor, then try its flank.
+    for (const wall of [0, 1]) for (const c of tries) {
+      if (kept.length >= K.cap || list.length >= MAX_SLOTS) break;
+      if (!wall && kept.some((o) => Math.hypot(o.x - c.x, o.z - c.z) < K.spacing)) continue;
+      for (let i = 0; i < 4; i++) {
+        const st = caveRoomSite(T, P, K, c, (c.hash + i) & 3, list, wall);
+        if (!st || kept.some((o) => Math.hypot(o.x - st.x, o.z - st.z) < K.spacing)) continue;
+        kept.push(st);
+        list.push(st);
+        break;
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------- placement
 const placed = new Map();   // JSON(P) → the world's structures
 const PLACED_KEEP = 4;
 
 // A placed structure as a record (world/bake.js ships them): what placement
 // chose, without its baked construction, which fromRecord bakes again.
-export const structureRecord = ({ kind, key, variant, quarter, seed, x, y, z, lo, hi, rise, wet }) =>
-  ({ kind, key, variant, quarter, seed, x, y, z, lo, hi, rise, wet });
+export const structureRecord = ({ kind, key, variant, quarter, seed, x, y, z, lo, hi, rise, wet, underground }) =>
+  ({ kind, key, variant, quarter, seed, x, y, z, lo, hi, rise, wet, underground });
 function fromRecord(r) {
-  const s = bakeOf(r.key, r.variant, r.quarter, r.seed);
+  const s = bakeOf(r.key, r.variant, r.quarter, r.seed, r.underground);
   return { ...r, s, x0: r.x - s.base.x, z0: r.z - s.base.z };
 }
 
 // World P's structures: [{ key, variant, quarter, seed, x, y, z, s (baked), x0, z0, kind }].
 // From the build's bake when it is of this very world (world/bake.js), else placed here.
 export function structuresOf(P) {
-  if (!P.structures) return [];
+  if (!hasIslandStructures(P)) return [];
   const k = JSON.stringify(P);
   if (placed.has(k)) return placed.get(k);
   const b = bakeFor(P.size, P.seed);
-  if (b && JSON.stringify(b.landforms) === JSON.stringify(P.landforms) && JSON.stringify(b.start) === JSON.stringify(P.structures.start)) {
+  if (b && JSON.stringify(b.landforms) === JSON.stringify(P.landforms) && JSON.stringify(b.start) === JSON.stringify(P.structures?.start)) {
     const list = b.records.map(fromRecord);
     if (placed.size >= PLACED_KEEP) placed.clear();
     placed.set(k, list);
@@ -479,7 +627,8 @@ export function structuresOf(P) {
   const T = islandTwin(P), [wx, , wz] = P.size, stream = pcg((P.seed + SALT) >>> 0);
   const cands = [];
   // kinds with sites of their own try those (hashed per point), the rest the squares'
-  const siteLists = KINDS.map(({ sites }) => sites?.(T, P) ?? null);
+  const surfaceKinds = P.structures ? KINDS : KINDS.slice(0, 1);
+  const siteLists = surfaceKinds.map(({ sites }) => sites?.(T, P) ?? null);
   siteLists.forEach((list, rank) => list?.forEach(({ x, z, c }) => {
     const h = pcg((x >>> 0) + pcg(((z >>> 0) + stream + rank) >>> 0)), r = RULES[KINDS[rank].kind](T, P, x, z, h, c);
     if (r) cands.push({ kind: KINDS[rank].kind, rank, x, z, score: r.score, tie: h, parts: r.parts });
@@ -487,7 +636,7 @@ export function structuresOf(P) {
   for (let sz = 0; sz < wz / SITE; sz++)
     for (let sx = 0; sx < wx / SITE; sx++) {
       const h0 = pcg((sx >>> 0) + pcg(((sz >>> 0) + stream) >>> 0));
-      KINDS.forEach(({ kind, tries = SITE_TRIES, sites }, rank) => {
+      surfaceKinds.forEach(({ kind, tries = SITE_TRIES, sites }, rank) => {
         if (sites && siteLists[rank]) return;
         let h = pcg(h0 + rank);
         for (let t = 0; t < tries; t++, h = pcg(h)) {
@@ -510,6 +659,7 @@ export function structuresOf(P) {
     count[c.kind] = (count[c.kind] ?? 0) + 1;
   }
   const list = kept.flatMap((c) => c.parts.map((p) => ({ ...p, kind: c.kind })));
+  placeCaveRooms(T, P, list, stream);
   if (placed.size >= PLACED_KEEP) placed.clear();
   placed.set(k, list);
   return list;
@@ -519,7 +669,7 @@ export function structuresOf(P) {
 // (world/bakeClient.js): its list lands in structuresOf's cache, so the calls
 // after it are instant. (island.prepare awaits it while its columns compile.)
 export async function structuresReady(P) {
-  if (!P.structures) return;
+  if (!hasIslandStructures(P)) return;
   const k = JSON.stringify(P), work = structureWorker();
   if (placed.has(k)) return;
   if (work) {
@@ -535,7 +685,7 @@ export async function structuresReady(P) {
   structuresOf(P);
 }
 // Is world P's placement known yet (or will asking compute it here)?
-const placedYet = (P) => !P.structures || placed.has(JSON.stringify(P)) || !structureWorker();
+const placedYet = (P) => !hasIslandStructures(P) || placed.has(JSON.stringify(P)) || !structureWorker();
 
 // ---------------------------------------------------------------- the textures
 // index: RGBA8UI per world brick column: r = slot + 1 of the structure whose box
@@ -581,7 +731,7 @@ export function structureData(P, list) {
       for (let bx = Math.floor((st.x0 - R) / BRICK); bx <= Math.floor((st.x0 + s.w - 1 + R) / BRICK); bx++) {
         if (bx < 0 || bz < 0 || bx >= BX || bz >= BZ) continue;
         const o = (bz * BX + bx) * 4;
-        index[o + 1] = 1;
+        if (!st.underground) index[o + 1] = 1;
         const inBox = bx * BRICK + BRICK > st.x0 && bx * BRICK < st.x0 + s.w && bz * BRICK + BRICK > st.z0 && bz * BRICK < st.z0 + s.d;
         if (inBox) index[o] = slot + 1;
       }
@@ -596,7 +746,7 @@ export function structureData(P, list) {
 
 // Is a tree's trunk at world column (x, z) in a structure's clearing? (CPU twin of structureClears)
 export function structureClear(P, x, z) {
-  if (!P.structures) return false;
+  if (!hasIslandStructures(P)) return false;
   const { index, BX, BZ } = structureData(P), bx = Math.floor(x / BRICK), bz = Math.floor(z / BRICK);
   return bx >= 0 && bz >= 0 && bx < BX && bz < BZ && index[(bz * BX + bx) * 4 + 1] > 0;
 }
@@ -610,7 +760,7 @@ export function structureCellAt(P, x, y, z, id, cellAt) {
 
 // Parallel authored-material API, preserving the existing physical wrapper.
 export function structureMaterialAt(x, y, z, id, P, cellAt) {
-  if (!P.structures) return id;
+  if (!hasIslandStructures(P)) return id;
   const { index, cells, info, size: [AW, AH], BX, BZ } = structureData(P);
   const bx = Math.floor(x / BRICK), bz = Math.floor(z / BRICK);
   if (bx < 0 || bz < 0 || bx >= BX || bz >= BZ) return id;
@@ -657,7 +807,7 @@ export function structureWords(P) {
     w = {
       data,
       values: {
-        uStructOn: !!P.structures, uStructBX: d.BX, uStructBZ: d.BZ, uStructAW: d.size[0], uStructAH: d.size[1],
+        uStructOn: !!hasIslandStructures(P), uStructBX: d.BX, uStructBZ: d.BZ, uStructAW: d.size[0], uStructAH: d.size[1],
         uStructInfoAt: nIndex, uStructCellsAt: nIndex + nInfo,
       },
     };

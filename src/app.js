@@ -38,14 +38,20 @@ import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { sceneEdgeSea, boxEdgeSea, edgeSeaParams } from './gfx/edgeSea.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
-import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
+import { propIndex, parseProp, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS, boxFromCorners, boxShellThickness, lineRadius,
+  nextBuilderMode, builderPress, previewBuilder, builderBox, builderPlanePoint, builderExtrudeGuide, builderExtrudeDepth } from './editing.js';
 import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
+import { builderNote } from './pov/hud.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS, freshPresetKey } from './presets.js';
 import { enterAuthoredMap } from './lab/entry.js';
 import { decodeScenePlaques } from './lab/scenePlaques.js';
 import { preservationManifest } from './lab/preservation/index.js';
+import { destroyableCityManifest } from './scenes/destroyableCity.js';
+import { nuclearReactorManifest } from './scenes/nuclearReactor.js';
+import { nuclearBunkerManifest } from './scenes/nuclearBunker.js';
+import { volcanoTownManifest } from './scenes/volcanoTown.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -55,6 +61,8 @@ import { createCameraRig, bindCameraMouse } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
 import { createMeshFrames } from './gfx/meshFrames.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
+import { cutawayParams, newCutaway } from './cutaway.js';
+import { createCheckpoint } from './checkpoint.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createElementInspector } from './lab/inspector.js';
@@ -109,7 +117,14 @@ const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], 
   valley: ARENA_PRESETS.damValley.size };
 // Authored fixed-size presets switch to their grid; ordinary box scenes
 // switch back. Their grids aren't in the Grid size row.
-const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley' };
+const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley', destroyableCity: 'valley', nuclearReactor: 'valley', nuclearBunker: 'valley', volcanoTown: 'valley' };
+const PRESET_PLAQUES = new Map([
+  ['preservationLab', preservationManifest],
+  ['destroyableCity', destroyableCityManifest],
+  ['nuclearReactor', nuclearReactorManifest],
+  ['nuclearBunker', nuclearBunkerManifest],
+  ['volcanoTown', volcanoTownManifest],
+]);
 const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset
 const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
@@ -394,6 +409,14 @@ function applyOutputRatio() {
 let sim, derived, vol, scale;
 // The material views' march in world cells, on every map (gfx/worldView.js, docs/seamless-world.md)
 let worldView = null;
+let cutaway = newCutaway(), sliceRevision = 0;
+const localCutaway = () => cutawayParams(cutaway, sim.origin.toArray());
+const checkpoint = createCheckpoint({
+  capture: () => wire('saves').captureCheckpoint(ctx),
+  restore: (state, valid) => wire('saves').restoreCheckpoint(ctx, state, valid),
+  onChange: state => { toolbar.setCheckpoint(state); pacer.wake(); },
+});
+const checkpointRestoring = () => checkpoint.state.busy === 'restoring';
 // The blocks renderer (gfx/blocks.js) draws the Plain view (src/views.js):
 // the world as its cells' visible faces, Minecraft's way, and nothing that
 // only feeds the volume's march runs (the derived passes, GI, the volume's
@@ -570,6 +593,9 @@ let replicaMap = null;
 let boxSea = null;
 const STATE_RGBA = 4;   // floats a texel of a CPU-built state: id, °C, life, ctype (sim.js load)
 function build(savedWorldSize = null) {
+  clearCheckpoint();
+  cutaway = newCutaway(); sliceRevision++;
+  toolbar.setSlice(cutaway);
   if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
@@ -749,6 +775,7 @@ function pickedNow(cell, o) {
 
 // Multiplayer guests follow the host's grid size (a box: never World).
 function setGrid(dims, meta = null) {
+  if (checkpointRestoring()) return false;
   // Replica terrain is not proof of this client's authored map identity.
   // Keep its local manifest disabled even if the guest later plays on solo.
   if (mp.replica) savedScenePlaques = [];
@@ -782,6 +809,7 @@ function gridFits(dims) {
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
 function setSize(size, savedWorldSize = null) {
+  if (checkpointRestoring()) return false;
   // Only an explicitly supported historical size can override a map's current size.
   if (savedWorldSize && (!(size in WORLDS) || !sceneByKey(settings.scene).legacySize?.every((n, i) => n === savedWorldSize[i]))) return false;
   if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
@@ -806,6 +834,7 @@ function useMap(m) {
 // The start menu's Start over a running game (src/main.js): the map, loaded
 // fresh (the current one starts over), then its gamemode.
 function openMap(key, mode = 'sandbox') {
+  if (checkpointRestoring()) return false;
   if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key), kind = m && kindOfMap(m);
@@ -852,6 +881,7 @@ function currentMap() {
 // first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  if (checkpointRestoring()) return false;
   // (mapKind.js coopSandboxOnly)
   if (mode !== 'sandbox' && mapKind.coopSandboxOnly && mp.role && mp.role !== 'solo') { hud.toast('World co-op supports Sandbox exploration, not matches or progression.'); return; }
   const epoch = ++modeEpoch;
@@ -951,6 +981,7 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  if (checkpointRestoring()) return false;
   name = freshPresetKey(name);
   if (mp.frozen && undoable) { mp.resumeSolo(); replicaMap = null; }
   if (mp.replica) return false;
@@ -963,19 +994,26 @@ function loadPreset(name, undoable = true) {
     hud.toast(`${notYet(sceneLabel(name))}. Here is the Lab instead`, { kind: 'error' });
     name = 'lab';
   }
+  let sceneEntry;
   if (undoable && mapKind.sceneUndo) {
-    // Scene undo must restore registered machines and conserved pump cargo,
-    // not just their physical decks. Ordinary brush snapshots stay terrain-only.
+    // Scene undo must restore shrine offers, registered machines and conserved
+    // pump cargo, not just their cells. Brush snapshots stay terrain-only.
     let industry;
-    try { if (ctx.industry) industry = { preset: settings.preset, data: ctx.industry.toJSON() }; }
+    try { if (ctx.industry) industry = ctx.industry.toJSON(); }
     catch (error) { hud.toast(error.message); return false; }
     sim.snapshot(sceneLabel(name));
+    sceneEntry = sim.history.at(-1);
     const scenePlaques = ctx.getScenePlaques();
-    if (industry || scenePlaques) sim.history.at(-1).note = {
-      ...(industry ? { industry } : {}),
-      ...(scenePlaques ? { scenePlaques: { preset: settings.preset, records: decodeScenePlaques(scenePlaques) } } : {}),
+    sceneEntry.note = {
+      preset: settings.preset,
+      perkOrbs: perkOrbs?.toJSON() ?? [],
+      scenePlaques: scenePlaques ? decodeScenePlaques(scenePlaques) : null,
+      industry,
     };
   }
+  shapeDrag = pendingShape = null;
+  clearCheckpoint();
+  wire('world')?.cancelIsland();
   settings.preset = name;
   savedScenePlaques = null;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
@@ -984,13 +1022,15 @@ function loadPreset(name, undoable = true) {
   if (!mapKind.presets && !mp.replica) wire('world').loadScene(ctx);
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
-    if (mp.replica) return;
+    if (mp.replica || settings.preset !== name) return;
     let sceneBuild = null;
     if (!mapKind.presets) { /* loaded above */ }
     else if (name === 'empty') sim.clear();
     // (the Islet fills on the GPU, from the island scene: world/gpu.js loadIsland's world P. Its sea past
     // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
-    else if (name === 'island') wire('world').loadIsland(ctx)?.then((P) => { if (P && mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P); });
+    else if (name === 'island') wire('world').loadIsland(ctx, sceneEntry, (P) => {
+      if (mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P);
+    })?.catch(stopGraphics);
     else sceneBuild = buildPreset(name, sim);
     arenaLayout = mapKind.presets && name in ARENA_PRESETS ? sceneBuild : null;
     resetSimModes();
@@ -1040,7 +1080,8 @@ let releasePending = false;   // its button went up before it had: it stops afte
 let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
 let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
 let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
-let dragY = 0;
+let toolGunBuilding = false; // its input is live, not behind a menu or unlocked
+let dragAxis = 1, dragCoord = 0;  // world cells, even if the window shifts
 // A big map's god view works where you aim (Minecraft's simulation distance follows the player; an editor's
 // player is its cursor): a press anywhere on the map brings physics' window there (workFocus, world cells
 // [x, z], wire/world.js godFocus), and it stays while you work there. It goes back to following the eye once
@@ -1050,7 +1091,7 @@ const WORK_FOCUS_RELEASE = 0.5;   // × the window's width: eye travel that hand
 // frame: across a 1024-cell island in about two seconds), then it's dropped and says so.
 const WORK_ARRIVAL_MS = 5000;
 let workFocus = null, workEye = null;
-let parked = null;        // a one-click, fill or shape press waiting for the window: { e, hover (world cells), at, released }
+let parked = null;        // a one-click or fill press waiting for the window: { e, hover (world cells), at }
 let heldCenter = null;    // a click's brush centre (world cells) while its one paint waits for the window
 let heldAt = 0;
 const brushCenter = new THREE.Vector3();
@@ -1093,9 +1134,12 @@ function screenCurve(ray) {
 }
 function screenAt(ray, t, out) { return out.fromArray(rayPoint(screenCurve(ray), t)); }
 // Where the screen's ray meets height `height` (grid cells), or null.
-function screenPlane(ray, height, out) {
-  if (!presentation.active) return ray.intersectPlane(plane.set(plane.normal, -height), out);
-  const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
+function screenPlane(ray, height, out, axis = 1) {
+  if (!presentation.active) {
+    const n = plane.normal.set(0, 0, 0).setComponent(axis, 1);
+    return ray.intersectPlane(plane.set(n, -height), out);
+  }
+  const r = screenCurve(ray), t = planeRoots(r, axis, height).find((x) => x >= 0);
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
 function requestPick() {
@@ -1105,11 +1149,11 @@ function requestPick() {
   const ray = fromPov ? povRay : gridRay();
   const skipLiquids = fromPov && skipPickLiquids();
   pickPending = true;
-  const from = sim, o = sim.origin.clone(), revision = presentation.revision;
+  const from = sim, o = sim.origin.clone(), revision = presentation.revision, slice = sliceRevision;
   const whole = !fromPov && worldAim();   // (the whole map: its cell comes back in world cells)
-  (whole ? worldView.pick(ray.origin.clone().add(o), ray.direction) : vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids)).then((hit) => {
+  (whole ? worldView.pick(ray.origin.clone().add(o), ray.direction, false, cutawayParams(cutaway)) : vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids, localCutaway())).then((hit) => {
     pickPending = false;
-    if (from !== sim || revision !== presentation.revision || skipLiquids !== skipPickLiquids()) return;   // a new grid/effect/tool since
+    if (from !== sim || revision !== presentation.revision || slice !== sliceRevision || skipLiquids !== skipPickLiquids()) return;   // a new grid/effect/tool since
     hover.valid = hit.valid;
     if (hover.valid && whole) hover.cell.fromArray(hit.cell).sub(sim.origin);   // (window cells now; it may lie past the window)
     else if (hover.valid) {
@@ -1132,16 +1176,16 @@ function requestPick() {
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
 // whole: on a big map's god view, the whole map (worldAim): its cell may lie past the window.
 function pickRay(ro, rd, visible = false, whole = false) {
-  const o = sim.origin.clone(), from = sim, revision = presentation.revision;
+  const o = sim.origin.clone(), from = sim, revision = presentation.revision, slice = sliceRevision;
   if (visible && whole && worldAim()) {
-    return worldView.pick(new THREE.Vector3().copy(ro).add(o), rd).then((hit) => {
+    return worldView.pick(new THREE.Vector3().copy(ro).add(o), rd, false, cutawayParams(cutaway)).then((hit) => {
       const cell = new THREE.Vector3().fromArray(hit.cell).sub(sim.origin);
-      return { valid: from === sim && revision === presentation.revision && hit.valid, cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
+      return { valid: from === sim && revision === presentation.revision && slice === sliceRevision && hit.valid, cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
     });
   }
-  return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
+  return vol.pick(ro, rd, visible ? warpNow() : null, false, visible ? localCutaway() : undefined).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
-    return { valid: from === sim && (!visible || revision === presentation.revision) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
+    return { valid: from === sim && (!visible || (revision === presentation.revision && slice === sliceRevision)) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
   });
 }
 
@@ -1149,11 +1193,19 @@ function pickRay(ro, rd, visible = false, whole = false) {
 const isTool = () => settings.tool < 0;
 
 // an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
+function hoverOnSlice() {
+  if (!cutaway.enabled || !hover.valid || hover.id < 0) return false;
+  const { axis, sign, coord } = cutaway;
+  return hover.face === axis * 2 + (sign < 0 ? 1 : 0)
+    && hover.cell.getComponent(axis) + sim.origin.getComponent(axis) + (sign > 0 ? 1 : 0) === coord;
+}
 function hoverBrushCenter(out, tool = settings.tool) {
   const axis = Math.floor(hover.face / 2);
   const sign = hover.face % 2 === 0 ? 1 : -1;
   out.copy(hover.cell).addScalar(0.5);
-  if (tool >= 0 || hover.id < 0) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
+  // On a cut the adjacent cell in the normal direction is hidden. Centre
+  // the brush on the retained face instead, like heat and erase already do.
+  if (!hoverOnSlice() && (tool >= 0 || hover.id < 0)) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
   return out;
 }
 
@@ -1166,12 +1218,18 @@ function updateBrush() {
     builds?.update({ hover, active: false });
     return;
   }
-  if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
+  if (shapeDrag && (shapeDrag.sim !== sim || shapeDrag.pov !== !!pov?.active)) shapeDrag = null;
+  if (pov?.active) { updateGunBrush(); return; }
+  if (shapeDrag) {
+    updateShapeDrag();
+    showShapeDrag();
+    return;
+  }
   if (isBrush(settings.tool)) {
     if (painting && releasePending && heldCenter) {
       brushCenter.copy(heldCenter).sub(sim.origin);   // (a click's one paint, waiting for the window: where it was clicked)
       brushValid = true;
-    } else if (painting || shapeDrag) {
+    } else if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
     } else if (hover.valid) {
@@ -1181,14 +1239,9 @@ function updateBrush() {
   }
   // (a big map's god view: the brush goes anywhere on the map; the window follows a stroke, which paints once it's there)
   const aimWorld = worldAim();
-  if (aimWorld && brushValid && (painting || shapeDrag)) workAt(brushCenter.x + sim.origin.x, brushCenter.z + sim.origin.z);
+  if (aimWorld && brushValid && painting) workAt(brushCenter.x + sim.origin.x, brushCenter.z + sim.origin.z);
   if(!mapKind.clampBrush && brushValid && !aimWorld && !inWindow(brushCenter))brushValid=false;
   if (brushValid && mapKind.clampBrush) clampToGrid(brushCenter);
-  if (shapeDrag) {
-    if (brushValid) shapeDrag.end.copy(brushCenter);
-    showShapeDrag();
-    return;
-  }
   brush.set({
     visible: brushValid && pointerInside && !uiHover && !eyedropper,
     position: presentationPoint(brushCenter, tmpV).multiplyScalar(scale).add(volume.position),   // (where the view shows it: a presentation effect bends it)
@@ -1202,16 +1255,16 @@ function updateBrush() {
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
 // Where the pointer's ray meets the paint plane (the height a press started at), if in the grid's window.
 function planePoint(out) {
-  return !!screenPlane(gridRay(), dragY, out) && (!mapKind.streamed || worldAim() || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
+  return !!screenPlane(gridRay(), dragCoord - sim.origin.getComponent(dragAxis), out, dragAxis) && (!mapKind.streamed || worldAim() || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
 }
 
 // ---------------------------------------------------------------- TPT's editing tools (src/editing.js)
-// Line, box and flood fill (TPT's GameView.cpp UpdateDrawMode): Shift-drag draws
-// a line, Ctrl-drag a box, Ctrl+Shift-click fills. ⌘ stands in for Ctrl, as a
-// Mac's Ctrl-click is a right click. As in TPT the mode is fixed when the button
-// goes down, and a line or box is put down when it comes up; one undo step each.
-// TPT's Alt snaps them to 45°; Alt orbits here, so there's no snapping.
-let shapeDrag = null;   // { kind: 'line' | 'box', start, end (grid cells on the paint plane) } while one is dragged
+// TPT's Shift-drag and Ctrl/⌘-drag are shortcuts for the same builder used by
+// explicit point-and-click modes, including at the Tool Gun's crosshair.
+let shapeDrag = null;   // draft stores world cells, never positions tied to a streamed window
+let pendingShape = null; // a whole selection waiting for the streamed window
+let builderMode = 'freehand', builderHollow = false;
+const BUILDER_NAME = { freehand: 'Freehand', line: 'Line (axis snap)', box: 'Box', hollow: 'Hollow Box' };
 const drawModeOf = (e) => {
   const ctrl = e.metaKey || e.ctrlKey;
   return ctrl && e.shiftKey ? 'fill' : ctrl ? 'box' : e.shiftKey ? 'line' : null;
@@ -1219,44 +1272,139 @@ const drawModeOf = (e) => {
 // TPT's tools (heat, cool, pressure: DEFAULT_TOOL_*) and particles don't flood fill: they paint as usual
 const fills = (tool) => tool >= 0 || tool === ERASE_TOOL || tool === PROP_TOOL;
 
-function startShape(kind) {
-  const start = new THREE.Vector3();
-  if (!planePoint(start)) return false;
-  clampToGrid(start);
-  shapeDrag = { kind, start, end: start.clone(), sim, origin: sim.origin.clone() };
+// Structured voxel modes leave decorations and ray particles in their own
+// painting modes, and leave one-click tools and constructions alone.
+const isVoxelBrush = t => isBrush(t) && t !== LIGHTNING_TOOL && !isDecoTool(t) && rayKindOfTool(t) === RAY_KIND.NONE;
+const gridSize = () => [sim.g.nx, sim.g.ny, sim.g.nz];
+function builderBounds() {
+  if (worldAim()) return { lo: [0, 0, 0], hi: win.size };
+  const lo = sim.origin.toArray();
+  return { lo, hi: gridSize().map((n, i) => n + lo[i]) };
+}
+const containsBounds = (lo, hi, bounds) => lo.every((n, i) => n >= bounds.lo[i] && hi[i] <= bounds.hi[i]);
+const cellPoint = cell => cell.map(v => v + 0.5);
+const localPoint = point => new THREE.Vector3().fromArray(point).sub(sim.origin);
+function shapeAim(inPov) {
+  const ray = inPov ? (aimScreenRay() ? povRay : null) : gridRay();
+  if (!ray) return null;
+  const o = ray.origin.clone().add(sim.origin).toArray(), dir = ray.direction.toArray();
+  return { ray: presentation.active ? inverseRay(o, dir, presentation.parameters) : { C: o, B: dir, A: [0, 0, 0] }, dir };
+}
+function startShape(mode, { secondary = false, pointerId = null } = {}) {
+  const tool = secondary ? ERASE_TOOL : settings.tool;
+  const carve = tool === ERASE_TOOL || (tool >= 0 && settings.specificDelete);
+  if (!hover.valid || (carve && hover.id < 0)) return false;
+  const r = builderPress(mode, null, { carve, cell: hover.cell.clone().add(sim.origin).toArray(), face: hover.face });
+  if (r.action !== 'start') return false;
+  const { draft } = r, povShape = !!pov?.active, aim = shapeAim(povShape);
+  if (!aim || !containsBounds(draft.start, draft.start.map(v => v + 1), builderBounds())) return false;
+  const reach = draft.start.reduce((n, v, i) => n + (v + 0.5 - aim.ray.C[i]) * aim.dir[i], 0);
+  parked = null;
+  shapeDrag = { draft, sim, pov: povShape, pointerId, reach: Math.max(1, reach), tool };
+  workAt(draft.start[0] + 0.5, draft.start[2] + 0.5);
+  builds?.update({ hover, active: false, crosshair: povShape });
+  pacer.wake();
   return true;
 }
-// the line or box ghost while dragging (TPT's RenderLine and RenderRect previews)
-const ghostA = new THREE.Vector3(), ghostB = new THREE.Vector3(), ghostHalf = new THREE.Vector3();
-const toScene = (out, v) => presentationPoint(v, out).multiplyScalar(scale).add(volume.position);   // (as the view shows it)
-function showShapeDrag() {
-  const { kind, start, end } = shapeDrag, color = toolById(settings.tool).color;
-  if (kind === 'line') {
-    brush.setLine({ from: toScene(ghostA, start), to: toScene(ghostB, end), radius: settings.radius * scale, shape: settings.shape, color });
+function updateShapeDrag(aim = shapeAim(shapeDrag.pov)) {
+  if (!aim) return;
+  const d = shapeDrag, { ray, dir } = aim, { draft } = d, { lo, hi } = builderBounds();
+  if (!containsBounds(draft.start, draft.start.map(v => v + 1), { lo, hi })) return;
+  let input;
+  if (draft.phase === 'extrude') {
+    input = { depth: builderExtrudeDepth(draft, d.guide, ray, dir) };
+  } else if (draft.phase === 'footprint' || d.pointerId != null) {
+    // A drag stays on the clicked plane. Explicit Line aims in all three axes.
+    const point = builderPlanePoint(ray, draft.axis, draft.plane);
+    if (!point) return;
+    input = { point };
+  } else if (hover.valid) {
+    const p = hover.cell.clone().add(sim.origin);
+    if (!draft.carve) p.add(faceNormal(hover.face));
+    input = { point: cellPoint(p.toArray()) };
   } else {
-    const b = boxFromCorners(start, end, settings.radius, [sim.g.nx, sim.g.ny, sim.g.nz]);
-    brush.setBox({ position: toScene(ghostA, b.center), half: ghostHalf.fromArray(b.half).multiplyScalar(scale), color });
+    // Into open air the same reach follows the aim, allowing an upright line
+    // even without an opposite surface (like a freehand Tool Gun pour).
+    input = { point: rayPoint(ray, d.reach) };
+  }
+  d.draft = previewBuilder(draft, input, lo, hi);
+}
+const ghostA = new THREE.Vector3(), ghostB = new THREE.Vector3(), ghostHalf = new THREE.Vector3();
+const toScene = (out, p) => presentationPoint(localPoint(p), out).multiplyScalar(scale).add(volume.position);
+function showShapeDrag() {
+  const { draft, tool } = shapeDrag, { kind, start, end, hollow } = draft, color = toolById(tool).color;
+  if (kind === 'line') {
+    brush.setLine({ from: toScene(ghostA, cellPoint(start)), to: toScene(ghostB, cellPoint(end)), radius: lineRadius(settings.radius) * scale, shape: settings.shape, color });
+  } else {
+    const b = builderBox(draft, settings.radius);
+    brush.setBox({ position: toScene(ghostA, b.center), half: ghostHalf.fromArray(b.half).multiplyScalar(scale), color, hollow });
   }
 }
-// Put the line or box down (button up).
-function finishShape() {
+function advanceShape(secondary = false) {
   const d = shapeDrag;
-  shapeDrag = null;
-  if (!d) return;
-  if (d.sim !== sim || !d.origin.equals(sim.origin)) { hud.toast('The host area moved; draw the shape again.'); return; }
-  const tool = settings.tool;
-  const stroke = { ...brushStroke(tool), center: d.start, rate: oneShotRate(tool, settings.rate) };
-  if (d.kind === 'line') stroke.end = d.end;
-  else {
-    const b = boxFromCorners(d.start, d.end, settings.radius, [sim.g.nx, sim.g.ny, sim.g.nz]);
-    Object.assign(stroke, { center: new THREE.Vector3().copy(b.center), shape: 1, grow: b.grow });
+  if (!d || d.sim !== sim || d.pov !== !!pov?.active) { shapeDrag = null; return; }
+  const aim = secondary ? null : shapeAim(d.pov);
+  if (aim) updateShapeDrag(aim);
+  if (!aim && !secondary) return;
+  const r = builderPress(builderMode, d.draft, { secondary });
+  if (r.action === 'cancel') shapeDrag = null;
+  else if (r.action === 'extrude') {
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).toArray();
+    d.guide = builderExtrudeGuide(d.draft, aim.ray, aim.dir, up);
+    d.draft = r.draft;
+    d.pointerId = null;
+  } else {
+    shapeDrag = null;
+    finishShape(d);
   }
+  pacer.wake();
+}
+function finishShape({ draft, tool }) {
+  if (mp.replica && !mp.isGuest) { mp.guard(); return; }
+  const radius = settings.radius, line = draft.kind === 'line';
+  const b = line ? boxFromCorners(draft.start, draft.end, radius) : builderBox(draft, radius);
+  const stroke = { ...brushStroke(tool), rate: oneShotRate(tool, settings.rate) };
+  const bounds = builderBounds();
+  if (!containsBounds(b.lo, b.hi, bounds)) { hud.toast('The shape is outside the area you can edit.'); return; }
+  if (line) {
+    stroke.radius = lineRadius(radius);
+    const margin = Math.floor(stroke.radius);
+    b.lo = b.lo.map((v, i) => Math.max(bounds.lo[i], v - margin));
+    b.hi = b.hi.map((v, i) => Math.min(bounds.hi[i], v + margin));
+  } else Object.assign(stroke, { shape: 1, grow: b.grow, shell: draft.hollow ? boxShellThickness(radius) : 0 });
+  if (worldAim()) {
+    const focus = win.focusForBounds(b.lo, b.hi);
+    if (!focus) { hud.toast('This selection won’t fit in one simulation window. Try a smaller shape.'); return; }
+    workAt(...focus);
+  }
+  pendingShape = { sim, draft, stroke, b, at: performance.now() };
+  submitShape();
+}
+function submitShape() {
+  const job = pendingShape;
+  if (!job) return;
+  if (job.sim !== sim) { pendingShape = null; return; }
+  const lo = sim.origin.toArray(), hi = gridSize().map((n, i) => n + lo[i]);
+  if (sim.nativeTransition || !containsBounds(job.b.lo, job.b.hi, { lo, hi })) {
+    if (performance.now() - job.at > WORK_ARRIVAL_MS) { pendingShape = null; hud.toast('The simulation didn’t get to the shape in time. Try again.'); }
+    return;
+  }
+  pendingShape = null;
+  const { draft, stroke, b } = job;
+  stroke.center = localPoint(draft.kind === 'line' ? cellPoint(draft.start) : b.center);
+  if (draft.kind === 'line') stroke.end = localPoint(cellPoint(draft.end));
   if (!mp.isGuest) {
-    sim.snapshot(`${toolById(tool)?.name ?? 'Shape'} ${d.kind}`);   // 'Undone Sand line'
+    sim.snapshot(`${toolById(stroke.tool).name} ${draft.kind}`);
     toolbar.setUndoEnabled(true);
   }
-  paintStroke(stroke);
-  pacer.wake();
+  if (paintStroke(stroke) === false) hud.toast('The simulation couldn’t take the shape. Try again.');
+}
+function shapeReadout(draft = shapeDrag?.draft) {
+  const radius = settings.radius;
+  const size = !draft ? null : draft.kind === 'line'
+    ? draft.start.map((v, i) => Math.abs(v - draft.end[i]) + 2 * radius - 1) : builderBox(draft, radius).size;
+  return { mode: BUILDER_NAME[draft ? (draft.hollow ? 'hollow' : draft.kind) : builderMode], size, radius,
+    phase: draft?.phase, hollow: draft ? draft.hollow : builderHollow, carving: !!draft?.carve };
 }
 
 // Replace mode and specific delete (TPT's REPLACE_MODE and SPECIFIC_DELETE,
@@ -1375,6 +1523,7 @@ function fillAt() {
   const tool = settings.tool, st = brushStroke(tool);
   let cell, id, maxY = sim.g.ny - 1;
   if (tool >= 0 && !settings.replace && !settings.specificDelete) {
+    if (hoverOnSlice()) { hud.toast('Use Replace to fill an exposed material'); return; }
     cell = hover.cell.clone().add(faceNormal(hover.face));
     id = FILL_AIR;
     maxY = Math.floor(hoverBrushCenter(tmpV).y + settings.radius - 0.5);
@@ -1388,7 +1537,8 @@ function fillAt() {
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
   if (mp.isGuest) { mp.fill(req); return; }
-  runFill(sim, req, { openSides: mapKind.fillOpenSides, before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
+  const revision = sliceRevision;
+  runFill(sim, req, { openSides: mapKind.fillOpenSides, valid: () => revision === sliceRevision && !checkpointRestoring(), before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
     .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`, { kind: r.error ? 'error' : 'generic' }); })
     .catch((err) => { console.error('Fill failed', err); hud.toast('The fill failed'); });
 }
@@ -1406,6 +1556,10 @@ function updateGunBrush() {
   const out = toolGunOut;
   toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
   if (!out) painting = false;
+  if (shapeDrag) {
+    if (out && toolGunBuilding) { updateShapeDrag(); showShapeDrag(); return; }
+    shapeDrag = null;
+  }
   const tool = painting ? strokeTool : settings.tool;
   if (out && isBrush(tool)) {
     if (painting && tool >= 0) {
@@ -1477,6 +1631,7 @@ function selectTool(id) {
   if (!isBuild(id)) lastPaintTool = id;
   if (sim && airHeatToolPicked(id) && !settings.ambientHeat) setSimMode('ambientHeat', true, true);
   if (isDecoTool(id) && sim) wire('deco')?.prepare(ctx);   // its passes compile while the colour is picked (src/deco.js)
+  if (id !== settings.tool) shapeDrag = parked = null;
   settings.tool = id;
   const it = toolById(id);
   const accent = accentFor(it.color);
@@ -1559,6 +1714,11 @@ function pickHovered() {
 const actions = {
   togglePause: () => setPaused(!settings.paused),
   toggleIndustryBuild: () => ctx.industry?.toggle(),
+  slice: () => changeSlice('cycle'),
+  sliceFlip: () => changeSlice('flip'),
+  sliceDepth: (coord) => changeSlice('depth', coord),
+  saveCheckpoint: () => playtestCheckpoint('save'),
+  resetCheckpoint: () => playtestCheckpoint('reset'),
   undo,
   // (in a world, over where the camera is looking: home is wherever you are)
   resetCamera: () => {
@@ -1572,6 +1732,7 @@ const actions = {
   openSaves: () => { painting = false; launch.openMenu?.({ saves: true }); },
   firstPerson: () => {
     painting = false;
+    shapeDrag = null;
     if (!wire('pov')) { hud.toast(notYet('First person'), { kind: 'error' }); return; }
     pov?.toggle();
   },
@@ -1596,7 +1757,7 @@ const actions = {
   renderThumb,
 };
 // (greyed out until their subsystems are ported: src/wire)
-const toolbar = createToolbar({ actions, available: { camera: !!wire('pov') } });
+const toolbar = createToolbar({ actions, available: { camera: !!wire('pov'), saves: !!wire('saves') } });
 // Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
 // you're on the world: with the mouse held by the body, or nothing focused (a click on the world
 // lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
@@ -1870,7 +2031,7 @@ function setBlocks(on) {
 }
 
 async function undo() {
-  if (ctx.descent?.terrainPending) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
+  if (ctx.descent?.terrainPending || checkpointRestoring()) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (ctx.electronics?.pending) { hud.toast('Wait for the control interaction before undoing.'); return; }
@@ -1882,15 +2043,13 @@ async function undo() {
   if (restored) {
     if (entry && 'edgeSea' in entry) boxSea = entry.edgeSea;   // (a box's: the sea past its walls when it was taken, build)
     if (shrine) perkOrbs?.removeShrine(shrine);
+    if (note?.scene || note?.industry || note?.scenePlaques) clearCheckpoint();
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
-    if (note?.industry) {
-      settings.preset = note.industry.preset;
-      ctx.industry?.fromJSON(note.industry.data);
-      save();
-    }
-    if (note?.scenePlaques) {
-      settings.preset = note.scenePlaques.preset;
-      savedScenePlaques = decodeScenePlaques(note.scenePlaques.records);
+    if (note?.perkOrbs) {
+      settings.preset = note.preset;
+      savedScenePlaques = note.scenePlaques;
+      if (note.industry) ctx.industry?.fromJSON(note.industry);
+      perkOrbs?.fromJSON(note.perkOrbs, { preserveShrineIds: true });
       save();
     }
     pov?.worldReplaced();
@@ -1900,6 +2059,52 @@ async function undo() {
   // (a world's window moved off all of it: it's kept for when the window comes back)
   else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo', { kind: 'error' });
   toolbar.setUndoEnabled(sim.canUndo);
+}
+
+// ---------------------------------------------------------------- playtest controls
+function changeSlice(action, coord) {
+  if (!sim || checkpointRestoring()) return;
+  if (action === 'depth' && !Number.isFinite(coord)) return;
+  const size = win?.size ?? [sim.g.nx, sim.g.ny, sim.g.nz];
+  if (action === 'cycle') {
+    if (cutaway.enabled && cutaway.axis === 2) cutaway = newCutaway();
+    else {
+      const axis = cutaway.enabled ? cutaway.axis + 1 : 0;
+      const origin = sim.origin.getComponent(axis);
+      const span = [sim.g.nx, sim.g.ny, sim.g.nz][axis];
+      const aim = hover.valid ? hover.cell.getComponent(axis) + origin : origin + span / 2;
+      // Open on the work, and remove the side toward the current eye.
+      const depth = Math.max(1, Math.min(size[axis] - 1, Math.round(aim)));
+      const eye = camera.position.clone().applyMatrix4(invVolume.copy(volume.matrixWorld).invert()).getComponent(axis) + origin;
+      cutaway = { enabled: true, axis, sign: eye >= depth ? 1 : -1, coord: depth };
+    }
+  } else if (!cutaway.enabled) return;
+  else if (action === 'flip') cutaway.sign *= -1;
+  else {
+    const depth = Math.max(1, Math.min(size[cutaway.axis] - 1, Math.round(coord)));
+    if (depth === cutaway.coord) return;
+    cutaway.coord = depth;
+  }
+  toolbar.setSlice(cutaway, size[cutaway.axis]);
+  invalidateScreenPicks();
+  meshFrames.drop(); post.reset(); pacer.wake();
+}
+function invalidateScreenPicks() {
+  sliceRevision++; hover.valid = false; pointerPickDirty = true;
+  painting = false; parked = heldCenter = shapeDrag = pendingShape = null;
+}
+function clearCheckpoint() { checkpoint.clear(); }
+async function playtestCheckpoint(action) {
+  if (!wire('saves') || !sim || checkpoint.state.busy || ctx.descent?.terrainPending) return;
+  // A checkpoint rewinds the whole playtest; it is not a network undo.
+  if (mp.role !== 'solo' || mp.replica) { hud.toast('Checkpoints are for solo play'); return; }
+  if (action === 'reset') {
+    if (!checkpoint.state.ready) { hud.toast('No checkpoint saved'); return; }
+    invalidateScreenPicks(); stepOnce = false; workFocus = null;
+  }
+  try {
+    if (await checkpoint[action]()) hud.toast(action === 'save' ? 'Checkpoint saved' : 'Reset to checkpoint');
+  } catch (error) { hud.toast(error.message, { kind: 'error' }); }
 }
 
 // ---------------------------------------------------------------- saves (src/wire/saves.js)
@@ -1912,6 +2117,7 @@ function saveGame(name) {
 }
 // Load a save: a local save's id, or a save file's bytes. Resolves to whether it loaded.
 function openSave(what) {
+  if (checkpointRestoring()) return Promise.resolve(false);
   const s = wire('saves');
   if (!s) { hud.toast(notYet('Loading a save'), { kind: 'error' }); return Promise.resolve(false); }
   return s.openSave(ctx, what);
@@ -2024,8 +2230,8 @@ function warmThumb(viewId) {
 
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
-const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
-  && !signs?.editing && !painting && !shapeDrag;
+const canEraseClick = () => !checkpointRestoring() && !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
+  && !signs?.editing && !painting && !pendingShape;
 // A grid cell's centre in the scene, where the view shows it.
 const cellInScene = (cell) => presentationPoint(cell.clone().addScalar(0.5)).applyMatrix4(volume.matrixWorld);
 // The wheel with the right button held steps the god view's fly speed (the Camera section's
@@ -2063,6 +2269,11 @@ bindBrushEraseClick(canvasEl, {
 });
 async function eraseClick(e) {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  if (shapeDrag) { advanceShape(true); return; }
+  if (builderMode !== 'freehand' && isVoxelBrush(settings.tool)) {
+    if (!startShape(builderMode, { secondary: true })) hud.toast('Aim at material to start a cut.');
+    return;
+  }
   const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
   const hit = await pickRay(ray.origin, ray.direction, true);
   const cell = hit.valid ? hit.cell.clone() : null;
@@ -2095,6 +2306,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
   else press(e);
 });
 function press(e) {
+  if (checkpointRestoring()) return;
   if (selectedMode === 'factory' || ctx.industry?.building) {
     if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('Use Build for machines, or choose 1st to mine.');
     return;
@@ -2107,17 +2319,29 @@ function press(e) {
     if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     return;
   }
+  if (pendingShape) return;
+  if (shapeDrag) { advanceShape(); return; }
+  const gesture = drawModeOf(e), voxel = isVoxelBrush(settings.tool);
+  const fillMode = gesture === 'fill' && fills(settings.tool);
+  const rayDrag = (gesture === 'box' || gesture === 'line') && rayKindOfTool(settings.tool) !== RAY_KIND.NONE;
+  const mode = gesture === 'box' ? (voxel && builderHollow ? 'hollow' : 'box') : gesture === 'line' ? 'line' : builderMode;
+  if (gesture !== 'fill' && mode !== 'freehand' && (voxel || rayDrag)) {
+    if (settings.tool === PROP_TOOL && !propValue()) { openProp(); return; }
+    const drag = gesture != null;
+    if (!startShape(mode, { pointerId: drag ? e.pointerId : null })) hud.toast('Aim at an editable face to start the shape.');
+    else if (drag && e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);
+    return;
+  }
   if (worldAim()) {
     // a big map: the window comes to the press (workAt); nothing under the cursor (the sky) paints nothing
     if (!hover.valid) return;
     workAt(hover.cell.x + sim.origin.x, hover.cell.z + sim.origin.z);
-    // a click, fill or shape on a spot the window doesn't hold yet waits for it (replayParked); a stroke starts
-    // now and paints once the window is there (the paint gate)
-    const stroke = !drawModeOf(e) && !isOneClick(settings.tool);
+    // One-click tools and fills wait for the window; freehand starts now.
+    const stroke = !fillMode && !isOneClick(settings.tool);
     if (!stroke && !(inWindow(hover.cell) && windowAtRest())) {
       parked = {
         e: { button: 0, shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType, replay: true },
-        hover: { cell: hover.cell.clone().add(sim.origin), face: hover.face, id: hover.id, T: hover.T, P: hover.P }, at: performance.now(), released: false,
+        hover: { cell: hover.cell.clone().add(sim.origin), face: hover.face, id: hover.id, T: hover.T, P: hover.P }, at: performance.now(),
       };
       return;
     }
@@ -2125,16 +2349,17 @@ function press(e) {
   if (clickTool() !== null) return;
   // TPT's PropertyTool does nothing until its window holds a value that reads
   if (settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
-  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
-  const mode = drawModeOf(e);
-  if (mode === 'fill' && fills(settings.tool)) { fillAt(); return; }
-  if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(settings.tool);
+  dragAxis = hoverOnSlice() ? cutaway.axis : 1;
+  dragCoord = (hover.valid ? hoverBrushCenter(tmpV).getComponent(dragAxis) : isTool() ? 0.5 : settings.radius)
+    + sim.origin.getComponent(dragAxis);
+  if (fillMode) { fillAt(); return; }
+  startStroke(settings.tool);
   if (e.pointerType !== 'touch' && !e.replay) canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already; a replayed press's button may be up)
 }
 
 // The tools whose press is one click (clickTool), not a stroke.
 const isOneClick = (t) => t === SIGN_TOOL || t === LIGHTNING_TOOL || isSpawnerTool(t) || isBuild(t);
-// A parked press (press: a big map's click, fill or shape past the window) runs once the window holds its spot
+// A parked press (press: a big map's click or fill past the window) runs once the window holds its spot
 // and has come to rest, as if made there now; past WORK_ARRIVAL_MS it's dropped.
 function replayParked() {
   if (!parked) return;
@@ -2148,7 +2373,6 @@ function replayParked() {
   Object.assign(hover, { valid: true, face: p.hover.face, id: p.hover.id, T: p.hover.T, P: p.hover.P });
   hover.cell.copy(cell);
   press(p.e);
-  if (p.released && shapeDrag) finishShape();
 }
 
 // A click with a one-click tool (a sign, lightning, a spawner, a construction)
@@ -2224,10 +2448,12 @@ const GUN_AIR_DIST = HAND_REACH;   // cells: a stroke started at the sky pours a
 const toolGun = {
   get item() { return toolById(settings.tool); },
   // it's in hand this frame: the brush and the construction ghost follow the crosshair (updateGunBrush)
-  aim() { toolGunOut = true; },
+  aim(canBuild) { toolGunOut = true; toolGunBuilding = canBuild; },
+  get builder() { return isVoxelBrush(settings.tool) ? shapeReadout() : null; },
+  cancel() { if (shapeDrag?.pov) shapeDrag = null; },
   // a button went down: 'stroke' while a stroke runs until release(), 'click' for one-click tools, null if nothing happened
   press({ erase = false } = {}) {
-    if (selectedMode === 'factory' || ctx.industry?.building) return null;
+    if (checkpointRestoring() || selectedMode === 'factory' || ctx.industry?.building || pendingShape) return null;
     if (signs?.editing) { document.activeElement?.blur?.(); return null; }   // as in the god view, the click that ends a sign's edit does nothing else
     if (!erase) {
       const done = clickTool();
@@ -2237,7 +2463,14 @@ const toolGun = {
         return done ? 'click' : null;
       }
     }
+    if (shapeDrag) { advanceShape(erase); return 'click'; }
     const tool = erase ? ERASE_TOOL : settings.tool;
+    if (builderMode !== 'freehand' && isVoxelBrush(settings.tool)) {
+      if (tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first in god view.'); return null; }
+      if (startShape(builderMode, { secondary: erase })) return 'click';
+      hud.toast(erase ? 'Aim at material to start a cut.' : 'Aim at an editable face to start the shape.');
+      return null;
+    }
     if (tool >= 0) {
       if (!aimScreenRay()) return null;
       strokeDist = hover.valid ? presentationPoint(hoverBrushCenter(tmpV, tool), tmpV).distanceTo(povRay.origin) : GUN_AIR_DIST;
@@ -2251,13 +2484,18 @@ addEventListener('pointerup', (e) => {
   if (e.button !== 0) return;
   // a click shorter than the GPU's frame (its frames still in flight, B3)
   // has painted nothing yet: it paints once, on the next tick that runs
-  if (parked) parked.released = true;
   if (painting && !strokePainted) {
     releasePending = true;
     // a big map's click past the window: its one paint waits for the window, where it was clicked
     if (worldAim() && brushValid && !inWindow(brushCenter)) { heldCenter = brushCenter.clone().add(sim.origin); heldAt = performance.now(); }
   } else painting = false;
-  if (shapeDrag) finishShape();
+  if (shapeDrag?.pointerId === e.pointerId) {
+    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    advanceShape();
+  }
+});
+canvasEl.addEventListener('pointercancel', (e) => {
+  if (shapeDrag?.pointerId === e.pointerId) shapeDrag = null;
 });
 
 // Touch: one finger paints, two fingers turn and zoom (controls.touches). A finger
@@ -2306,6 +2544,7 @@ function setRadius(r) {
   settings.radius = THREE.MathUtils.clamp(Math.round(r), 1, 24);
   dock.sync();
   save();
+  pacer.wake();
 }
 
 let stepOnce = false;
@@ -2318,8 +2557,20 @@ function onNextFrame(fn) { frameWaiters.push(fn); pacer.wake(); }
 const wantFrame = () => wantShot || frameWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
-  if (pov?.editingWand) return;
-  if (isTyping()) return;
+  if (pov?.editingWand || isTyping() || checkpointRestoring()) return;
+  if ((shapeDrag || pendingShape) && is(e, KEYS.escape)) {
+    e.preventDefault();
+    shapeDrag = pendingShape = null;
+    pacer.wake();
+    return;
+  }
+  if (is(e, KEYS.slice)) { e.preventDefault(); if (!e.repeat) actions.slice(); return; }
+  if (is(e, KEYS.sliceFlip)) { e.preventDefault(); if (!e.repeat) actions.sliceFlip(); return; }
+  if (is(e, KEYS.sliceBack) || is(e, KEYS.sliceForward)) {
+    e.preventDefault(); actions.sliceDepth(cutaway.coord + (is(e, KEYS.sliceBack) ? -1 : 1) * (e.shiftKey ? 8 : 1)); return;
+  }
+  if (is(e, KEYS.checkpointSave)) { e.preventDefault(); if (!e.repeat) actions.saveCheckpoint(); return; }
+  if (is(e, KEYS.checkpointReset)) { e.preventDefault(); if (!e.repeat) actions.resetCheckpoint(); return; }
   const mod = e.metaKey || e.ctrlKey;
   if (is(e, KEYS.undo)) { e.preventDefault(); undo(); return; }
   // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
@@ -2341,11 +2592,39 @@ addEventListener('keydown', (e) => {
   }
   // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
   if (is(e, KEYS.chat) && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; }   // POV included
+  // Builder keys are shared with god view while the Tool Gun is in hand;
+  // the rest of POV's keys still belong to the body (H drinks, B edits wands).
+  const gunKeys = !!pov?.active && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN';
+  if (!pov?.active || gunKeys) {
+    if (is(e, KEYS.builderMode)) {
+      e.preventDefault();
+      if (!e.repeat) {
+        builderMode = nextBuilderMode(builderMode);
+        if (builderMode === 'box' || builderMode === 'hollow') builderHollow = builderMode === 'hollow';
+        shapeDrag = parked = null;
+        hud.toast(`Build mode: ${BUILDER_NAME[builderMode]}`);
+        pacer.wake();
+      }
+      return;
+    }
+    if (is(e, KEYS.builderHollow)) {
+      e.preventDefault();
+      if (!e.repeat) {
+        builderHollow = !builderHollow;
+        if (builderMode === 'box' || builderMode === 'hollow') builderMode = builderHollow ? 'hollow' : 'box';
+        const d = shapeDrag?.draft;
+        if (d?.kind === 'box' && !d.carve && isVoxelBrush(shapeDrag.tool)) d.hollow = builderHollow;
+        hud.toast(builderHollow ? 'Hollow boxes on' : 'Hollow boxes off');
+        pacer.wake();
+      }
+      return;
+    }
+    if (is(e, KEYS.brushSmaller)) { setRadius(settings.radius - 1); return; }
+    if (is(e, KEYS.brushBigger)) { setRadius(settings.radius + 1); return; }
+  }
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   // (flying up and down: camera.js)
   if (is(e, KEYS.step)) { stepOnce = true; pacer.wake(); }
-  else if (is(e, KEYS.brushSmaller)) setRadius(settings.radius - 1);
-  else if (is(e, KEYS.brushBigger)) setRadius(settings.radius + 1);
   else if (is(e, KEYS.brushShape)) { settings.shape ^= 1; dock.sync(); save(); }
   else if (is(e, KEYS.replaceMode)) toggleEditMode('replace');
   else if (is(e, KEYS.specificDelete)) toggleEditMode('specificDelete');
@@ -2361,8 +2640,7 @@ addEventListener('keydown', (e) => {
   // holding the screenshot key must not download a stream of images
   else if (is(e, KEYS.screenshot)) { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
   else if (is(e, KEYS.escape)) {
-    const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
-    shapeDrag = null;   // a line or box being dragged is dropped
+    const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
     setEyedropper(false); setShadersOpen(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else pause or resume, every game's Esc
     // (Intentional (user request, 2026-11-01): Esc pauses, not Space; the map menu is the toolbar's button).
@@ -2542,6 +2820,7 @@ function frameValues(cam, view, jitter) {
   return {
     camera: cam, model: volume.matrixWorld, sun: SUN, view, shadowRes: vol.shadowRes, time: viewTime, lightGain: GLOW_GAIN,
     shadows: true, sea: win?.P?.sea ?? 0, jitter,
+    cutaway: localCutaway(),
     sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
   };
 }
@@ -2687,7 +2966,9 @@ let frameBoxed = false;
 // cutBox, unsnapped: the far view fades in across its band, shaders/world/reach.js CUT_BAND)
 let frameCut = null;
 function marchBoxed(view, curved) {
-  return !truthView && usesFarField(view, curved) && worldMarchFrame(view, curved) && !!win?.far?.drawable;
+  // The exact world copy draws both the window and its distance in a slice.
+  // Do not composite a coarse far-field hit in front of that exposed face.
+  return !cutaway.enabled && !truthView && usesFarField(view, curved) && worldMarchFrame(view, curved) && !!win?.far?.drawable;
 }
 // A big map's far view (world/far.js drawPass): its own pass, 'far view', after three's opaque meshes and
 // the world march's stages, before the scene pass, into the scene target with its depth (drew: the meshes
@@ -2814,7 +3095,7 @@ const frameHooks = {
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
-      blocks.update({ sun: SUN });
+      blocks.update({ sun: SUN, cutaway: localCutaway() });
     } else if (frameDerived && worldLit()) {
       windowLightStale = true;   // (L lights this frame and everything in it: worldLit)
     } else if (frameDerived) {
@@ -2983,7 +3264,7 @@ function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
   // A terrain handoff drains GPU snapshots/restores, but no state writer may
   // run meanwhile (paused alone still allows tools, scripts and stepOnce).
-  renderOnly ||= !!ctx.descent?.terrainPending;
+  renderOnly ||= !!ctx.descent?.terrainPending || checkpointRestoring();
   settledSleep = false;
   if (!coreReady && !(mapKind.stepKernelsLater && worldDrawReady)) return false;   // (the grid's pipelines wake the loop when they are built)
   // A big map before its simulation's step kernels are built (build: worldDrawReady): its World
@@ -2994,7 +3275,7 @@ function tick(now, renderOnly = false) {
   const t0 = performance.now();
   lastIdle = false;
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
-  if ((!renderOnly || ctx.descent?.terrainPending || simPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
+  if ((!renderOnly || ctx.descent?.terrainPending || checkpointRestoring() || simPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
   if (prof.on !== settings.profiler) applyProfiler();
   applyOutputRatio();
   prof.beginFrame(now);
@@ -3028,10 +3309,11 @@ function tick(now, renderOnly = false) {
       rig.update(dt);
       controls.update();
     }
-    if (workFocus && (!worldAim() || (!painting && !parked && !shapeDrag
+    if (workFocus && (!worldAim() || (!painting && !parked && !shapeDrag && !pendingShape
       && Math.hypot(eyeColumn()[0] - workEye[0], eyeColumn()[1] - workEye[1]) > WORK_FOCUS_RELEASE * sim.g.nx))) workFocus = null;
     for (const w of live) w.follow?.(ctx, dt);   // the world's window following the focus
     replayParked();
+    submitShape();
     updatePresentation();   // (after the camera and the window: the bend is anchored beneath the eye)
     updateBrush();
 
@@ -3138,7 +3420,7 @@ function tick(now, renderOnly = false) {
   runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}|${vol.packetShadowKey}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(shapeDrag?.tool ?? settings.tool).color)}|${!!shapeDrag?.draft.hollow}|${presentation.key}|${vol.format}|${sliceRevision}`,   // far field, brush (including a shell's edge-only styling), bend, cutaway slice
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
   runView = present && pacer.view(viewV, runDerived || wantFrame() || betweenTicks);
@@ -3225,6 +3507,11 @@ function tick(now, renderOnly = false) {
     // (the canvas's rect as the last resize left it: reading it here forced a layout every frame after the HUD's writes)
     const r = canvasRect();
     hud.showReadout(r.left + r.width / 2, r.top + r.height / 2, povReadout);
+  } else if (!pov?.active && pointerInside && !uiHover && (shapeDrag || pendingShape)) {
+    const info = shapeDrag ?? pendingShape;
+    const item = toolById(info.tool ?? info.stroke.tool);
+    hud.showReadout(pointerClient[0], pointerClient[1], { name: item.name, color: item.color,
+      note: pendingShape ? 'Waiting for simulation window…' : builderNote(shapeReadout(info.draft)) });
   } else if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
     hud.showReadout(pointerClient[0], pointerClient[1], { name: el.name, color: el.color, T: hover.T, P: hover.P });
@@ -3238,7 +3525,7 @@ function tick(now, renderOnly = false) {
   // wire animating: the loop stops. Input, a setting, a write, a landed read
   // or a built pipeline wakes it.
   const wantsSteps = !mp.replica && (!settings.paused || stepOnce) && !simAsleep();
-  const busy = wantsSteps || painting || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
+  const busy = wantsSteps || painting || !!pendingShape || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
   settledSleep = present && !runView && pacer.settled && !busy;
   hud.setStats({ fpsV: fps });   // (null only before the first measured window)
   prof.endFrame(legacyStepped);
@@ -3315,8 +3602,15 @@ function tick(now, renderOnly = false) {
   get scoreboard() { return scoreboard; }, get prof() { return prof; }, actions,
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
+  clearCheckpoint, checkpointRestoring,
+  cutawayEnabled: () => cutaway.enabled,
+  rebuildWorldCopy: () => wire('world')?.buildWorldCopy(ctx, win),
+  get boxSea() { return boxSea; }, set boxSea(v) { boxSea = v; },
   inspectElement: (key) => elementInspector.show(key),
-  getScenePlaques: () => !mp.replica && mapKind.presets && settings.preset === 'preservationLab' ? (savedScenePlaques ?? preservationManifest().plaques) : null,
+  getScenePlaques: () => {
+    const manifest = !mp.replica && mapKind.presets && PRESET_PLAQUES.get(settings.preset);
+    return manifest ? (savedScenePlaques ?? manifest().plaques) : null;
+  },
   setScenePlaques: (records) => { savedScenePlaques = decodeScenePlaques(records); },
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
