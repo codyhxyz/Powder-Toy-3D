@@ -1,5 +1,5 @@
 // HDR post-processing on WebGPU (docs/webgpu.md W16, F1, F4, F7): the scene
-// target (linear, premultiplied HDR radiance and its depth) → three's TAAU →
+// target (linear, premultiplied HDR radiance and its depth) → native TAAU →
 // eye adaptation → bloom → sharpen + AgX + sRGB + dither (+ night vision) →
 // the canvas, composited there over the page's sky gradient.
 //
@@ -12,7 +12,7 @@
 //
 // A presented frame, as render() records it (B3's E1 and E2), all of it in the
 // tick's one encoder unless three draws:
-//   beginScene           sizes the targets, jitters the camera (three's TAAU: a view offset, F4), sets pixScale
+//   beginScene           sizes the targets, jitters the camera (a view offset, F4), sets pixScale
 //   prepare(post)        write FrameUniforms, the tick's one write: the camera is jittered now, and
 //                        post.jitter, post.inSize and pixScale are this frame's (F6)
 //   compute(post)        E1's commands that read FrameUniforms (derived passes, shadow, GI, pick),
@@ -30,15 +30,14 @@
 //   overlay pass         overlay(rp, post): the rays sprites, colour loaded, depth read-only, if any
 //   endScene             the camera's own projection back; onPass('scene')
 //   motion pass          → TAAU's inputs: velocity and the colour, sanitized (fragment, the scene's size)
-//   three's TAAU         resolve → output size, history and depth copies (three's submits, gpu/three.js)
+//   TAAU                 resolve → full-size ping-pong history (same encoder)
 //   prefilter pass       → down[0], half resolution                       (fragment)
 //   compute pass 'post'  bloom down 1–5, up 4–1; luminance grid, histogram, adaptation, meter (one workgroup)
 //   bloom up0 pass       → up[0], half the output's size                 (fragment)
 //   bloom pass           → the bloom image: up[0]'s 3×3 tent, its size    (fragment)
 //   canvas pass          sharpen, bloom, AgX, sky, viewmodel, glow       (fragment, presenter's texture)
-// so post is 4 render passes of ours and 1 compute pass besides the scene and
-// canvas passes, and three's TAAU (the WebGL2 build made about 17). The split methods (beginScene,
-// endScene, finish) are there for callers that need the parts apart; tools
+// The split methods (beginScene, endScene, finish) are for callers that
+// need the parts apart; tools
 // count view frames by wrapping render(), so the app's frames go through it.
 // After radiance/TAA settle, render(..., { postOnly: true }) may retain the
 // resolved colour and bloom: only advance adaptation toward its saved histogram
@@ -68,16 +67,11 @@
 // the old transparent canvas over the page, so the compositor no longer blends a
 // full-window layer every frame.
 //
-// Temporal anti-aliasing and upscaling: three.js r187's TAAUNode (gpu/three.js
-// createTemporalUpscaler; Karis 2014's jittered reconstruction, FSR 2's
-// single-pass history) at every Upscaling preset, native included. The scene
-// renders at the preset's share of the output's pixels per axis (UPSCALE: AMD
-// FSR 2's quality modes, of the device's real pixels), jittered by the node's
-// own Halton sequence as a view offset on the camera; our motion pass turns its
-// depth into the node's velocity (camera motion, and the rolling log's bend
-// folded in) and hands it the colour, sanitized; the node resolves to output
-// size and keeps its history. It needs three's renderer on the gpu: without
-// one (Node tools) there is no TAA and the scene renders at output size.
+// Temporal anti-aliasing and upscaling (nativeTaau.js): the scene renders in
+// a viewport of its output-size allocation, jittered by a Halton camera view
+// offset. The motion pass turns depth into velocity (camera motion and the
+// rolling log's bend), sanitizes colour, and feeds an output-size ping-pong
+// resolve in the same WebGPU frame. DRS changes the viewport, not the textures.
 // Bloom (Jimenez 2014): per-pixel soft-knee bright pass at half resolution, 13-tap
 // downsample to 1/64, 9-tap tent upsample. It is energy-conserving: the halo only
 // redistributes the above-threshold light (out = c + k·(blur(bright) − bright(c))).
@@ -116,7 +110,8 @@ import {
   Matrix4, Vector3, Quaternion, RenderTarget, DepthTexture, HalfFloatType, FloatType, NearestFilter,
 } from 'three/webgpu';
 import { uniformStruct, fullscreenVert, luma as lumaWGSL, STAGE } from '../gpu/index.js';
-import { initRenderTarget, gpuTextureOf, createTemporalUpscaler } from '../gpu/three.js';
+import { initRenderTarget, gpuTextureOf } from '../gpu/three.js';
+import { createNativeTaau, taauUvScale } from './nativeTaau.js';
 import { createBlit } from '../gpu/present.js';
 import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
@@ -282,13 +277,13 @@ const MotionParams = uniformStruct('MotionParams', {
   // ...and, bent, the last frame's world cells → clip: the second half (one ring slot in all)
   prevWorldToClip: 'mat4x4f',
 });
-const PrefilterParams = uniformStruct('PrefilterParams', { thresh: 'vec2f', packed: 'bool' });   // packed: see radiance()
+const PrefilterParams = uniformStruct('PrefilterParams', { thresh: 'vec2f', srcSize: 'vec2f', outSize: 'vec2f', packed: 'bool' });   // packed: see radiance()
 const MipParams = uniformStruct('MipParams', {
   texel: 'vec2f',   // source texel (down: the finer level; up: the coarser one)
   dst: 'vec2u',     // this level's size
   scatter: 'f32',
 });
-const ReduceParams = uniformStruct('ReduceParams', { dt: 'f32', adapt: 'bool', meter: 'bool', slot: 'u32', packed: 'bool', reuseTarget: 'bool' });
+const ReduceParams = uniformStruct('ReduceParams', { srcSize: 'vec2f', dt: 'f32', adapt: 'bool', meter: 'bool', slot: 'u32', packed: 'bool', reuseTarget: 'bool' });
 const CompositeParams = uniformStruct('CompositeParams', {
   size: 'vec2f',     // the output's pixels (the canvas or a still's target)
   srcSize: 'vec2f',  // the resolved frame's (post's working size): size, or below it on the canvas under settings.present
@@ -341,8 +336,8 @@ fn sanitize(c0: vec4f) -> vec4f {
 }
 
 // The temporal resolve's range (Karis 2014, "High Quality Temporal
-// Supersampling": tonemap before the resolve, invert after). three's TAAU
-// averages what it is given, so one sample many times brighter than its
+// Supersampling": tonemap before the resolve, invert after). TAAU averages
+// what it is given, so one sample many times brighter than its
 // neighbours (a leaf mirroring the sun) would show as a blip for a frame
 // before its variance clip takes it out; given c / (1 + max(c)), that sample
 // counts for at most 1 and averages in. Max channel, as three's own
@@ -351,7 +346,7 @@ fn sanitize(c0: vec4f) -> vec4f {
 const TAA_EXPAND_MIN: f32 = 1.0 / (1.0 + MAX_RADIANCE);   // 1 - max of a compressed MAX_RADIANCE
 fn taaCompress(c: vec4f) -> vec4f { return vec4f(c.rgb / (1.0 + max(c.r, max(c.g, c.b))), c.a); }
 fn taaExpand(c: vec4f) -> vec4f { return vec4f(c.rgb / max(1.0 - max(c.r, max(c.g, c.b)), TAA_EXPAND_MIN), c.a); }
-// The resolved frame's texel as radiance. Under TAA it is three's resolve, still
+// The resolved frame's texel as radiance. Under TAA it is the resolve, still
 // in taaCompress's range (packed); without TAA it is the scene itself. Its readers
 // (prefilter, reduce, composite) expand each texel as they load it, instead of
 // an output-size pass writing the expanded frame out for them to read back:
@@ -359,9 +354,12 @@ fn taaExpand(c: vec4f) -> vec4f { return vec4f(c.rgb / max(1.0 - max(c.r, max(c.
 fn radiance(c: vec4f, packed: u32) -> vec4f { if (packed != 0u) { return taaExpand(c); } return c; }
 
 // Expand each TAA texel before filtering: interpolating compressed highlights loses energy.
-fn tapRadiance(t: texture_2d<f32>, s: sampler, uv: vec2f, packed: u32) -> vec4f {
-  if (packed == 0u) { return textureSampleLevel(t, s, uv, 0.0); }
-  let size = vec2i(textureDimensions(t));
+fn tapViewportRadiance(t: texture_2d<f32>, s: sampler, uv: vec2f, srcSize: vec2f, packed: u32) -> vec4f {
+  if (packed == 0u) {
+    let p = clamp(uv * srcSize, vec2f(0.5), srcSize - 0.5);
+    return textureSampleLevel(t, s, p / vec2f(textureDimensions(t)), 0.0);
+  }
+  let size = vec2i(srcSize);
   let hi = size - 1;
   let q = uv * vec2f(size) - 0.5;
   let i = vec2i(floor(q));
@@ -394,11 +392,11 @@ fn tent9(t: texture_2d<f32>, s: sampler, uv: vec2f, texel: vec2f) -> vec3f {
 `;
 
 /**
- * The motion pass, at the scene's size: three's TAAU's two inputs (gpu/three.js
- * createTemporalUpscaler), the scene's velocity (location 0: this frame's
+ * The motion pass writes the resolve's two inputs inside the scene viewport:
+ * the scene's velocity (location 0: this frame's
  * unjittered NDC minus the last frame's, three's VelocityNode's convention,
  * from depth and the cameras, through the rolling log's bend) and its colour,
- * sanitized (location 1: a NaN or Inf would live on in the node's history)
+ * sanitized (location 1: a NaN or Inf would live on in history)
  * and compressed into the resolve's range (taaCompress; its readers undo it, radiance()).
  */
 export const motionWGSL = () => /* wgsl */ `
@@ -454,8 +452,8 @@ ${PrefilterParams.wgsl}
 @group(2) @binding(0) var tSrc: texture_2d<f32>;
 @group(3) @binding(1) var<uniform> P: PrefilterParams;
 @fragment fn fs(in: FullScreen) -> @location(0) vec4f {
-  let p = vec2i(in.position.xy) * 2;
-  let hi = vec2i(textureDimensions(tSrc)) - 1;
+  let p = vec2i(vec2f(vec2i(in.position.xy) * 2) * P.srcSize / P.outSize);
+  let hi = vec2i(P.srcSize) - 1;
   let s = bright(sanitize(radiance(textureLoad(tSrc, min(p, hi), 0), P.packed)).rgb, P.thresh)
         + bright(sanitize(radiance(textureLoad(tSrc, min(p + vec2i(1, 0), hi), 0), P.packed)).rgb, P.thresh)
         + bright(sanitize(radiance(textureLoad(tSrc, min(p + vec2i(0, 1), hi), 0), P.packed)).rgb, P.thresh)
@@ -596,7 +594,7 @@ var<workgroup> meterN: array<f32, ${REDUCE_THREADS}>;
       for (var y = 0u; y < TAPS; y++) {
         for (var x = 0u; x < TAPS; x++) {
           let uv = (cell + (vec2f(f32(x), f32(y)) + 0.5) / f32(TAPS)) / GRID;
-          sum += sanitize(tapRadiance(tSrc, smp, uv, P.packed));
+          sum += sanitize(tapViewportRadiance(tSrc, smp, uv, P.srcSize, P.packed));
         }
       }
       sum /= f32(TAPS * TAPS);
@@ -615,7 +613,7 @@ var<workgroup> meterN: array<f32, ${REDUCE_THREADS}>;
     let tile = vec2f(f32(li % u32(METER_SIZE)), f32(li / u32(METER_SIZE)));
     for (var j = 0u; j < METER_TAPS; j++) {
       for (var i = 0u; i < METER_TAPS; i++) {
-        let c = sanitize(tapRadiance(tSrc, smp, (tile + (vec2f(f32(i), f32(j)) + 0.5) / f32(METER_TAPS)) / METER_SIZE, P.packed));
+        let c = sanitize(tapViewportRadiance(tSrc, smp, (tile + (vec2f(f32(i), f32(j)) + 0.5) / f32(METER_TAPS)) / METER_SIZE, P.srcSize, P.packed));
         let w = step(METER_COVERED, c.a);
         ms += w * log(METER_LOG_FLOOR + luma(c.rgb) / max(c.a, 1e-3));
         mc += w;
@@ -972,6 +970,9 @@ fn sky(uv: vec2f) -> vec3f {
   return mix(c, P.skyGlow.rgb, P.skyGlow.a * saturate(1.0 - t));
 }
 
+fn tapRadiance(t: texture_2d<f32>, s: sampler, uv: vec2f, packed: u32) -> vec4f {
+  return tapViewportRadiance(t, s, uv, P.srcSize, packed);
+}
 ${sprintBlurWGSL()}
 ${crueltyDisplayWGSL()}
 @fragment fn fs(in: FullScreen) -> @location(0) vec4f {
@@ -1074,7 +1075,7 @@ const renderEntry = (name, code, layout, params, entry = 'fs', format = HDR, for
   name, kind: 'render', grids: false, code, layouts: groupsOf(layout), layoutNames: namesOf(layout), params,
   fragment: { entry, targets: formats.map((f) => ({ format: f })) },
 });
-// the motion pass's targets: TAAU's velocity and colour (gpu/three.js createTemporalUpscaler)
+// The motion pass's targets: TAAU's velocity and colour.
 const MOTION_FORMATS = ['rg16float', HDR];
 const computeEntry = (name, code, layout, params, extra) => ({
   name, kind: 'compute', grids: false, code, layouts: groupsOf(layout), layoutNames: namesOf(layout), params, ...extra,
@@ -1161,6 +1162,7 @@ export function skyColours() {
 function createSceneTarget(gpu, label) {
   let three;   // (decided at the first resize: make post after three's renderer)
   let rt = null, color = null, depth = null, packedOpaque = null, width = 0, height = 0, version = 0;
+  let viewW = 0, viewH = 0;
   const target = {
     label,
     /** three's RenderTarget (meshes render into it with loadOp load), or null */
@@ -1176,8 +1178,17 @@ function createSceneTarget(gpu, label) {
       return packedOpaque??=gpu.createTexture({label:`${label} packed opaque`,size:[width,height],
         format:'rgba32uint',usage:TEX.STORAGE_BINDING|TEX.TEXTURE_BINDING|TEX.COPY_SRC});
     },
-    get width() { return width; },
-    get height() { return height; },
+    // Keep the scene-space extent used by draw hooks; textures can be larger.
+    get width() { return viewW; },
+    get height() { return viewH; },
+    get allocSize() { return [width, height]; },
+    setViewport(w, h) {
+      viewW = w; viewH = h;
+      if (rt) {
+        rt.viewport.set(0, 0, w, h);
+        rt.scissor.set(0, 0, w, h);
+      }
+    },
     /** changes whenever the GPUTextures do */
     get version() { return version; },
     /** Sizes it (new GPUTextures on a change only); true when they changed. */
@@ -1208,6 +1219,7 @@ function createSceneTarget(gpu, label) {
         depth = gpu.createTexture({ label: `${label} depth`, size: [w, h], format: 'depth32float', usage });
       }
       width = w; height = h; version++;
+      target.setViewport(w, h);
       return true;
     },
     // three recreates its GPUTextures on a samples change and after dispose
@@ -1225,7 +1237,7 @@ function createSceneTarget(gpu, label) {
       if (color) gpu.flush('post dispose');
       if (rt) { rt.depthTexture?.dispose(); rt.dispose(); } else { color?.destroy(); depth?.destroy(); }
       packedOpaque?.destroy();packedOpaque=null;
-      rt = color = depth = null; width = height = 0;
+      rt = color = depth = null; width = height = viewW = viewH = 0;
     },
   };
   return target;
@@ -1238,13 +1250,15 @@ function createSceneTarget(gpu, label) {
  *   pixScale: set to an output pixel's size in rendered pixels before each scene
  *   (the shaders' LOD bias, FrameUniforms.pixScale); sky: skyColours() to use;
  *   readable: tests only, the bloom levels get COPY_SRC so a tool can read them;
- *   temporal: the temporal upscaler (gpu/three.js createTemporalUpscaler's
- *   interface; tests pass a stand-in), by default three's TAAU when the gpu has
- *   three's renderer (made at the first frame: make post after three's renderer)
+ *   temporal: native WebGPU by default, null to disable, or an injected upscaler
+ *   (native interface or gpu/three.js's legacy interface for tools).
  * @returns post-processing pipeline; see the file header.
  */
 export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false, presentation = null, temporal, maxPendingScenes = 3 } = {}) {
   if (!Number.isInteger(maxPendingScenes) || maxPendingScenes < 1 || maxPendingScenes > 8) throw new RangeError('post pending scene limit must be 1..8');
+  if (temporal === undefined) temporal = createNativeTaau(gpu);
+  const temporalOf = () => temporal;
+  const native = typeof temporal?.setViewOffset === 'function';
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
   const pipes = {
     motion: postPipe(gpu, PIPES.motion),
@@ -1276,7 +1290,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const still = createSceneTarget(gpu, 'still');
   let active = main;
   let size = [0, 0], inSize = [0, 0];
-  let down = [], up = [], bloomImage = null, resolved = null;
+  let down = [], up = [], bloomImage = null, resolved = null, motionInputs = null;
   let historyValid = false, historyRevision = 0, frame = 0, lastTaa = null, prevCamera = null;
   let crueltyTime = 0; // render dt clock: dt=0 freezes noise; stills don't advance it
   let jitter = [0, 0], taaNow = false;
@@ -1289,11 +1303,6 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   // the jittered camera's own projection and the jittered one (withoutJitter swaps them)
   const savedProj = new Matrix4(), savedProjInv = new Matrix4(), jitProj = new Matrix4(), jitProjInv = new Matrix4();
   let jittered = null, unjitteredNow = false;
-  // three's TAAU (gpu/three.js), made at the first frame (three's renderer is on the gpu by then)
-  const temporalOf = () => {
-    if (temporal === undefined) temporal = gpu.three?.renderer ? createTemporalUpscaler(gpu) : null;
-    return temporal;
-  };
   // adaptation and the meter, read back 1–3 frames late, one read at a time
   let reading = false, adaptSeen = null, adaptOn = false, meterAt = 0;
   // References only: no copied scene, and never the mesh-motion cache. These
@@ -1332,7 +1341,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const samplerEntry = (binding) => ({ binding, resource: sampler });
 
   const make = (label, [w, h], usage) => gpu.createTexture({ label, size: [w, h], format: HDR, usage });
-  // (F7: attachments are RENDER_ATTACHMENT | TEXTURE_BINDING only, so they stay compressible; TAAU's targets are three's)
+  // F7: use attachment and sampling flags only, except for readback tools.
   const COPY = readable ? TEX.COPY_SRC : 0;
   const ATTACH = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING | COPY;
   const STORE = TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | COPY;
@@ -1343,7 +1352,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const k = Math.min(1, Math.max(PRESENT_MIN, settingsOf().present ?? 1));
     return k === 1 ? [w, h] : [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))];
   };
-  const ready = Promise.all(allPipes().map((p) => p.ready)).then(() => post);
+  const ready = Promise.all([...allPipes().map(p => p.ready), temporal?.ready]).then(() => post);
   ready.catch(() => {});
 
   // a render pass of ours that overwrites every pixel of `view` with one draw
@@ -1354,6 +1363,41 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   };
   const sizeOf = (t) => [t.width, t.height];
   const texel = (t) => [1 / t.width, 1 / t.height];
+  const viewport = (rp, [w, h], [allocW, allocH]) => {
+    if (w === allocW && h === allocH) return;
+    rp.setViewport(0, 0, w, h, 0, 1);
+    rp.setScissorRect(0, 0, w, h);
+  };
+  // Injected legacy upscalers (including CPU test doubles) require tight inputs.
+  const allocOf = (z) => native ? z.size : z.inSize;
+
+  function setSizes(z) {
+    if (z.size.every((n, i) => n === size[i]) && z.inSize.every((n, i) => n === inSize[i]) && main.color) return;
+    keptPost = null;
+    const outChanged = z.size.some((n, i) => n !== size[i]) || !down.length;
+    size = z.size; inSize = z.inSize;
+    const resized = main.resize(...allocOf(z));
+    main.setViewport(...inSize);
+    if (outChanged) {
+      if (down.length && !resized) gpu.flush('post resize');
+      const retired = [...down, ...up, bloomImage, motionInputs?.velocity, motionInputs?.color];
+      const uses = [...liveScenes].flatMap(t => t.uses);
+      if (uses.length) Promise.allSettled(uses).then(() => retired.forEach(t => t?.destroy()));
+      else retired.forEach(t => t?.destroy());
+      down = z.mips.map((m, i) => make(`post down ${i}`, m, i === 0 ? ATTACH : STORE));
+      up = z.mips.slice(0, MIPS - 1).map((m, i) => make(`post up ${i}`, m, i === 0 ? ATTACH : STORE));
+      bloomImage = make('post bloom', z.mips[0], ATTACH);
+      if (native) {
+        motionInputs = {
+          velocity: gpu.createTexture({ label: 'motion velocity', size, format: MOTION_FORMATS[0], usage: ATTACH }),
+          color: make('motion colour', size, ATTACH),
+        };
+        temporal.resize(...size);
+      }
+      resolved = null;
+      post.reset();
+    } else if (resized) groups = new Map();
+  }
 
   const post = {
     settings: { ...POST_DEFAULTS },
@@ -1366,13 +1410,18 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     /** Resolves when every pipeline post draws with is built (B5: boot awaits it). */
     ready,
     /** Every pipeline is built. */
-    get isReady() { return allPipes().every((p) => p.state === 'ready'); },
+    get isReady() { return temporal?.isReady !== false && allPipes().every(p => p.state === 'ready'); },
     /** Output size [w, h] (canvas or target). */
     get size() { return [...size]; },
     /** The scene's size [w, h]: the output size × the render scale (the still's size during renderStill). */
-    get inSize() { return stageContext ? [...stageContext.inSize] : active === still ? [still.width, still.height] : [...inSize]; },
+    get inSize() { return [active.width, active.height]; },
+    /** Scene texture extent and the share occupied by the top-left viewport. */
+    get allocSize() { return active.allocSize; },
+    get uvScale() { return active.color ? taauUvScale(post.inSize, post.allocSize) : [1, 1]; },
+    /** Apply the active viewport/scissor on a native scene pass opened by a split caller. */
+    sceneViewport(rp) { viewport(rp, post.inSize, post.allocSize); },
     get historyRevision() { return historyRevision; },
-    /** This frame's jitter, scene pixels, y down: texel m sampled the view at m + ½ + jitter (three's TAAU's; FrameUniforms.jitter, F4); none during renderStill. */
+    /** This frame's jitter, scene pixels, y down: texel m sampled at m + ½ + jitter (FrameUniforms.jitter, F4); none during renderStill. */
     get jitter() { return stageContext ? [...stageContext.jitter] : active === still ? [0, 0] : [...jitter]; },
     /** The target the scene is drawn into now ({ rt, color, depth, width, height }): the main one, or the still's during renderStill. */
     get sceneTarget() { return active; },
@@ -1382,8 +1431,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      */
     get unjittered() { return stageContext ? stageContext.unjittered : jittered ? { projectionMatrix: savedProj, projectionMatrixInverse: savedProjInv } : null; },
     /** Every texture post holds, for memory estimates (gpu.memory() counts ours; threeBytes is three's share). */
-    get allTargets() { return [main.color,main.depth,still.color,still.depth,...down,...up,bloomImage,
-      ...stagedTargets.flatMap(s=>[s.target.color,s.target.depth]),...[...liveScenes].flatMap(t=>t.copies),lastImage?.texture].filter(Boolean); },
+    get allTargets() { return [main.color,main.depth,still.color,still.depth,...down,...up,bloomImage,motionInputs?.velocity,motionInputs?.color,
+      ...(temporal?.historyTextures ?? []),...stagedTargets.flatMap(s=>[s.target.color,s.target.depth]),
+      ...[...liveScenes].flatMap(t=>t.copies),lastImage?.texture].filter(Boolean); },
     /** Bytes of the scene targets three holds (not in gpu.memory()). */
     get threeBytes() { return main.threeBytes + still.threeBytes + stagedTargets.reduce((n,s)=>n+s.target.threeBytes,0); },
     /** Eyes still adjusting (the view should keep rendering until they settle). */
@@ -1392,9 +1442,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get adaptation() { return adaptSeen; },
     /** A reading is in flight (deep idle waits for it, F7). */
     get reading() { return reading; },
-    /** Current-frame weight TAA settles with (three's TAAUNode.currentFrameWeight: how long the view needs to converge). */
-    get settleWeight() { return temporalOf()?.currentWeight ?? 1; },
-    /** The temporal upscaler (gpu/three.js createTemporalUpscaler), or null without one: tests. */
+    /** Current-frame weight: how long a still view needs to converge. */
+    get settleWeight() { return temporal?.currentWeight ?? 1; },
     get temporal() { return temporalOf(); },
     /**
      * Render scale per axis the next render uses, of the output's pixels: the
@@ -1425,26 +1474,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         if (!canvas) throw new Error('post.setSize: no size and no presenter canvas');
         [w, h] = workSize(canvas.width, canvas.height);
       }
-      const z = postSizes(w, h, scale);
-      if (z.size[0] === size[0] && z.size[1] === size[1] && z.inSize[0] === inSize[0] && z.inSize[1] === inSize[1] && main.color) return;
-      keptPost = null;
-      const outChanged = z.size[0] !== size[0] || z.size[1] !== size[1] || !down.length;
-      size = z.size; inSize = z.inSize;
-      main.resize(inSize[0], inSize[1]);
-      if (outChanged) {
-        if (down.length) gpu.flush('post resize');   // (as the scene target's resize)
-        const retired = [...down,...up,bloomImage];
-        const uses = [...liveScenes].flatMap(t=>t.uses);
-        if (uses.length) Promise.allSettled(uses).then(()=>retired.forEach(t=>t?.destroy()));
-        else retired.forEach(t=>t?.destroy());
-        down = z.mips.map((m, i) => make(`post down ${i}`, m, i === 0 ? ATTACH : STORE));
-        up = z.mips.slice(0, MIPS - 1).map((m, i) => make(`post up ${i}`, m, i === 0 ? ATTACH : STORE));
-        bloomImage = make('post bloom', z.mips[0], ATTACH);
-        // (TAAU restarts its history at a new output size itself; a new scene size keeps it:
-        // the history is at output size, so automatic resolution's steps don't flash)
-        post.reset();
-      }
-      groups = new Map();
+      setSizes(postSizes(w, h, scale));
     },
 
     /** Drop the TAA history (call after scene swaps, teleports, etc.): the next frame takes the current view alone. */
@@ -1452,6 +1482,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       if (stageContext) throw new Error('cannot reset post from a staged scene hook');
       historyRevision++;
       historyValid = false; keptPost = null;
+      if (native) temporal.reset();
       groups = new Map();
       if (!admitting) {sceneGeneration++;for (const t of [...pendingScenes]) retireScene(t, 'discarded');}
     },
@@ -1459,10 +1490,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     /** Prewarm before opening native passes. BOX render() remains unchanged. */
     get sceneReady() {
       if (presenter) stageBlit ??= createBlit(gpu, presenter.format);
-      return Promise.all([...allPipes().map(p=>p.ready), ...(stageBlit ? [stageBlit.ready] : [])]);
+      return Promise.all([ready, stageBlit?.ready]);
     },
     get sceneSettled() {
-      return Promise.allSettled([...allPipes().map(p=>p.compilationSettled), ...(stageBlit ? [stageBlit.pipe.compilationSettled] : [])]);
+      return Promise.allSettled([...allPipes().map(p=>p.compilationSettled), temporal?.compilationSettled, stageBlit?.pipe.compilationSettled]);
     },
     setSceneIdentity(identity) {
       if (stageContext) throw new Error('cannot change scene identity from a staged scene hook');
@@ -1504,8 +1535,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * (`target` or the canvas), jitters `camera.projectionMatrix` in place
      * (F4), sets pixScale. Then write FrameUniforms once from the jittered
      * camera, record E1's commands that read it, the scene pass into
-     * post.sceneTarget (sceneDescriptor()) and three's meshes, and call
-     * endScene, then finish.
+     * post.sceneTarget (sceneDescriptor(), then sceneViewport(rp)) and three's
+     * meshes, and call endScene, then finish.
      * @param {object} camera a three camera in WebGPU's coordinate system
      * @param {{ target?: { width: number, height: number } | null }} [opts]
      */
@@ -1520,23 +1551,20 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       active = main;
 
       camera.updateMatrixWorld();
-      taaNow = !!(s.taa && temporalOf());
+      taaNow = !!(s.taa && temporal);
       if (taaNow !== lastTaa || camera !== prevCamera || cameraJumped(camera)) post.reset();
       lastTaa = taaNow;
       prevCamera = camera;
       prevPos.setFromMatrixPosition(camera.matrixWorld);
       prevQuat.setFromRotationMatrix(camera.matrixWorld);
 
-      // the one jitter: three's TAAU's own (Halton(2, 3) over its 32 offsets, in scene
-      // pixels), a view offset on the camera until endScene (gpu/three.js). The node
-      // projects from the camera's parameters (updateProjectionMatrix), so its own
-      // projection, unjittered, is that too.
+      // The Halton jitter is a view offset in scene pixels until endScene.
       if (taaNow) camera.updateProjectionMatrix();
       savedProj.copy(camera.projectionMatrix);
       savedProjInv.copy(camera.projectionMatrixInverse);
       curVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       jittered = camera;
-      jitter = taaNow ? temporal.jitter(camera, inSize[0], inSize[1]) : [0, 0];
+      jitter = !taaNow ? [0, 0] : native ? temporal.setViewOffset(camera, ...inSize, ...size) : temporal.jitter(camera, ...inSize);
       jitProj.copy(camera.projectionMatrix);
       jitProjInv.copy(camera.projectionMatrixInverse);
       jitVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -1627,14 +1655,15 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const f = gpu.frame;
       const scene = sceneTarget.color, depth = sceneTarget.depth;
 
-      // three's TAAU: the motion pass writes its inputs at the scene's size (velocity,
-      // the colour sanitized), then the node resolves to output size (gpu/three.js:
-      // its own submits, after a flush of this encoder)
+      const sceneSize = [sceneTarget.width, sceneTarget.height];
+      const allocSize = sceneTarget.allocSize;
+      // The viewport motion pass writes velocity and sanitized colour. The native
+      // resolve reads them in this frame and writes the next full-size history.
       let color = postOnly ? keptPost.color : scene, packed = postOnly && keptPost.packed;
       if (!postOnly) {
         resolved = null;
         if (taaNow) {
-          const inputs = temporal.inputs(inSize[0], inSize[1]);
+          const inputs = native ? motionInputs : temporal.inputs(...sceneSize);
           invVP.copy(jitVP).invert();
           const warp = framePresentation?.active ? framePresentation.parameters : IDENTITY;
           // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
@@ -1643,17 +1672,22 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           const bind = group(L.MOTION, [scene, depth], () => [texEntry(0, scene), texEntry(1, depth)]);
           const attach = (t) => ({ view: viewOf(t), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR });
           const rp = f.render({ colorAttachments: [attach(inputs.velocity), attach(inputs.color)] }, 'motion');
-          pipes.motion.draw(rp, {
-            bind: [, , bind],
-            params: {
-              reproj, jitterNdc: [(2 * jitter[0]) / inSize[0], (-2 * jitter[1]) / inSize[1]], size: inSize, historyValid,
-              warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
-              prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
-            },
-          });
-          rp.end();
-          // (still in taaCompress's range: its readers expand it per texel, radiance())
-          color = resolved = temporal.resolve(prevCamera, sceneTarget.rt?.depthTexture, size);
+          try {
+            viewport(rp, sceneSize, allocSize);
+            pipes.motion.draw(rp, {
+              bind: [, , bind],
+              params: {
+                reproj, jitterNdc: [(2 * jitter[0]) / sceneSize[0], (-2 * jitter[1]) / sceneSize[1]], size: sceneSize, historyValid,
+                warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
+                prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
+              },
+            });
+          } finally { rp.end(); }
+          // Still in taaCompress's range: its readers expand it per texel.
+          color = resolved = native ? temporal.resolve(f, {
+            colorView: viewOf(inputs.color), velocityView: viewOf(inputs.velocity), depthView: viewOf(depth),
+            inSize: sceneSize, allocSize, outSize: size, reset: !historyValid,
+          }) : temporal.resolve(prevCamera, sceneTarget.rt?.depthTexture, size);
           packed = true;
           post.onPass?.('taa', { kind: 'render' });
           historyValid = true;
@@ -1672,9 +1706,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const bloomOn = s.bloom > 0 && !s.raw;
       const meterNow = s.meter && !s.raw && !reading && frame >= meterAt;
       const thresh = [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)];
+      const srcSize = postOnly ? keptPost.srcSize : packed ? size : sceneSize;
 
       // bloom's prefilter, at half resolution
-      if (bloomOn && !postOnly) drawPass(pipes.prefilter, viewOf(down[0]), 'prefilter', group(L.PAIR, [color, color], () => [texEntry(0, color), texEntry(1, color), samplerEntry(2)]), { thresh, packed });
+      if (bloomOn && !postOnly) drawPass(pipes.prefilter, viewOf(down[0]), 'prefilter', group(L.PAIR, [color, color], () => [texEntry(0, color), texEntry(1, color), samplerEntry(2)]), { thresh, packed, srcSize, outSize: size });
 
       // one compute pass: bloom down 1–5, up 4–1, then the reductions
       if ((!postOnly && bloomOn) || adaptOn || meterNow) {
@@ -1694,7 +1729,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           const slot = want ? results.next() : NO_SLOT;   // (right before the dispatch that writes it, B7)
           pipes.reduce.dispatch(f, [1, 1, 1], {
             bind: [, , group(L.REDUCE, [color], () => [texEntry(0, color), samplerEntry(1), { binding: 2, resource: { buffer: adaptState } }, { binding: 3, resource: { buffer: results.buffer } }])],
-            params: { dt, adapt: adaptOn, meter: meterNow, slot, packed, reuseTarget: postOnly },
+            params: { srcSize, dt, adapt: adaptOn, meter: meterNow, slot, packed, reuseTarget: postOnly },
           });
           if (want) read(slot);
         }
@@ -1723,7 +1758,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         bind: [, , bind],
         params: compositeParams(s, [out.width, out.height], {
           // (the strength for the whole way from the scene's pixels to the output's: TAAU's, then EASU's)
-          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? sharpenAt(s.sharpen, out.width / Math.max(1, inSize[0])) : 0, srcSize: size,
+          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? sharpenAt(s.sharpen, out.width / Math.max(1, inSize[0])) : 0, srcSize,
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
           peak: out.canvas && presenter?.hdrActive && !s.raw && !s.cruelty ? HDR_OUT.PEAK : 1, packed,
@@ -1733,7 +1768,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       rp.end();
       post.onPass?.('composite', { kind: 'render' });
       if (!postOnly && !target && !viewmodel && !glow && adaptOn && !s.night && !s.meter) {
-        keptPost = { color, packed, camera: prevCamera, stamp: imageStamp(prevCamera, s) };
+        keptPost = { color, packed, srcSize, camera: prevCamera, stamp: imageStamp(prevCamera, s) };
       }
     },
 
@@ -1839,7 +1874,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       gpu.flush('post dispose');
       const destroy = () => {
         presentation?.dispose();temporal?.dispose();
-        [...down, ...up, bloomImage, blank].forEach(t => t?.destroy());
+        [...down, ...up, bloomImage, blank, motionInputs?.color, motionInputs?.velocity].forEach(t => t?.destroy());
+        motionInputs = null;
         down=[];up=[];bloomImage=null;resolved=null;
         main.destroy();still.destroy();stagedTargets.forEach(s => s.target.destroy());adaptState.destroy();groups=new Map();
       };
@@ -1947,7 +1983,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const projection = camera.projectionMatrix.clone(), inverse = camera.projectionMatrixInverse.clone();
     const view = camera.view ? {...camera.view} : null, aspect = camera.aspect;
     const sizes = postSizes(...(out.canvas ? workSize(out.width,out.height) : [out.width,out.height]),scale);
-    slot.target.resize(...sizes.inSize);slot.target.refresh();slot.busy = true;
+    slot.target.resize(...allocOf(sizes));slot.target.setViewport(...sizes.inSize);slot.target.refresh();slot.busy = true;
     const t = {slot, publication:options.publication, feedbackIdentity:options.feedbackIdentity, identity:sceneIdentity,
       generation:sceneGeneration, id:++sceneSequence, status:'recorded', retired:false, uses:[submitted], copies:[], completion:null,
       settings:s,sizes,out,still:isStill,dt:options.dt ?? ADAPT.DT,presentation:capturedPresentation,sky:capturedSky,worldModel,
@@ -1962,7 +1998,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const previousTarget = active, previousPixScale = pixScale?.value;
     try {
       syncHook(options.onPublicationTransferred);
-      camera.updateMatrixWorld();t.taa = !isStill && !!(s.taa && temporalOf());
+      camera.updateMatrixWorld();t.taa = !isStill && !!(s.taa && temporal);
       if (t.taa && !temporal.reserveJitter) throw new Error('staged TAA requires reversible jitter reservations');
       if (t.taa) camera.updateProjectionMatrix();
       const original = camera.projectionMatrix.clone(), originalInverse = camera.projectionMatrixInverse.clone();
@@ -1971,7 +2007,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       t.jitter = t.reservation ? [...t.reservation.jitter] : [0,0];
       t.jitVP = new Matrix4().multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
       active = slot.target;
-      stageContext = {liveCamera:camera,inSize:sizes.inSize,jitter:t.jitter,unjittered:{projectionMatrix:original,projectionMatrixInverse:originalInverse}};
+      stageContext = {liveCamera:camera,jitter:t.jitter,unjittered:{projectionMatrix:original,projectionMatrixInverse:originalInverse}};
       if (pixScale) pixScale.value = sizes.inSize[0]/sizes.size[0];
       syncHook(hooks.prepare,post);if (!isStill) syncHook(hooks.compute,post);
       drawScene(hooks,true);
@@ -2006,7 +2042,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     if(pendingSceneSubmission?.generation===sceneGeneration)return false;
     // TAAU owns resizeable history targets. Do not resize them while an older
     // admitted scene still has an uncompleted final consumer.
-    if (!t.still && (size.some((n,i)=>n!==t.sizes.size[i]) || inSize.some((n,i)=>n!==t.sizes.inSize[i]))
+    if (!t.still && (size.some((n,i)=>n!==t.sizes.size[i]) || (!native && inSize.some((n,i)=>n!==t.sizes.inSize[i])))
       && [...liveScenes].some(other=>other!==t && other.sharedPostWork)) return false;
     const finished = sceneFence(options.submission);t.uses.push(finished);
     admitting = true;let image = null;
@@ -2016,7 +2052,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         finishStill(t.slot.target,t.out,t.settings,t.sky);
       } else {
         t.sharedPostWork=true;
-        post.setSize(...t.sizes.size,t.sizes.inSize[0]/t.sizes.size[0]);
+        setSizes(t.sizes);
         taaNow = t.taa;
         if (taaNow !== lastTaa || stageCameraKey !== t.cameraKey || cameraJumped(t.camera)) {historyValid = false;keptPost = null;}
         lastTaa = taaNow;stageCameraKey = t.cameraKey;prevCamera = t.camera;
@@ -2066,17 +2102,19 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const drew = call(hooks.opaque,post) === true;
     if (strict) call(hooks.capture,post); // real opaque HDR/depth packing belongs here
     const rp = gpu.frame.render(post.sceneDescriptor({ load: drew }), 'scene');
-    try {call(hooks.draw,rp,post);} finally {rp.end();}
+    try {post.sceneViewport(rp);call(hooks.draw,rp,post);} finally {rp.end();}
     call(hooks.meshes,post);
     if (hooks.overlay) {
       const op = gpu.frame.render(post.overlayDescriptor(), 'overlay');
-      try {call(hooks.overlay,op,post);} finally {op.end();}
+      try {post.sceneViewport(op);call(hooks.overlay,op,post);} finally {op.end();}
     }
   }
 
   // The jittered camera's own projection back (endScene, or beginScene after a scene left unended)
   function restore(camera) {
-    if (taaNow) temporal.unjitter(camera);
+    if (taaNow) {
+      if (native) temporal.clearViewOffset(camera); else temporal.unjitter(camera);
+    }
     camera.projectionMatrix.copy(savedProj);
     camera.projectionMatrixInverse.copy(savedProjInv);
     jittered = null;

@@ -22,8 +22,8 @@
 // second of headroom, to the highest level predicted to fit with room (UP_FIT), the level's slower frames
 // included. A step that misses comes straight back down and refits from fresher points, so it can't
 // oscillate: the next step up is predicted from the level it failed at.
-// The scale moves in a few fixed levels: each change reallocates the scene's targets (post.js setSize,
-// the world march's G-buffer), so a level holds until a frame really needs another.
+// The scale moves in fixed levels. Post changes its viewport without reallocating;
+// the sample windows and hysteresis prevent noisy timings from oscillating quality.
 export const AUTO_RES = {
   // ---- steering on GPU time
   TARGET_MS: 12,      // the GPU budget a frame: 60 fps (16.7 ms) with ~28% headroom for spikes (the user's rule: a steady 60 is ≤ 12 ms)
@@ -151,7 +151,7 @@ export function createAutoResolution() {
         steering = gpuOn ? 'gpu' : 'wall';
         resetTrials();
         if (gpuOn) { auto.scale = levelScale(levelOf(auto.scale)); startLevel(now); }
-        else downAt = Math.max(downAt, now + A.WINDOW);
+        // A fresh wall measurement already waits WINDOW; retain only trial backoff.
       }
       if (gpuOn) steerGpu(now); else wallTrials(dt, now);
     },
