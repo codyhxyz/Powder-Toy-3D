@@ -329,6 +329,6 @@ test('map registers as a fixed valley sandbox and loads authored metadata throug
   assert.equal(Math.floor(A[5 * 4 + 3]), E.LAVA);
   const source = path => readFileSync(new URL(path, import.meta.url), 'utf8');
   assert.match(source('../src/app.js'), /FIXED_PRESET_GRID\s*=\s*\{[^}]*volcanoTown: 'valley'/);
-  assert.match(source('../src/app.js'), /PRESET_PLAQUES\s*=\s*\{[^}]*volcanoTown: volcanoTownManifest/);
+  assert.match(source('../src/app.js'), /PRESET_PLAQUES\s*=\s*(?:new Map\(\[[\s\S]*?\['volcanoTown',\s*volcanoTownManifest\]|\{[^}]*volcanoTown:\s*volcanoTownManifest)/);
   assert.match(source('../src/wire/pov.js'), /PRESET_SPAWNS\s*=\s*\{[^}]*volcanoTown: VOLCANO_TOWN_SPAWN/);
 });
