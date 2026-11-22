@@ -363,3 +363,24 @@ export function createCapCheck() {
     },
   };
 }
+
+/** Render without stepping, including scene work that lands asynchronously
+ * after a frame. The next frame applies a landed read before testing settle. */
+export async function settleParkedView(pacer, render, rasterNow) {
+  let count = 0;
+  pacer.wake();
+  for (;;) {
+    render();
+    count++;
+    const raster = rasterNow();
+    if (raster) {
+      const changes = raster.worldCopy.waitForChanges();
+      const builds = raster.mesh.waitForBuildReadbacks();
+      if (changes || builds) await Promise.all([changes, builds]);
+    }
+    const scenePending = raster && (raster.worldCopy.pendingChanges || !raster.mesh.coverageReady || raster.mesh.busy);
+    if (count >= 2 && pacer.settled && !scenePending) return count;
+    if (count >= pacer.settleLimit + (raster?.mesh.stats.slots ?? 0)) throw new Error('Test render did not converge');
+    if (scenePending && pacer.settled) pacer.wake();
+  }
+}

@@ -1,3 +1,4 @@
+import { matBaseWGSL } from './materialBase.js';
 import { liquidGLSL } from './liquid.js';
 import { cozySurfaceWGSL } from './cozy.js';
 import { noitaSurfaceWGSL } from './noita.js';
@@ -313,16 +314,7 @@ fn mDots(p: vec3f, f: f32, prob: f32, rmax: f32, fp: f32, h: ptr<function, f32>)
 }
 
 // ---- materials ----
-struct Mat {
-  alb: vec3f,     // diffuse albedo (dielectrics) or F0 (metals)
-  g: vec3f,       // gradient of the bump height, grid units (perturbs the normal)
-  emit: vec3f,
-  tang: vec3f,
-  sssCol: vec3f,
-  rough: f32, metal: f32, f0: f32, sss: f32, glint: f32, glintDens: f32, cav: f32, aniso: f32, trans: f32,
-  slopeVar: f32,  // the bump's slope variance a pixel covers but can't show, per axis (specular AA: aaRough)
-  sourceNormal: vec3f, sourceKind: u32, sourceFlags: u32,
-}
+${matBaseWGSL}
 
 fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
   var a = a0;
@@ -539,7 +531,7 @@ const WOOD_FISSURE_W: f32 = 0.2;             // fissure half-width in crease uni
 const WOOD_FISSURE_MEAN: f32 = 0.8;          // area mean of smoothstep(0, WOOD_FISSURE_W, crease) (value noise, sampled)
 const WOOD_FISSURE_DEPTH: f32 = 0.02 / CELL_M;   // fissures 2 cm below the plates' furrows' level, in cells
 const WOOD_FISSURE_SALT: vec3f = vec3f(3.7); // decorrelates the fissures from the other layers
-const WOOD_TOP_EDGE: vec2f = vec2f(0.6, 0.9);   // |n.y| range over which a face turns into end grain
+
 fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4f>, fr: ptr<function, f32>) -> vec4f {
   let J = TURN_Y30 * mat3x3f(WOOD_PLATE_FH, 0.0, 0.0, 0.0, WOOD_PLATE_FV, 0.0, 0.0, 0.0, WOOD_PLATE_FH);
   let m = mFbmD(p, WOOD_MEANDER_F, WOOD_MEANDER_OCT, fp);
@@ -574,7 +566,7 @@ fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4
   return pl + lwR * WOOD_FISSURE_DEPTH * vec4f(ridge - 1.0, dSmooth(0.0, WOOD_FISSURE_W, cr.x) * cr.yzw);
 }
 // share of sawn end grain (no bark) on a face with normal n
-fn woodEndGrain(n: vec3f) -> f32 { return smoothstep(WOOD_TOP_EDGE.x, WOOD_TOP_EDGE.y, abs(n.y)); }
+
 // Sawn boards (PLANKS; a WOOD cell labelled PLANK_* is drawn the same): the
 // axis they run along, from the cell's plank label (0 x, 1 y, 2 z), or -1 for
 // a cell that isn't boards. Unlabelled planks run along x.
@@ -1001,16 +993,7 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
   (*m).g = -tm.w * d;   // bumpNormal tilts the normal by minus the gradient's tangential part
 }
 
-// Element id's table values, untextured and not glowing.
-fn matBase(id: i32) -> Mat {
-  var m: Mat;
-  m.alb = ALBEDO(id); m.g = vec3f(0.0); m.tang = vec3f(1.0, 0.0, 0.0); m.sssCol = vec3f(1.0);
-  m.rough = ROUGH(id); m.metal = METAL(id);
-  m.f0 = (IOR(id) - 1.0) / (IOR(id) + 1.0); m.f0 *= m.f0;
-  m.sss = SSS(id); m.glint = GLINT(id); m.glintDens = 1.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
-  m.emit = vec3f(0.0);
-  return m;
-}
+
 // ...and with the cells' own glow at temperature T (ctype: its cell's): the
 // look without textures (FU.matDetail 0), and of a second element where
 // flowing grains meet another (gatherSurf).

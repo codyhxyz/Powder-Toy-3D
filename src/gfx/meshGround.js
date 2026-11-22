@@ -3,7 +3,7 @@ import { Box3, Frustum, Matrix4, WebGPUCoordinateSystem } from 'three/webgpu';
 import { prelude } from '../shaders/common.js';
 import { frameBindings, RENDER_LAYOUT } from '../shaders/bindings.js';
 import { worldCopyWGSL, WORLD_COPY_LAYOUT } from '../shaders/world/copy.js';
-import { farAirWGSL } from '../shaders/farShared.js';
+import { FAR_HAZE, farAirWGSL } from '../shaders/farShared.js';
 import { farLightReadersWGSL, LIGHT_BINDINGS } from '../shaders/world/light.js';
 import { GI_OFFSET_CELLS, SH_Y0, SH_Y1, SKYVIS_OPEN_DC, SHADOW_TINT_ID_SCALE, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
 import { GLASS_ALPHA_PER_CM } from '../shaders/gfx/glass.js';
@@ -12,18 +12,45 @@ import { noiseGLSL } from '../shaders/gfx/noise.js';
 import { glslMod } from '../gpu/wgsl.js';
 import { STAGE } from '../gpu/kernels.js';
 import { uniformStruct } from '../gpu/params.js';
+import { materialsGLSL } from './materials.js';
 import { materialTextures } from './materialTextures.js';
 import { skyGLSL, skyViewGLSL, SUN_TAN_RADIUS } from './sky.js';
 
+import { cozySurfaceWGSL } from '../shaders/gfx/cozy.js';
+import { noitaSurfaceWGSL } from '../shaders/gfx/noita.js';
+import { matBaseWGSL } from '../shaders/gfx/materialBase.js';
+import { DECO_PLANE_ENTRY } from '../shaders/gfx/deco.js';
+import { physParams, physWindowWGSL, decoWorld } from '../shaders/world/physWindow.js';
+import { cloudDeckGLSL, cloudSkyGLSL } from '../shaders/gfx/clouds.js';
+import { EDGE_SEA_WGSL, SKY_CLOUD_LAYOUT } from './overlays.js';
+import { EDGE_SEA_VEC4 } from './edgeSea.js';
+
 export const MESH_CHUNK = 32;
 export const MESH_MAX_LOD = 4;
-export const MESH_VCAP = 16384;
-export const MESH_ICAP = 6 * MESH_VCAP;
-const C = MESH_CHUNK, VCAP = MESH_VCAP, ICAP = MESH_ICAP;
+const C = MESH_CHUNK;
 const SLOTS = 384, BATCH = 16, WG = 64, FLOOR = 255;
 const VBYTES = 16, IBYTES = 2, ARG_WORDS = 5, JOB_WORDS = 8;
 const QN = C + 2; // quads' owners [-1,32], with one overlapping row on transition faces
 const VN = C + 3; // cubes [-2,32], including the low neighbours of those owners
+// One cube vertex plus two vertices per skirt. A dyadic leaf can meet a
+// coarser leaf on at most one face of each axis (its sibling is the other
+// side), and a face can extrude two orientations of quads per owner.
+const SKIRTS = 3 * 2 * QN ** 2;
+export const MESH_VCAP = VN ** 3 + 2 * SKIRTS;
+export const MESH_ICAP = 6 * (3 * QN ** 3 + SKIRTS);
+// Without LOD seams, the entire [-1,31]^3 dual grid fits in 36,864 slots.
+// Cubes at y=-2 can also straddle the floor's x/z walls (at most 2*33).
+export const MESH_FIXED_VCAP = 36864;
+export const MESH_FIXED_ICAP = 6 * 3 * (C + 1) ** 3;
+// Most World chunks need far less than the proof bound. Start them in the
+// original lean pool and promote only chunks that hit a cap. Dense seam-free
+// boxes use the proven capacity directly, without a GPU readback.
+const NORMAL_VCAP = 16384, NORMAL_ICAP = 6 * NORMAL_VCAP;
+const STORAGE_BUDGET = 128 * 1024 ** 2;
+const OVERFLOW_PAGE = 8;
+const poolSlots = (maxBuffer, vcap, icap) => Math.floor(Math.min(maxBuffer, STORAGE_BUDGET) / Math.max(vcap * VBYTES, icap * IBYTES));
+export const meshPoolSlots = (maxBuffer, fixed) => Math.min(SLOTS, fixed ? poolSlots(maxBuffer, MESH_FIXED_VCAP, MESH_FIXED_ICAP) :
+  poolSlots(maxBuffer, NORMAL_VCAP, NORMAL_ICAP));
 const FN = C + 4; // samples [-2,33]
 const RN = FN + 4; // two samples on either side for the 5-tap filter
 const RAW_N = RN ** 3, BLUR_X_N = FN * RN ** 2, BLUR_Y_N = FN ** 2 * RN, FIELD_N = FN ** 3;
@@ -126,7 +153,11 @@ export function meshChunkVisible(ch, fr) {
 }
 
 const BuildParams = uniformStruct('MeshBuildParams', { n: 'u32' });
-const ViewParams = uniformStruct('MeshViewParams', { clipToWorld: 'mat4x4f', worldToClip: 'mat4x4f', size: 'vec3f', floor: 'f32', sea: 'f32' });
+const ViewParams = uniformStruct('MeshViewParams', {
+  clipToWorld: 'mat4x4f', worldToClip: 'mat4x4f', floor: 'f32',
+  foot: 'vec4f', seaY: 'f32', sea: 'u32', mask: `array<vec4u, ${EDGE_SEA_VEC4}>`,
+  physOrigin: 'vec3i', physSize: 'vec3i', physSuper: 'vec3i', physRing: 'u32', deco: 'u32',
+});
 const buildDecls = /* wgsl */ `
 ${BuildParams.wgsl}
 @group(3) @binding(1) var<uniform> P: MeshBuildParams;
@@ -142,8 +173,8 @@ const BLUR_X: u32 = ${RAW_N}u;
 const BLUR_Y: u32 = ${RAW_N + BLUR_X_N}u;
 const FIELD: u32 = ${RAW_N + BLUR_X_N + BLUR_Y_N}u;
 const VM: u32 = ${RAW_N + BLUR_X_N + BLUR_Y_N + FIELD_N}u;
-const VCAP: u32 = ${VCAP}u;
-const ICAP: u32 = ${ICAP}u;
+const VCAP: u32 = ${MESH_VCAP}u;
+const ICAP: u32 = ${MESH_ICAP}u;
 const NONE: u32 = 0xffffffffu;
 fn coord(i: u32, n: i32) -> vec3i { let a = i32(i); return vec3i(a % n, (a / n) % n, a / (n * n)); }
 fn index(p: vec3i, n: i32) -> u32 { return u32(p.x + n * (p.y + n * p.z)); }
@@ -152,6 +183,12 @@ fn nonEmpty(j: u32) -> u32 { return base(j) + ${STRIDE - 1}u; }
 fn field(j: u32, p: vec3i) -> u32 { return scratch[base(j) + FIELD + index(p + 2, FN)]; }
 fn den(w: u32) -> f32 { return f32((w >> 8u) & 65535u) / 4096.0; }
 fn occ(w: u32) -> bool { return (w & 255u) != 0u; }
+fn lowOwner(job: Job) -> vec3i {
+  return select(vec3i(0), vec3i(-1), (vec3u(job.faces) & vec3u(1u, 4u, 16u)) != vec3u(0u) | (job.origin == vec3i(0)));
+}
+fn highOwner(job: Job) -> vec3i {
+  return vec3i(C - 1) + vec3i((vec3u(job.faces) & vec3u(2u, 8u, 32u)) != vec3u(0u));
+}
 fn vAt(j: u32, q: vec3i) -> u32 { return base(j) + VM + index(q + 2, VN); }
 `;
 const poolDecls = /* wgsl */ `
@@ -261,6 +298,7 @@ ${main} {
   let j = gid.y;
   let job = jobs[j];
   let q = coord(gid.x, VN) - 2;
+  if (any(q < lowOwner(job) - 1) || any(q > highOwner(job))) { return; }
   let at = vAt(j, q);
   var d: array<f32, 8>;
   var ids: array<u32, 8>;
@@ -337,12 +375,8 @@ ${main} {
   let j = gid.y;
   let job = jobs[j];
   let p = coord(gid.x, QN) - 1;
-  var low = vec3i(0);
-  var high = vec3i(C - 1);
-  for (var a = 0; a < 3; a++) {
-    if ((job.faces & (1u << u32(a * 2))) != 0u || job.origin[a] == 0) { low[a] = -1; }
-    if ((job.faces & (2u << u32(a * 2))) != 0u) { high[a] = C; }
-  }
+  let low = lowOwner(job);
+  let high = highOwner(job);
   if (any(p < low) || any(p > high)) { return; }
   let o0 = occ(field(j, p));
   for (var a = 0; a < 3; a++) {
@@ -370,7 +404,11 @@ ${main} {
   if (gid.x >= P.n) { return; }
   let s = jobs[gid.x].slot;
   let i = s * ${ARG_WORDS}u;
-  args[i] = min(atomicLoad(&counts[s * 2u + 1u]), ICAP);
+  let vc = atomicLoad(&counts[s * 2u]);
+  let ic = atomicLoad(&counts[s * 2u + 1u]);
+  // A truncated chunk must never be drawn. The host retries this job on the
+  // exact-size pool when the counts land.
+  args[i] = select(0u, ic, vc <= VCAP && ic <= ICAP);
   args[i + 1u] = 1u;
   args[i + 2u] = s * ICAP;
   args[i + 3u] = s * VCAP;
@@ -470,11 +508,13 @@ fn quartzGlints(p: vec3f, n: vec3f, v: vec3f, fp: f32) -> f32 {
 }`;
 
 const drawWGSL = (g, compact) => /* wgsl */ `
-${prelude(g, { state: false })}${frameBindings()}${glslMod}${noiseGLSL}
+${prelude(g, { state: false })}${frameBindings()}${glslMod}${noiseGLSL}${worldCopyWGSL()}
 ${atmosphere}${renderLight}${sandDetail}${unpackNormal}
-@group(1) @binding(0) var<storage, read> verts: array<vec4u>;
-@group(1) @binding(1) var tMat: texture_2d_array<f32>;
-@group(1) @binding(2) var sMat: sampler;
+${physWindowWGSL}${decoWorld()}
+${materialsGLSL()}${matBaseWGSL}${cozySurfaceWGSL}${noitaSurfaceWGSL}
+@group(2) @binding(0) var<storage, read> verts: array<vec4u>;
+@group(2) @binding(1) var tMat: texture_2d_array<f32>;
+@group(2) @binding(2) var sMat: sampler;
 struct Vertex {
   @builtin(position) pos: vec4f,
   @location(0) p: vec3f,
@@ -498,6 +538,15 @@ fn matTextured(id: i32, p: vec3f, n: vec3f, dx: vec3f, dy: vec3f) -> vec3f {
   else if (a.y >= a.z) { uv = p.xz; gx = dx.xz; gy = dy.xz; }
   return srgb(textureSampleGrad(tMat, sMat, uv * tm.y, layer, gx * tm.y, gy * tm.y).rgb) * TEXTINT(id).rgb;
 }
+// The smoothed surface can sit beyond a voxel's face/edge. Prefer the
+// first matching voxel along the inward normal; never borrow another material's paint.
+fn meshCell(p: vec3f, n: vec3f, id: i32) -> vec3i {
+  for (var i = 0; i < 3; i++) {
+    let c = vec3i(floor(p - n * (0.125 + f32(i) * 0.5)));
+    if (wcId(wcCell(c)) == id) { return c; }
+  }
+  return vec3i(-1);
+}
 @fragment fn fs(i: Vertex) -> ${compact ? '@location(0) vec4f' : 'ColorDepth'} {
   let dx = dpdx(i.p);
   let dy = dpdy(i.p);
@@ -512,15 +561,35 @@ fn matTextured(id: i32, p: vec3f, n: vec3f, dx: vec3f, dy: vec3f) -> vec3f {
   var glint = 0.0;
   if (i.id != ${FLOOR}u) {
     let id = i32(i.id);
-    albedo = matTextured(id, i.p, n, dx, dy);
+    var styled = false;
     emit = EMIT(id);
-    if (id == E_SAND && FU.matDetail > 0.0) {
-      let s = sandSlumps(i.p, fp);
-      let grad = (s.yzw - n * dot(s.yzw, n)) * (0.06 / CELL_M) * FU.matDetail;
-      n = normalize(n - grad);
-      albedo *= 1.0 + 0.25 * s.x;
-      glint = quartzGlints(i.p, n, view, fp);
+    var c = vec3i(-1);
+    if (FU.materialStyle != 0.0 || P.deco != 0u) { c = meshCell(i.p, geom, id); }
+    let w = wcCell(c);
+    let ct = f32(wcCtype(w));
+    let T = select(20.0, wcTemp(w), wcId(w) == id);
+    if (FU.matDetail > 0.0) {
+      if (FU.materialStyle == 1.0 && cozySupported(id, ct)) {
+        let m = cozyMat(id, i.p, n, T, ct, fp);
+        albedo = m.alb; emit = m.emit; styled = true;
+      } else if (FU.materialStyle == 2.0 && noitaSupported(id, ct)) {
+        let m = noitaMat(id, i.p, n, T, ct, fp);
+        albedo = m.alb; emit = m.emit; styled = true;
+      }
     }
+    if (!styled) {
+      albedo = matTextured(id, i.p, n, dx, dy);
+      if (id == E_SAND && FU.matDetail > 0.0) {
+        let s = sandSlumps(i.p, fp);
+        let grad = (s.yzw - n * dot(s.yzw, n)) * (0.06 / CELL_M) * FU.matDetail;
+        n = normalize(n - grad);
+        albedo *= 1.0 + 0.25 * s.x;
+        glint = quartzGlints(i.p, n, view, fp);
+      }
+    }
+    let paint = decoAt(c);
+    albedo = decoTint(albedo, ALBEDO(id), paint);
+    glint *= 1.0 - paint.a;
   }
   var direct = vec3f(0.0);
   let nl = max(dot(n, FU.sun), 0.0);
@@ -539,46 +608,51 @@ fn matTextured(id: i32, p: vec3f, n: vec3f, dx: vec3f, dy: vec3f) -> vec3f {
 
 const backgroundWGSL = (compact) => /* wgsl */ `
 ${frameBindings()}${atmosphere}
+@group(1) @binding(0) var tMediaNoise: texture_3d<f32>;
+@group(1) @binding(1) var linearRepeat: sampler;
+${cloudDeckGLSL}${cloudSkyGLSL(FAR_HAZE)}${EDGE_SEA_WGSL}
 struct SkyVertex { @builtin(position) p: vec4f, @location(0) ndc: vec2f }
-struct SkyOut { @location(0) color: vec4f, ${compact ? '' : '@location(1) clipDepth: f32,'} @builtin(frag_depth) depth: f32 }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> SkyVertex {
   let ndc = vec2f(f32((i & 1u) * 4u), f32((i >> 1u) * 4u)) - 1.0;
-  return SkyVertex(vec4f(ndc, 0.0, 1.0), ndc);
+  return SkyVertex(vec4f(ndc, 1.0, 1.0), ndc);
 }
-@fragment fn fs(i: SkyVertex) -> SkyOut {
+@fragment fn fs(i: SkyVertex) -> ${compact ? '@location(0) vec4f' : 'ColorDepth'} {
   let a = P.clipToWorld * vec4f(i.ndc, 0.0, 1.0);
   let b = P.clipToWorld * vec4f(i.ndc, 0.99, 1.0);
   let ro = a.xyz / a.w;
   let rd = normalize(b.xyz / b.w - ro);
   let disc = smoothstep(cos(SUN_TAN_RADIUS * 1.1), cos(SUN_TAN_RADIUS * 0.9), dot(rd, FU.sun));
-  var color = farAir(rd) + disc * FU.sunCol * 20.0;
-  var depth = 1.0;
+  var color = cloudOver(farAir(rd) + disc * FU.sunCol * 20.0, FU.cam, rd);
   if (rd.y < -1e-5) {
-    let sea = select(FU.sea, P.sea, P.sea >= 0.0);
-    let water = sea > 0.0 && sea > P.floor;
-    let t = (select(P.floor, sea, water) - ro.y) / rd.y;
-    let at = ro + rd * max(t, 0.0);
-    let outside = any(at.xz < vec2f(0.0)) || any(at.xz >= P.size.xz);
-    if (outside && t > 0.0) {
-      if (water) {
-        let fresnel = 0.02 + 0.98 * pow(1.0 + rd.y, 5.0);
-        color = mix(vec3f(0.015, 0.075, 0.09) * (FU.skyUp + FU.sunCol * max(FU.sun.y, 0.0)), skyColor(reflect(rd, vec3f(0.0, 1.0, 0.0))), fresnel);
-      } else {
-        color = GROUND_ALB * (FU.skyUp + FU.sunCol * max(FU.sun.y, 0.0));
+    let seaT = (P.seaY - ro.y) / rd.y;
+    let h = ro.xz + rd.xz * seaT;
+    let water = P.sea != 0u && P.seaY > P.floor && seaT > 0.0 && pastEdge(h) && edgeSea(h);
+    if (water) {
+      let fresnel = 0.02 + 0.98 * pow(1.0 + rd.y, 5.0);
+      let sea = mix(vec3f(0.015, 0.075, 0.09) * (FU.skyUp + FU.sunCol * max(FU.sun.y, 0.0)), skyColor(reflect(rd, vec3f(0.0, 1.0, 0.0))), fresnel);
+      color = farHazeAir(sea, rd, seaT, 1.0);
+    } else {
+      let t = (P.floor - ro.y) / rd.y;
+      if (t > 0.0 && pastEdge(ro.xz + rd.xz * t)) {
+        color = farHazeAir(GROUND_ALB * (FU.skyUp + FU.sunCol * max(FU.sun.y, 0.0)), rd, t, 1.0);
       }
-      color = farHazeAir(color, rd, t, 1.0);
-      let clip = P.worldToClip * vec4f(at, 1.0);
-      depth = clamp(clip.z / clip.w, 0.0, 1.0);
     }
   }
-  return SkyOut(vec4f(color, 1.0), ${compact ? '' : 'min(depth, 0.99999994), '}depth);
+  let hdr = vec4f(color, 1.0);
+  return ${compact ? 'hdr' : 'ColorDepth(hdr, 1.0)'};
 }`;
 
 /** All entry-point modules (CPU validation uses these exact strings). */
-export const meshGroundWGSL = (g, compact = false) => ({
-  reset: resetWGSL, occupied: occupiedWGSL(g), field: fieldWGSL(g), blurX: blurWGSL(0), blurY: blurWGSL(1), blurZ: blurWGSL(2),
-  verts: vertsWGSL, quads: quadsWGSL, args: argsWGSL, draw: drawWGSL(g, compact), background: backgroundWGSL(compact),
-});
+export const meshGroundWGSL = (g, compact = false, tier = 'overflow') => {
+  const [vcap, icap] = tier === 'fixed' ? [MESH_FIXED_VCAP, MESH_FIXED_ICAP]
+    : tier === 'normal' ? [NORMAL_VCAP, NORMAL_ICAP] : [MESH_VCAP, MESH_ICAP];
+  const pool = (code) => code.replace(`VCAP: u32 = ${MESH_VCAP}u`, `VCAP: u32 = ${vcap}u`)
+    .replace(`ICAP: u32 = ${MESH_ICAP}u`, `ICAP: u32 = ${icap}u`);
+  return {
+    reset: resetWGSL, occupied: occupiedWGSL(g), field: fieldWGSL(g), blurX: blurWGSL(0), blurY: blurWGSL(1), blurZ: blurWGSL(2),
+    verts: pool(vertsWGSL), quads: pool(quadsWGSL), args: pool(argsWGSL), draw: drawWGSL(g, compact), background: backgroundWGSL(compact),
+  };
+};
 
 const ro = { buffer: { type: 'read-only-storage' } };
 const rw = { buffer: { type: 'storage' } };
@@ -589,8 +663,10 @@ const drawLayout = [
   { binding: 0, visibility: STAGE.VERTEX, ...ro },
   { binding: 1, visibility: STAGE.FRAGMENT, texture: { viewDimension: '2d-array' } },
   { binding: 2, visibility: STAGE.FRAGMENT, sampler: {} },
+  ...LIGHT_BINDINGS.map(([binding, , , d]) => ({ ...d, binding, visibility: STAGE.FRAGMENT })),
+  { binding: 16, visibility: STAGE.FRAGMENT, sampler: {} },
 ];
-const lightLayout = [...LIGHT_BINDINGS.map(([binding, , , d]) => ({ ...d, binding, visibility: STAGE.FRAGMENT })), { binding: 16, visibility: STAGE.FRAGMENT, sampler: {} }];
+const drawFrameLayout = [...RENDER_LAYOUT.FRAME, DECO_PLANE_ENTRY];
 const targets = [{ format: 'rgba16float' }, { format: 'r32float' }];
 const work = [
   ['reset', 1], ['occupied', 1], ['field', RAW_N], ['blurX', BLUR_X_N], ['blurY', BLUR_Y_N], ['blurZ', FIELD_N],
@@ -608,76 +684,127 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
   const label = (x) => `sim${sim.id} mesh ground ${x}`;
   const maxBuffer = Math.min(gpu.device.limits.maxStorageBufferBindingSize, gpu.device.limits.maxBufferSize);
   const fixed = Math.max(...size) <= 4 * C;
-  const slots = Math.min(opts.slots ?? SLOTS, fixed ? size.reduce((n, s) => n * Math.ceil(s / C), 1) : 512,
-    Math.floor(maxBuffer / Math.max(VCAP * VBYTES, ICAP * IBYTES)));
+  const slots = Math.min(opts.slots ?? SLOTS, fixed ? size.reduce((n, s) => n * Math.ceil(s / C), 1) : SLOTS,
+    meshPoolSlots(maxBuffer, fixed));
   if (!Number.isInteger(slots) || slots < 1) throw new RangeError('mesh pool needs a positive integer capacity');
   const planLimit = fixed ? slots : Math.floor(slots / 2); // old and new partitions can coexist until commit
   const initial = meshLodPlan(size, null, planLimit);
   const B = (size, usage, name) => gpu.createBuffer({ size, usage, label: label(name) });
   const U = GPUBufferUsage;
-  const buffers = {
-    jobs: B(BATCH * JOB_WORDS * 4, U.STORAGE | U.COPY_DST, 'jobs'),
-    scratch: B(BATCH * STRIDE * 4, U.STORAGE, 'scratch'),
-    verts: B(slots * VCAP * VBYTES, U.STORAGE, 'verts'),
-    indices: B(slots * ICAP * IBYTES, U.STORAGE | U.INDEX, 'indices'),
-    counts: B(slots * 8, U.STORAGE, 'counts'),
-    args: B(slots * ARG_WORDS * 4, U.STORAGE | U.INDIRECT, 'args'),
-  };
+  const jobsBuffer = B(BATCH * JOB_WORDS * 4, U.STORAGE | U.COPY_DST, 'jobs');
+  const scratch = B(BATCH * STRIDE * 4, U.STORAGE, 'scratch');
   const L = {
     frame: gpu.layout('FRAME', RENDER_LAYOUT.FRAME),
     field: gpu.layout('MESH_GROUND_FIELD', fieldLayout),
     build: gpu.layout('MESH_GROUND_BUILD', buildLayout),
     draw: gpu.layout('MESH_GROUND_DRAW', drawLayout),
-    light: gpu.layout('MESH_GROUND_LIGHT', lightLayout),
+    drawFrame: gpu.layout('MESH_GROUND_FRAME', drawFrameLayout),
+    sky: gpu.layout('SKY_CLOUDS', SKY_CLOUD_LAYOUT),
   };
   const { compact = false } = opts;
-  const source = meshGroundWGSL(sim.g, compact);
+  const source = meshGroundWGSL(sim.g, compact, fixed ? 'fixed' : 'normal');
   const readsWorldCopy = (name) => name === 'occupied' || name === 'field';
-  const K = Object.fromEntries(work.map(([name]) => [name, gpu.kernel({ name: `mesh ground ${name}`, code: source[name],
+  const makeKernel = (name, code, suffix = '') => gpu.kernel({ name: `mesh ground ${name}${suffix}`, code,
     layouts: readsWorldCopy(name) ? [sim.L.TABLES, worldCopy.layout, L.field] : [undefined, undefined, L.build],
     workgroupSize: [WG, 1, 1], params: BuildParams,
-  })]));
+  });
+  const K = Object.fromEntries(work.map(([name]) => [name, makeKernel(name, source[name])]));
+  const overflowSource = fixed ? null : meshGroundWGSL(sim.g, compact);
+  const overflowK = overflowSource && Object.fromEntries(['verts', 'quads', 'args'].map((name) =>
+    [name, makeKernel(name, overflowSource[name], ' overflow')]));
   const render = (name, layouts, depthCompare) => gpu.renderPipeline({
     name: `mesh ground ${name}`, code: source[name], layouts, params: ViewParams,
     vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets: compact ? targets.slice(0, 1) : targets },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
-    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: name === 'draw', depthCompare },
   });
-  const draw = render('draw', [L.frame, L.draw, L.light], 'less');
-  const sky = render('background', [L.frame], 'always');
-  const pipelines = [...Object.values(K), draw, sky];
+  const draw = render('draw', [L.drawFrame, worldCopy.layout, L.draw], 'less');
+  const sky = render('background', [L.frame, L.sky], 'equal');
+  const pipelines = [...Object.values(K), ...Object.values(overflowK ?? {}), draw, sky];
   const ready = Promise.all(pipelines.map((p) => p.ready));
   ready.catch(() => {});
   const group = (layout, entries, name) => gpu.bindGroup(layout, entries, label(name));
-  const fieldGroup = group(L.field, ['jobs', 'scratch'].map((k, i) => bufferEntry(i, buffers[k])), 'field');
-  const buildGroup = group(L.build, Object.keys(buffers).map((k, i) => bufferEntry(i, buffers[k])), 'build');
+  const inputs = [bufferEntry(0, jobsBuffer), bufferEntry(1, scratch)];
+  const fieldGroup = group(L.field, inputs, 'field');
+  const makePool = (count, vcap, icap, kind) => {
+    const buffers = {
+      verts: B(count * vcap * VBYTES, U.STORAGE, `${kind} verts`),
+      indices: B(count * icap * IBYTES, U.STORAGE | U.INDEX, `${kind} indices`),
+      counts: B(count * 8, U.STORAGE | (kind === 'normal' ? U.COPY_SRC : 0), `${kind} counts`),
+      args: B(count * ARG_WORDS * 4, U.STORAGE | U.INDIRECT, `${kind} args`),
+    };
+    const buildGroup = group(L.build, [...inputs, ...Object.values(buffers).map((b, i) => bufferEntry(i + 2, b))], `${kind} build`);
+    return { buffers, buildGroup, owners: new Array(count).fill(null) };
+  };
+  const pool = makePool(slots, fixed ? MESH_FIXED_VCAP : NORMAL_VCAP, fixed ? MESH_FIXED_ICAP : NORMAL_ICAP, fixed ? 'fixed' : 'normal');
+  const overflowPools = [];
+  const overflowLimit = Math.min(slots, poolSlots(maxBuffer, MESH_VCAP, MESH_ICAP));
+  const reads = new Set();
+  let failure = null, disposed = false;
   const clamp = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
   const repeat = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
-  const lightGroup = group(L.light, [...worldLight.bindEntries(), textureEntry(16, clamp)], 'light');
-  const { resident, sync } = meshSlotCache(slots);
+  const linearRepeat = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' });
+  const skyGroup = group(L.sky, [textureEntry(0, opts.mediaNoise), textureEntry(1, linearRepeat)], 'clouds');
+  const { resident, sync: syncSlots } = meshSlotCache(slots);
+  function sync(plan) {
+    syncSlots(plan);
+    for (const page of overflowPools) for (let i = 0; i < page.owners.length; i++) {
+      const ch = page.owners[i];
+      if (ch && resident.get(ch.key) !== ch) page.owners[i] = null;
+    }
+  }
+  function promote(ch) {
+    let page = overflowPools.find((p) => p.owners.includes(null));
+    if (!page) {
+      const count = Math.min(OVERFLOW_PAGE, overflowLimit - overflowPools.length * OVERFLOW_PAGE);
+      if (count <= 0) throw new RangeError('mesh ground: exact-size overflow pool exhausted');
+      page = makePool(count, MESH_VCAP, MESH_ICAP, `overflow ${overflowPools.length}`);
+      overflowPools.push(page);
+    }
+    ch.overflow = page;
+    ch.overflowSlot = page.owners.indexOf(null);
+    page.owners[ch.overflowSlot] = ch;
+    ch.built = false;
+    ch.dirty = true;
+    stats.promotions++;
+  }
+  const tryCommit = () => {
+    if (pending.length && pending.every((ch) => {
+      const r = resident.get(ch.key);
+      return r.built && !r.building;
+    })) { active = pending; pending = []; sync(active); }
+  };
   const words = new Int32Array(BATCH * JOB_WORDS);
   const inverse = new Matrix4();
   const variant = (plan) => plan.map((ch) => ({ ...ch, key: `${ch.key}/${ch.faces}` }));
   let active = [], pending = variant(initial), anchor = '', rev = -1;
-  let depth, depthView, distance, distanceView, lastDepthOut, matView, matGroup;
-  const stats = { meshedLast: 0, meshedTotal: 0, drawnChunks: 0, slots, planLimit };
+  let ownedDepth, ownedDepthView, depth, depthView, distance, distanceView, lastDepthOut;
+  const stats = { meshedLast: 0, meshedTotal: 0, drawnChunks: 0, promotions: 0, slots, planLimit };
   const mesh = {
     ready,
     get isReady() { return pipelines.every((p) => p.state === 'ready'); },
     get coverageReady() { return active.length > 0; },
-    get busy() {
-      if (pending.length) return true;
-      for (const ch of resident.values()) if (ch.dirty) return true;
-      return false;
+    get dirtyCount() {
+      let count = 0;
+      for (const ch of resident.values()) if (ch.dirty) count++;
+      return count;
+    },
+    get busy() { return !!failure || pending.length > 0 || reads.size > 0 || mesh.dirtyCount > 0; },
+    waitForBuildReadbacks() {
+      if (!reads.size) return null;
+      gpu.flush('mesh ground counts');
+      return Promise.all(reads);
     },
     get resident() { return resident.size; },
     get depthTexture() { return depth; },
     get depthView() { return depthView; },
     get distanceView() { return lastDepthOut; },
-    get bytes() { return Object.values(buffers).reduce((n, b) => n + b.size, 0) + ((depth?.width ?? 0) * (depth?.height ?? 0) * 4 * (distance ? 2 : 1)); },
+    get bytes() { return jobsBuffer.size + scratch.size + [pool, ...overflowPools].flatMap((p) => Object.values(p.buffers)).reduce((n, b) => n + b.size, 0) + ((ownedDepth?.width ?? 0) * (ownedDepth?.height ?? 0) * 4 * (distance ? 2 : 1)); },
     frameLayout: L.frame,
+    drawFrameLayout: L.drawFrame,
     stats,
     update(frame, eye) {
+      if (failure) throw failure;
       stats.meshedLast = 0;
       if (!mesh.isReady || !worldCopy.bindGroup) return;
       eye = xyz(eye);
@@ -695,67 +822,112 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
         for (const ch of resident.values()) if (!ch.dirty && meshChunkDirty(ch, changes)) ch.dirty = true;
         rev = now;
       }
-      const jobs = [...resident.values()].filter((ch) => ch.dirty);
+      let jobs = [...resident.values()].filter((ch) => ch.dirty && !ch.building);
       jobs.sort((a, b) => Number(a.built) - Number(b.built) || a.lod - b.lod || distance2(a, eye) - distance2(b, eye));
-      jobs.length = Math.min(BATCH, jobs.length);
       if (jobs.length) {
-        jobs.forEach((ch, i) => words.set([...ch.lo, ch.slot, ch.step, ch.faces], i * JOB_WORDS));
-        gpu.device.queue.writeBuffer(buffers.jobs, 0, words, 0, jobs.length * JOB_WORDS);
-        const buildBind = [gpu.emptyGroup, gpu.emptyGroup, buildGroup];
+        const page = jobs[0].overflow;
+        const build = page ?? pool;
+        jobs = jobs.filter((ch) => ch.overflow === page).slice(0, BATCH);
+        jobs.forEach((ch, i) => words.set([...ch.lo, ch.overflowSlot ?? ch.slot, ch.step, ch.faces], i * JOB_WORDS));
+        gpu.device.queue.writeBuffer(jobsBuffer, 0, words, 0, jobs.length * JOB_WORDS);
+        const buildBind = [gpu.emptyGroup, gpu.emptyGroup, build.buildGroup];
         const wcBind = [sim.tables, worldCopy.bindGroup, fieldGroup];
-        for (const [name, n] of work) K[name].dispatch(frame, n === 1 ? [1, 1, 1] : [Math.ceil(n / WG), jobs.length, 1], {
+        for (const [name, n] of work) (page && overflowK[name] || K[name]).dispatch(frame, n === 1 ? [1, 1, 1] : [Math.ceil(n / WG), jobs.length, 1], {
           bind: readsWorldCopy(name) ? wcBind : buildBind, params: { n: jobs.length },
         });
-        for (const ch of jobs) { ch.built = true; ch.dirty = false; }
+        const check = !fixed && !page;
+        for (const ch of jobs) { ch.building = check; ch.dirty = false; if (!check) ch.built = true; }
+        if (check) {
+          // Copy once per batch (up to 3 KiB), before another batch can
+          // overwrite counters. Indirect args reject the overflow immediately.
+          const read = gpu.readback.buffer(pool.buffers.counts).then((ab) => {
+            if (disposed) return;
+            const counts = new Uint32Array(ab);
+            for (const ch of jobs) {
+              if (resident.get(ch.key) !== ch) continue;
+              ch.building = false;
+              if (counts[2 * ch.slot] > NORMAL_VCAP || counts[2 * ch.slot + 1] > NORMAL_ICAP) promote(ch);
+              else ch.built = true;
+            }
+            tryCommit();
+          }).catch((error) => { failure = error; }).finally(() => { reads.delete(read); });
+          reads.add(read);
+        }
         stats.meshedLast = jobs.length;
         stats.meshedTotal += jobs.length;
       }
-      if (pending.length && pending.every((ch) => resident.get(ch.key).built)) { active = pending; pending = []; sync(active); }
+      tryCommit();
     },
-    draw(frame, { views, w, h, allocSize = [w, h] }, frameGroup, viewProjModel) {
+    draw(frame, { views, w, h, allocSize = [w, h], depthTarget, opaqueSource, loadOpaque = false, deco = false, edgeSea }, frameGroup, viewProjModel, drawFrameGroup = frameGroup) {
       if (!mesh.isReady) return false;
-      const tex = (format, name) => gpu.createTexture({ label: label(name), size: allocSize, format,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-      if (!depth || depth.width !== allocSize[0] || depth.height !== allocSize[1]) {
-        if (depth) gpu.flush('mesh ground resize');
-        depth?.destroy(); distance?.destroy(); distance = distanceView = null;
-        depth = tex('depth32float', 'hardware depth');
-        depthView = depth.createView();
+      const tex = (format, name, usage = 0) => gpu.createTexture({ label: label(name), size: allocSize, format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | usage });
+      if (depthTarget) {
+        ({ texture: depth, view: depthView } = depthTarget);
+      } else {
+        if (!ownedDepth || ownedDepth.width !== allocSize[0] || ownedDepth.height !== allocSize[1]) {
+          if (ownedDepth) gpu.flush('mesh ground resize');
+          ownedDepth?.destroy(); distance?.destroy(); distance = distanceView = null;
+          ownedDepth = tex('depth32float', 'hardware depth', GPUTextureUsage.COPY_DST);
+          ownedDepthView = ownedDepth.createView();
+        }
+        depth = ownedDepth; depthView = ownedDepthView;
+      }
+      if (loadOpaque) {
+        const encoder = frame.direct();
+        encoder.copyTextureToTexture({ texture: opaqueSource.color }, { texture: views.opaqueTexture }, [w, h]);
+        // WebGPU requires a depth copy to cover the entire subresource. The
+        // matching allocations can be larger than the active DRS rectangle.
+        encoder.copyTextureToTexture({ texture: opaqueSource.depth }, { texture: depth }, allocSize);
       }
       if (!compact && !views.D && !distance) { distance = tex('r32float', 'clip depth'); distanceView = distance.createView(); }
       lastDepthOut = compact ? null : views.D ?? distanceView;
       const mt = materialTextures(gpu);
-      if (matView !== mt.view) {
-        matView = mt.view;
-        matGroup = group(L.draw, [bufferEntry(0, buffers.verts), textureEntry(1, mt.view), textureEntry(2, repeat)], 'draw');
-      }
-      const colorAttachments = (compact ? [views.S] : [views.S, lastDepthOut]).map((view) => ({ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }));
+      const materialGroup = (page) => {
+        if (page.matView !== mt.view) {
+          page.matView = mt.view;
+          page.matGroup = group(L.draw, [bufferEntry(0, page.buffers.verts), textureEntry(1, mt.view),
+            textureEntry(2, repeat), ...worldLight.bindEntries(), textureEntry(16, clamp)], 'draw');
+        }
+        return page.matGroup;
+      };
+      const colorAttachments = (compact ? [views.S] : [views.S, lastDepthOut]).map((view, i) => ({ view, loadOp: i === 0 && loadOpaque ? 'load' : 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }));
       const rp = frame.render({ colorAttachments, depthStencilAttachment: {
-        view: depthView, depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store',
+        view: depthView, depthLoadOp: loadOpaque ? 'load' : 'clear', depthClearValue: 1, depthStoreOp: 'store',
       } }, 'mesh ground');
-      const params = { clipToWorld: inverse.copy(viewProjModel).invert().elements, worldToClip: viewProjModel.elements, size,
-        floor: opts.floor ?? 0, sea: opts.sea ?? -1 };
+      const params = { clipToWorld: inverse.copy(viewProjModel).invert().elements, worldToClip: viewProjModel.elements,
+        floor: opts.floor ?? 0, foot: edgeSea?.foot ?? [0, 0, size[0], size[2]], seaY: edgeSea?.seaY ?? 0,
+        sea: edgeSea ? 1 : 0, mask: edgeSea?.mask, ...physParams(sim), deco: deco ? 1 : 0 };
       const fr = meshFrustum(viewProjModel);
-      let drawn = 0;
+      let drawn = 0, previousPage;
       try {
         if (w !== allocSize[0] || h !== allocSize[1]) {
           rp.setViewport(0, 0, w, h, 0, 1);
           rp.setScissorRect(0, 0, w, h);
         }
-        sky.draw(rp, { bind: [frameGroup], params });
         for (const ch of active.length ? active : pending) {
           const r = resident.get(ch.key);
           if (!r?.built || !meshChunkVisible(ch, fr)) continue;
-          const offset = r.slot * ARG_WORDS * 4;
-          if (!drawn++) draw.draw(rp, { bind: [frameGroup, matGroup, lightGroup], params,
-            index: { buffer: buffers.indices, format: 'uint16' }, indirect: { buffer: buffers.args, offset } });
-          else { rp.drawIndexedIndirect(buffers.args, offset); gpu.stats.draws++; }
+          const page = r.overflow ?? pool;
+          const offset = (r.overflowSlot ?? r.slot) * ARG_WORDS * 4;
+          const { indices, args } = page.buffers;
+          if (page !== previousPage) {
+            draw.draw(rp, { bind: [drawFrameGroup, worldCopy.bindGroup, materialGroup(page)], params,
+              index: { buffer: indices, format: 'uint16' }, indirect: { buffer: args, offset } });
+            previousPage = page;
+          } else { rp.drawIndexedIndirect(args, offset); gpu.stats.draws++; }
+          drawn++;
         }
+        sky.draw(rp, { bind: [frameGroup, skyGroup], params });
       } finally { rp.end(); }
       stats.drawnChunks = drawn;
       return true;
     },
-    dispose() { Object.values(buffers).forEach((b) => b.destroy()); depth?.destroy(); distance?.destroy(); },
+    dispose() {
+      disposed = true;
+      [jobsBuffer, scratch, ...[pool, ...overflowPools].flatMap((p) => Object.values(p.buffers))].forEach((b) => b.destroy());
+      ownedDepth?.destroy(); distance?.destroy();
+    },
   };
   return mesh;
 }
@@ -767,6 +939,6 @@ export const WGSL_CHECK = () => work.map(([entry]) => ({
   code: (g) => meshGroundWGSL(g)[entry],
 })).concat(['draw', 'background'].map((entry) => ({
   name: `mesh ground ${entry}`, kind: 'render', grids: ['128'], warm: false,
-  layouts: () => entry === 'draw' ? [RENDER_LAYOUT.FRAME, drawLayout, lightLayout] : [RENDER_LAYOUT.FRAME],
+  layouts: () => entry === 'draw' ? [drawFrameLayout, WORLD_COPY_LAYOUT, drawLayout] : [RENDER_LAYOUT.FRAME, SKY_CLOUD_LAYOUT],
   code: (g) => meshGroundWGSL(g)[entry],
 })));

@@ -98,7 +98,7 @@ const SEA_F0 = ((WATER_LOOK.ior - 1) / (WATER_LOOK.ior + 1)) ** 2;
 // footprint, is one the map's sea reaches: the mask bit of the side h is
 // furthest past, at h's place along it (gfx/edgeSea.js edgeSeaIndex, its JS
 // twin). P: SkyParams, or GridParams (the same fields).
-const EDGE_SEA_WGSL = /* wgsl */ `
+export const EDGE_SEA_WGSL = /* wgsl */ `
 const EDGE_SEA_SAMPLES: u32 = ${EDGE_SEA_SAMPLES}u;
 fn edgeSea(h: vec2f) -> bool {
   let lo = P.foot.xy;

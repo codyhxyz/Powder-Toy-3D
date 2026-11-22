@@ -40,23 +40,29 @@ export function createOpticsOverlay(gpu, sim, worldCopy, worldLight) {
   const light = worldLight.bindEntries().filter(({ binding }) => MEDIA_HALF_LAYOUT.some((e) => e.binding === binding));
   light.push({ binding: 17, resource: sampler });
 
-  let half = null, groups = new WeakMap(), disposed = false;
-  function dropHalf() {
-    if (!half) return;
+  const halves = [];
+  let disposed = false;
+  function dropHalf(half) {
     // A resize/dispose can follow a draw in the same tick. Submit before destroying its attachment.
     gpu.flush('retire optics media');
     half.tex.destroy();
-    half = null;
-    groups = new WeakMap();
   }
   function ensureHalf(w, h) {
     const [hw, hh] = mediaHalfSize(w, h);
-    if (half?.w === hw && half.h === hh) return;
-    dropHalf();
+    const i = halves.findIndex((half) => half.w === hw && half.h === hh);
+    if (i >= 0) {
+      const [half] = halves.splice(i, 1);
+      halves.unshift(half);
+      return half;
+    }
+    if (halves.length >= 2) dropHalf(halves.pop());
     const tex = gpu.createTexture({ label: 'world media half', size: [hw, hh], format: HDR, usage: MEDIA_USAGE });
-    half = { w: hw, h: hh, tex, view: tex.createView() };
+    const half = { w: hw, h: hh, tex, view: tex.createView(), groups: new WeakMap() };
+    halves.unshift(half);
+    return half;
   }
-  function bindGroups(depth, color) {
+  function bindGroups(half, depth, color) {
+    const { groups } = half;
     let entry = groups.get(depth);
     if (!entry) {
       const shared = [{ binding: 1, resource: depth }, ...light];
@@ -85,9 +91,9 @@ export function createOpticsOverlay(gpu, sim, worldCopy, worldLight) {
       const copy = worldCopy.bindGroup;
       if (!copy || !frameGroup0 || w <= 0 || h <= 0) return false;
       if (opaqueColorView === outColorView || opaqueDepthView === outDepthView) throw new Error('optics overlay requires distinct input and output views');
-      ensureHalf(...allocSize);
+      const half = ensureHalf(...allocSize);
       const [hw, hh] = mediaHalfSize(w, h);
-      const [media, optics] = bindGroups(opaqueDepthView, opaqueColorView);
+      const [media, optics] = bindGroups(half, opaqueDepthView, opaqueColorView);
       const params = { ...opticsCameraParams({ invViewProj, viewProj, eye, maxDist }), inSize: [w, h] };
       const mp = frame.render({ colorAttachments: [attachment(half.view, 1)] }, 'world media half');
       try {
@@ -112,7 +118,7 @@ export function createOpticsOverlay(gpu, sim, worldCopy, worldLight) {
     dispose() {
       if (disposed) return;
       disposed = true;
-      dropHalf();
+      halves.splice(0).forEach(dropHalf);
     },
   };
 }

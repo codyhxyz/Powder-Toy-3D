@@ -127,7 +127,7 @@ export class WorldCopy {
     this.G = null;              // its block of the scratch (copy.js wcGpuLayout), once the window is known
     this.stamp = 0;             // writebacks recorded (the lists' dedupe marks)
     this.landed = [];           // change lists read back, not yet noted
-    this.chgReading = false;
+    this.chgReading = null;
     this.chgDirty = false;      // writebacks since the change list was last copied out
     this.gpuAll = false;        // the next one compares every window brick (a retry, kernels late)
     this.retrySeen = 0;
@@ -365,7 +365,8 @@ export class WorldCopy {
       args: kernel('args', wcArgsFrag(), [gpu.L.EMPTY, gpu.L.EMPTY, this.argsLayout], { workgroupSize: [1, 1, 1] }),
       isReady: false,
     };
-    Promise.all([kg.gather.ready, kg.seeds.ready, kg.args.ready]).then(() => { kg.isReady = true; }, () => {});
+    kg.ready = Promise.all([kg.gather.ready, kg.seeds.ready, kg.args.ready]).then(() => { kg.isReady = true; });
+    kg.ready.catch(() => {});
     return (k.gpu = kg);
   }
 
@@ -598,12 +599,13 @@ export class WorldCopy {
     this._sim = sim;
     this._drain();
     const k = this._kernelsFor(sim), g = sim.g;
-    if (!k.isReady) { this.allDirty = true; return false; }
+    if (!k.isReady) { this.writebackReady = k.ready; this.allDirty = true; return false; }
+    this.writebackReady = null;
     const whole = [{ lo: [0, 0, 0], hi: [g.nx, g.ny, g.nz] }];
     if (!boxes) {
       const kg = this._gpuKernels(k, sim);
       if (kg?.isReady) return this._gpuWriteback(frame, sim, k, kg);
-      if (kg) { this.allDirty = true; return false; }   // (its kernels build: the first GPU one compares every brick)
+      if (kg) { this.writebackReady = kg.ready; this.allDirty = true; return false; }   // (its kernels build: the first GPU one compares every brick)
       boxes = whole;   // no record of change to read (a CPU fixture's physics): the window
     }
     if (this.allDirty && !this._gpuKernels(k, sim)) { boxes = whole; this.allDirty = false; }
@@ -731,18 +733,26 @@ export class WorldCopy {
   // writeback (_drain), so changesSince's callers see it at a writeback as before, a frame or two late.
   _readChanges(origin) {
     if (this.chgReading || !this.chgDirty || this.disposed) return;
-    this.chgReading = true;
     this.chgDirty = false;
     const G = this.G, gpu = this.gpu, AT = WC_JOB_RING;
     const read = gpu.readback.buffer(this.buf.scratch, AT * 4, G.readWords * 4);
     gpu.frame.clear(this.buf.scratch, (AT + WC_GPU.NCHG) * 4, 8);   // (recorded after the copy)
     const scratch = this.buf.scratch, writebacks = this.gpuWritebacks;
-    read.then((ab) => {
+    this.chgReading = read.then((ab) => {
       if (scratch !== this.buf.scratch) return;   // (made again since: chgLost noted the window)
       const w = new Uint32Array(ab);
       this.landed.push({ w, origin: [...origin] });
       this.gpuStats = { writebacks, cand: w[WC_GPU.SUM_CAND], changed: w[WC_GPU.SUM_CHANGED], seeds: w[WC_GPU.SUM_SEEDS], dil: w[WC_GPU.SUM_DIL] };
-    }).catch(() => { this.chgLost = true; }).finally(() => { this.chgReading = false; });
+    }).catch(() => { this.chgLost = true; }).finally(() => { this.chgReading = null; });
+  }
+
+  get pendingChanges() { return !!(this.chgReading || this.chgDirty || this.landed.length || this.chgLost || this.allDirty); }
+
+  // Parked captures await the in-flight read. Keep its boxes landed until
+  // recordWriteback consumes them so fields, lighting and the mesh see them.
+  waitForChanges() {
+    if (this.chgReading) this.gpu.flush('world copy changes');
+    return this.chgReading ?? this.writebackReady;
   }
 
   // The change lists read back since the last writeback, noted as world-cell boxes: a run of level-1 nodes

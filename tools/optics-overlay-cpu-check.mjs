@@ -119,6 +119,42 @@ test('production DDA skips empty hierarchy and uniform rock, then stops at the r
   assert.deepEqual([...out], [E.EMPTY, 0, 0, -1, E.GLASS, 83, 83.5, 0, E.WATER, 85, 89, 0]);
 });
 
+test('production DDA measures a hanging puddle and a glass wall across mixed and uniform bricks', () => {
+  const L = wcLayout([4, 16, 4]);
+  const table = new Uint32Array(L.tableWords);
+  const meta = new Uint32Array(L.metaWords);
+  const water = wcWord(E.WATER, 0, 20, 1), glass = wcWord(E.GLASS, 0, 20, 1);
+  const pool = new Uint32Array(64 * 2);
+  // One cell of water at y=13, then an air gap below it.
+  table[3] = WC_MIXED;
+  pool[21] = water;
+  // 2 cells below the gap (y=9,8) and 4 more in a full brick.
+  table[2] = WC_MIXED | 1;
+  pool[64 + 21] = pool[64 + 17] = glass;
+  table[1] = glass;
+  meta[3] = WC_OWN.SURF;
+  meta[1] = meta[2] = WC_OWN.CRISP;
+  meta[L.occ1At] = meta[L.occ2At] = 1;
+  const src = `${opticsOverlayWGSL(g)}
+@group(0) @binding(9) var<storage, read_write> out: array<vec4f>;
+@compute @workgroup_size(1) fn main() {
+  let rd = vec3f(1e-6, -1.0, 1e-6);
+  let puddle = overlayTrace(OverlayRay(rd, 0.0, 14.0));
+  let wall = overlayTrace(OverlayRay(rd, 5.0, 14.0));
+  let clipped = overlayTrace(OverlayRay(rd, 5.0, 9.5));
+  out[0] = vec4f(puddle.t, puddle.exit, wall.t, wall.exit);
+  out[1] = vec4f(puddle.exit - puddle.t, wall.exit - wall.t, clipped.exit - clipped.t, 0.0);
+}`;
+  const out = new Float32Array(8);
+  const { size, bricks, n1, n2, occ1At, occ2At } = L;
+  new WgslExec(new WgslParser().parse(src)).dispatchWorkgroups('main', 1, {
+    0: { 0: tablesBuffer(), 9: out },
+    1: { 0: WorldCopyUniforms.pack({ size, bricks, n1, n2, occ1At, occ2At }), 1: table, 2: pool, 3: meta },
+    3: { 1: OpticsParams.pack({ eye: [1.5, 16, 1.5] }) },
+  });
+  assert.deepEqual([...out], [2, 3, 6, 12, 1, 6, 3.5, 0]);
+});
+
 test('production ray reconstructs perspective depth in world cells with a large camera origin', () => {
   const eye = new Vector3(100_001, 8_000, -30_000);
   const projection = new Matrix4().makePerspective(-0.5, 0.5, 0.5, -0.5, 0.5, 2048, WebGPUCoordinateSystem);
@@ -213,10 +249,15 @@ test('host records media before optics, caches groups, and retires resized textu
   renderer.render(frame, { ...opts, w: 13 });
   assert.equal(count('texture'), 2);
   assert.equal(count('group'), 5, 'resizing invalidates cached attachments');
+  assert.equal(count('destroy'), 0);
+  renderer.render(frame, opts);
+  assert.equal(count('texture'), 2, 'the previous extent is cached');
+  renderer.render(frame, { ...opts, w: 15 });
+  assert.equal(count('texture'), 3);
   assert.equal(count('destroy'), 1);
   assert.ok(calls.findIndex(([a]) => a === 'submit') < calls.findIndex(([a]) => a === 'destroy'));
   renderer.dispose();
   renderer.dispose();
-  assert.equal(count('destroy'), 2);
+  assert.equal(count('destroy'), 3);
   assert.equal(renderer.render(frame, opts), false);
 });

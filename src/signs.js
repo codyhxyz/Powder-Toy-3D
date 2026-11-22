@@ -304,9 +304,9 @@ export class Signs {
   _probe(sim, info) {
     const pr = this.probe;
     if (pr.kernel.state !== 'ready') return;
-    // Raster does not produce a brick map. Probe the cells directly rather
-    // than making a saved sign allocate all of the window's Derived storage.
-    const brick = sim.derived?.allocated ? sim.brick : null;
+    // Raster leaves the derived map untouched. If it is missing or stale,
+    // probe the live cells instead of skipping through stale air flags.
+    const brick = sim.derived?.fresh ? sim.brick : null;
     const brickBinding = brick ?? pr.data;   // read-only placeholder, not read without useBricks
     if (this.dataDirty) this._uploadSigns(sim.g);
     const n = this.batch.length;

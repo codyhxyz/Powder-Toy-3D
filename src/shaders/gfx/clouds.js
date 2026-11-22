@@ -276,7 +276,7 @@ fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
 //   cloudOver(c, ro, rd) -> vec3f  sky radiance c behind the deck, seen so
 export const cloudSkyGLSL = (haze) => /* wgsl */ `${cloudLookGLSL}
 const CLOUD_SKY_FADE: f32 = ${cells(CLOUD.skyFadeM)};
-const CLOUD_SKY_HAZE_RGB: vec3f = ${glf(+haze.toExponential(4))} * TAU_AIR / TAU_AIR.g;   // the air's extinction per cell (the sky's spectral shape)
+const CLOUD_SKY_HAZE_RGB: vec3f = vec3f(TAU_AIR.r / TAU_AIR.g * ${glf(+haze.toExponential(4))}, ${glf(+haze.toExponential(4))}, TAU_AIR.b / TAU_AIR.g * ${glf(+haze.toExponential(4))});   // the air's extinction per cell (the sky's spectral shape)
 const CLOUD_SKY_SELF: f32 = 0.5;   // a slice's sample lies mid-way through it: sunlight crosses half its depth
 
 fn cloudSky(ro: vec3f, rd: vec3f) -> vec4f {

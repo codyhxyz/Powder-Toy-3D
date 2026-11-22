@@ -33,7 +33,7 @@
 //   group 1  W's world copy
 //   group 2  F, L and M (shaders/world/bindings.js)
 //   group 3  the header (origin 0: render kernels are in world cells) and MarchParams (P)
-import { prelude, LAYOUT, SUPER, SUPER_CELLS, STAGE, BRICK } from '../common.js';
+import { prelude, LAYOUT, SUPER, STAGE, BRICK } from '../common.js';
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod } from '../../gpu/wgsl.js';
@@ -47,7 +47,8 @@ import { liquidGLSL } from '../gfx/liquid.js';
 import { liquidDetailGLSL } from '../gfx/liquidDetail.js';
 import { mediaGLSL } from '../gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from '../gfx/grains.js';
-import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from '../gfx/deco.js';
+import { physWindowWGSL, decoWorld } from './physWindow.js';
+import { decoSurfGLSL, DECO_PLANE_ENTRY } from '../gfx/deco.js';
 import { glassWGSL, glassShapeWGSL } from '../gfx/glass.js';
 import { filmCellsWGSL, filmTraceWGSL } from '../gfx/film.js';
 import { volumeHazeGLSL } from '../farShared.js';
@@ -81,14 +82,8 @@ export const MarchParams = uniformStruct('MarchParams', {
   cutHi: 'vec3f',
   sceneRes: 'vec2f',    // the split stages' target in pixels (the beam stage's tiles' rays: shaders/world/beam.js)
 });
-/** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
-export const physParams = (sim) => {
-  const o = sim.origin, g = sim.g;
-  return {
-    physOrigin: [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0], physSize: [g.nx, g.ny, g.nz],
-    physSuper: [g.nx / SUPER_CELLS.x, g.ny / SUPER_CELLS.y, g.nz / SUPER_CELLS.z], physRing: g.ring ?? 0,
-  };
-};
+export { physParams } from './physWindow.js';
+
 /**
  * JS twin of the march's physSlot (tools/world-march-cpu-check.mjs compares it with
  * shaders/common.js cellSlot): world cell c's slot in physics' window, from run-time values.
@@ -148,25 +143,7 @@ fn tClosest(c: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32) -> f32 {
   return clamp(dot(vec3f(c) + 0.5 - ro, rd), ta, tb);
 }
 
-// ---- physics' window (P.physOrigin, P.physSize), indexed at run time ----
-// (its slot layout from P.physSuper, as the prelude's slotOf has it from its constants: the
-// march's own reads bake in no window size)
-fn inPhys(c: vec3i) -> bool {
-  let q = c - P.physOrigin;
-  return all(q >= vec3i(0)) && all(q < P.physSize);
-}
-fn physSlot(c: vec3i) -> u32 {
-  let p = c - P.physOrigin;
-  let b = p >> vec3u(2u);
-  let s = b / SUPER_B;
-  let k = b - s * SUPER_B;
-  let st = s.x + P.physSuper.x * (s.z + P.physSuper.z * s.y);
-  let l = p & vec3i(3);
-  // (a ringed window's brick numbers rotate by its ring: shaders/common.js brickId)
-  let n = u32(16 * P.physSuper.x * P.physSuper.y * P.physSuper.z);
-  let id = (u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) + P.physRing) % n;
-  return id * 64u + u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
-}
+${physWindowWGSL}
 // What only physics holds (the flow's drift, the foam) fades out over PHYS_FADE_CELLS inside the window's
 // faces that lie inside the world, so where physics stops shows no line: the full-detail box follows the
 // focus itself (world/window.js cutBox), up to WIN_STEP + WIN_HYSTERESIS cells off the window, so the
@@ -296,10 +273,6 @@ function rewrite(code, pairs, what) {
   }
   return out;
 }
-const decoWorld = () => rewrite(decoViewGLSL, [
-  ['outside(c)) { return vec4f(0.0); }', '!inPhys(c)) { return vec4f(0.0); }'],
-  ['decoPlane[slotOf(c)]', 'decoPlane[physSlot(c)]'],
-], 'gfx/deco.js decoAt');
 // The floor's grid lines are a small map's (mapKind.boxFrame); under a big map's sea the world's
 // floor is plain ground (Same look as the box era: its floor lines were never drawn on a big map).
 const floorWorld = (code) => rewrite(code, [

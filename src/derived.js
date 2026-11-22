@@ -186,6 +186,8 @@ export class Derived {
     if (!lazy) this.ensureAllocated();
   }
 
+  get fresh() { return this.allocated && this.bricksVersion === this.sim.version; }
+
   get allocated() { return !!this._resources; }
 
   // Per-grid buffers and texture payloads; shared device resources are not charged here.
@@ -377,6 +379,7 @@ export class Derived {
     this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, state, gr.brick], header });
     const air = this._nativeBrickAir();   // (built from V2's start, drawn once V2 draws: format 2)
     if (air && header.format === 2) this._dispatch(air.kernel, fold(Math.ceil(sim.g.nbricks / 64)), { bind: [tables, state, air.group], header });
+    this.bricksVersion = sim.version;
     this.occupancy.update();   // over the brick map's list (every brick at a shift: its own onShift)
     this._dispatch(k.boxArgs, [1, 1, 1], { header: this.sim.header(), bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
     this.boxFull = false;

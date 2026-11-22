@@ -47,19 +47,20 @@ import { costify, costBinding, costLayoutEntry } from '../shaders/costView.js';
 import { worldPickFrag, WORLD_PICK_LAYOUTS } from '../shaders/world/pick.js';
 import { PickParams, PICK_BATCH, PICK_RESULT_BYTES, SCENE_FORMATS } from '../shaders/render.js';
 
+const GBUF_KEPT = 2;
 const PICK_RING_SLOTS = 64;   // (gfx/volume.js's: rays in flight)
-const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits, importable in Node)
+const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits, importable in Node)
 const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 const xyz = (o) => [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0];
 
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim
- * @param {{ volume: object, renderer?: string, sea?: number, floor?: number, onVariant?: () => void }} opts
+ * @param {{ volume: object, renderer?: string, floor?: number, onVariant?: () => void }} opts
  *   volume lends its media noise and the legacy optics hint. onVariant requests
  *   another frame when pipelines land or more mesh batches remain.
  */
-export function createWorldView(gpu, sim, { volume, onVariant = () => {}, renderer, sea, floor }) {
+export function createWorldView(gpu, sim, { volume, onVariant = () => {}, renderer, floor }) {
   const useLegacyMarch = (renderer ?? new URLSearchParams(globalThis.location?.search).get('renderer')) === 'march';
   const fastRaster = !useLegacyMarch;
   const label = (x) => `sim${sim.id} world ${x}`;
@@ -81,7 +82,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
     copyWGSL: worldCopyWGSL(), mediaNoise: volume.mediaNoiseView,
     ...(fields && { fieldsWGSL: `${fieldsBindingsWGSL(2)}\n${worldFieldsWGSL()}`, fieldsBindings: FIELDS_BINDINGS }),
   });
-  const meshOpts = { sea, floor, compact: true };
+  const meshOpts = { floor, mediaNoise: volume.mediaNoiseView, compact: true };
   const mesh = fastRaster ? createMeshGround(gpu, sim, worldCopy, light, meshOpts) : null;
   const optics = fastRaster ? createOpticsOverlay(gpu, sim, worldCopy, light) : null;
   const rasterDesc = rasterCompositeCheck()[0];
@@ -122,22 +123,31 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
     plane: gpu.createBuffer({ label: 'deco plane (none)', size: 16, usage: GPUBufferUsage.STORAGE }),
   }) : null;
 
-  let rasterTargets = null, rasterPrepared = null;
+  const rasterTargets = [];
+  let rasterPrepared = null;
   const viewProjModel = new Matrix4();
-  function dropRasterTargets() {
-    if (!rasterTargets) return;
+  const destroyRasterTargets = (set) => {
     gpu.flush('world raster targets');
-    rasterTargets.textures.forEach((t) => t.destroy());
-    rasterTargets = rasterPrepared = null;
-  }
+    set.textures.forEach((t) => t.destroy());
+  };
   function compactTargets(allocSize) {
-    if (rasterTargets && allocSize.every((n, i) => n === rasterTargets.size[i])) return rasterTargets;
-    dropRasterTargets();
-    const tex = (name, format) => gpu.createTexture({ label: label(name), size: allocSize, format,
-      usage: TEX.TEXTURE_BINDING | TEX.RENDER_ATTACHMENT });
-    const textures = [tex('raster opaque color', SCENE_FORMATS.color), tex('raster final color', SCENE_FORMATS.color), tex('raster final depth', SCENE_FORMATS.depth)];
-    const [opaqueColor, finalColor, finalDepth] = textures.map((t) => t.createView());
-    return rasterTargets = { size: [...allocSize], textures, opaqueColor, finalColor, finalDepth, groups: new WeakMap() };
+    const i = rasterTargets.findIndex((set) => allocSize.every((n, j) => n === set.size[j]));
+    if (i >= 0) {
+      const [set] = rasterTargets.splice(i, 1);
+      rasterTargets.unshift(set);
+      return set;
+    }
+    if (rasterTargets.length >= GBUF_KEPT) destroyRasterTargets(rasterTargets.pop());
+    const tex = (name, format, usage = 0) => gpu.createTexture({ label: label(name), size: allocSize, format,
+      usage: TEX.TEXTURE_BINDING | TEX.RENDER_ATTACHMENT | usage });
+    const opaqueTexture = tex('raster opaque color', SCENE_FORMATS.color, TEX.COPY_DST);
+    const opaqueDepthTexture = tex('raster opaque depth', SCENE_FORMATS.depth, TEX.COPY_DST);
+    const textures = [opaqueTexture, opaqueDepthTexture, tex('raster final color', SCENE_FORMATS.color), tex('raster final depth', SCENE_FORMATS.depth)];
+    const [opaqueColor, opaqueDepth, finalColor, finalDepth] = textures.map((t) => t.createView());
+    const set = { size: [...allocSize], textures, opaqueTexture, opaqueColor, opaqueDepth, finalColor, finalDepth,
+      depthTarget: { texture: opaqueDepthTexture, view: opaqueDepth }, groups: new WeakMap() };
+    rasterTargets.unshift(set);
+    return set;
   }
 
   // ---- bind groups, cached by their resources' identities ----
@@ -172,7 +182,6 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
   // (two kept, by size: a still's target, a thumbnail's, doesn't make the frame's over each time)
   let gb = null;
   const gbs = [];
-  const GBUF_KEPT = 2;
   const destroyGb = (b) => { gpu.flush('world gbuffer'); Object.values(b.tex).forEach((t) => t.destroy?.()); };
   function gbuffer(w, h) {
     const i = gbs.findIndex((b) => b.w === w && b.h === h);
@@ -234,11 +243,25 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
   const fallback = !!gpu.adapterInfo?.isFallbackAdapter;
   const meshInv = new Matrix4();
   let disposed = false;
-  let lightFrame = null;
+  const frameEntriesForWorld = () => [
+    { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } },
+  ];
+  let lightFrame, emptyDeco, paintGroup;
   function worldFrameGroup() {
-    return lightFrame ??= gpu.bindGroup(mesh?.frameLayout ?? gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
-      { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } },
-    ], label('frame tables and uniforms'));
+    return lightFrame ??= gpu.bindGroup(mesh?.frameLayout ?? gpu.layout('FRAME', RENDER_LAYOUT.FRAME),
+      frameEntriesForWorld(), label('frame tables and uniforms'));
+  }
+  function meshFrameGroup(plane) {
+    if (!plane) {
+      emptyDeco ??= gpu.createBuffer({ label: label('raster deco (none)'), size: 4, usage: GPUBufferUsage.STORAGE });
+      plane = { buffer: emptyDeco, offset: 0, size: 4 };
+    }
+    if (!paintGroup || ['buffer', 'offset', 'size'].some((k) => plane[k] !== paintGroup.plane[k])) {
+      paintGroup = { plane, group: gpu.bindGroup(mesh.drawFrameLayout, [
+        ...frameEntriesForWorld(), { binding: 3, resource: plane },
+      ], label('raster frame and deco')) };
+    }
+    return paintGroup.group;
   }
   // F's levels are filled whole on the first update after a build (fields.prime), so the first frame
   // has every level around the camera, not a few thousand bricks of them
@@ -396,7 +419,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
      * pass. Returns true when draw() has a picture to composite. The active
      * viewport is anchored at [0,0] inside the reusable allocSize targets.
      */
-    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null, target,
+    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null, target, opaqueSource, loadOpaque = false, edgeSea,
       allocSize = target && [target.width, target.height], inSize = allocSize } = {}) {
       prepared = false;
       rasterPrepared = null;
@@ -408,8 +431,10 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
         const targets = compactTargets(allocSize);
         const frameGroup = worldFrameGroup();
         viewProjModel.multiplyMatrices(last.viewProj, last.model);
-        if (!mesh.draw(frame, { views: { S: targets.opaqueColor }, w, h, allocSize }, frameGroup, viewProjModel)) return false;
-        const opaqueDepth = mesh.depthView;
+        const plane = decoShown(sim) ? sim.decoPlane : null;
+        if (!mesh.draw(frame, { views: { S: targets.opaqueColor, opaqueTexture: targets.opaqueTexture }, w, h, allocSize,
+          depthTarget: targets.depthTarget, opaqueSource, loadOpaque, deco: !!plane, edgeSea }, frameGroup, viewProjModel, meshFrameGroup(plane))) return false;
+        const opaqueDepth = targets.opaqueDepth;
         const eye = last.eye.toArray();
         const maxDist = Math.hypot(...size.map((n, i) => Math.max(Math.abs(eye[i]), Math.abs(n - eye[i]))));
         const overlaid = optics.render(frame, {
@@ -460,7 +485,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
      * World upkeep after physics: writeback, fields (legacy only), lighting,
      * then the raster path's bounded mesh jobs.
      */
-    update(frame, { boxes = [], camera = null, sun = null, drawLo = null, cutCentre = null, sea, floor, phase = () => {} } = {}) {
+    update(frame, { boxes = [], camera = null, sun = null, drawLo = null, cutCentre = null, floor, phase = () => {} } = {}) {
       const rev = worldCopy.revision ?? 0;
       phase('worldCopy');
       worldCopy.recordWriteback(frame, sim, boxes);
@@ -479,11 +504,10 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
       phase('worldLight');
       if (eye) light.update(frame, eye, sun, changes, { frameGroup: worldFrameGroup() });
       if (mesh && eye) {
-        if (sea !== undefined) meshOpts.sea = sea;
         if (floor !== undefined) meshOpts.floor = floor;
         phase('worldMesh');
         mesh.update(frame, eye);
-        if (worldCopy.bindGroup && mesh.busy) onVariant();  // keep bounded chunk batches progressing while idle
+        if (worldCopy.bindGroup && (mesh.busy || worldCopy.pendingChanges)) onVariant();  // keep bounded chunk batches progressing while idle
       }
     },
     /**
@@ -592,7 +616,9 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {}, render
       fields?.dispose();
       mesh?.dispose();
       optics?.dispose();
-      dropRasterTargets();
+      rasterTargets.splice(0).forEach(destroyRasterTargets);
+      rasterPrepared = null;
+      emptyDeco?.destroy();
       light.dispose?.();
     },
   };

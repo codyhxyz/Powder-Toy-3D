@@ -74,7 +74,7 @@ import { sprintBlurStep } from './gfx/sprintBlur.js';
 import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
 import { povEvents } from './pov/events.js';
-import { createPacer, settleFrames, createViewKey, createFrameLoop, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
+import { createPacer, settleFrames, createViewKey, createFrameLoop, createCapCheck, CAP_IDLE_MS, MAX_FPS, settleParkedView } from './gfx/pacing.js';
 import { createViewSettings, bindViewInputWake, brushKey } from './gfx/viewInputs.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
@@ -1960,13 +1960,13 @@ async function renderThumb(viewId, out, { build = true } = {}) {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     const drawStill = () => presentation.neutral(() => post.renderStill({
       prepare() { const fv = frameValues(thumbCam, viewId, [0, 0]); const written = writeFrameUniforms(gpu, fv); wv?.writeUniforms(fv, written); frameBoxed = marchBoxed(view, false); },
-      compute() { if (wv?.fastRaster && !b) wv.update(gpu.frame, { boxes: null, camera: thumbCam, sun: SUN, sea: rasterSea() }); },
+      compute() { if (wv?.fastRaster && !b) wv.update(gpu.frame, { boxes: null, camera: thumbCam, sun: SUN }); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => {
         meshKinds = collectThreeMeshes(thumbCam);
         const drew = threeMeshes(p, false, thumbCam, true, meshKinds);
         if (drew && !b && !wv?.fastRaster) cut.capture(p.sceneTarget.depth);
-        if (wv && !b) worldPrepass(p, view, detail, null);   // (as a frame records it)
+        if (wv && !b) worldPrepass(p, view, detail, null, drew);   // (as a frame records it)
         return wv?.fastRaster ? drew : farPass(p, drew, view, false);
       },
       draw(rp, p) {
@@ -2661,12 +2661,13 @@ function drawVolume(rp, p) {
 // The split world march's stages, recorded before the scene pass as passes of their own (gfx/worldView.js
 // prepass; its draw in the scene pass composites them): for the frame's view (renderView) or a still's.
 let prepassed = false;
-function worldPrepass(p, view = viewKeyOf(renderView), detail = frameDetail, warp = warpNow()) {
+function worldPrepass(p, view = viewKeyOf(renderView), detail = frameDetail, warp = warpNow(), opaqueDrew = false) {
   prepassed = false;
   if (testNoVolume || !worldMarchFrame(view, !!warp?.k) || (!worldView.fastRaster && !worldView.splits(detail))) return;
   const meshDepth = cut.take();
   prepassed = true;
-  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, cut: frameCut, target: p.sceneTarget.color, inSize: p.inSize, allocSize: p.allocSize });
+  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, cut: frameCut, target: p.sceneTarget.color,
+    opaqueSource: p.sceneTarget, loadOpaque: Boolean(opaqueDrew), edgeSea: worldView.fastRaster ? rasterSeaParams() : null, inSize: p.inSize, allocSize: p.allocSize });
 }
 // Whether the world march draws `view` this frame (else the box volume or the blocks do).
 function worldMarchFrame(view, curved) { return !blocks && !testBoxMarch && !!worldView?.draws(view, curved); }
@@ -2716,7 +2717,10 @@ function worldSea() {
   return sea ? edgeSeaParams(sea, win.P.size, sim.origin) : null;
 }
 // The mesh sky works in world cells, unlike the window's sky pass.
-function rasterSea() { return (mapKind.edgeSeaFromCells ? boxSea : worldEdgeSea())?.sea ?? 0; }
+function rasterSeaParams() {
+  const sea = mapKind.edgeSeaFromCells ? boxSea : worldEdgeSea();
+  return edgeSeaParams(sea, worldView.worldCopy.size, { x: 0, y: 0, z: 0 });
+}
 // A small map's sea past its walls (boxSea, build), for the sky pass, in the
 // box's grid cells (its origin is 0: one window over its whole grid).
 function boxSeaParams() {
@@ -2772,7 +2776,7 @@ function drawScene(rp, p) {
 // derived passes, sun shadow map and GI would run for nothing drawn: the compute hook skips them.
 // Same look (data views, Plain, the rolling log's curved view): those still march the window and
 // keep its light (and windowLightStale has it rebuilt whole when they come back). Picks read
-// physics' state, not the derived brick map; signs' occlusion probe reads the brick map as it was.
+// physics' state, not the derived brick map; signs fall back to probing cells until it is fresh.
 let windowLightStale = false;
 let testWindowLight = false;   // __app.test.windowLight: the A/B
 // whether `view` reads the window's sun shadow map (the world march's shadows are L's cascades)
@@ -2830,7 +2834,7 @@ const frameHooks = {
     // the world after physics' step: W writes back what physics changed, then F's fields and L's
     // lighting update for it, before the march draws (docs/seamless-world.md, "frame order")
     if (!blocks && worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k)) {
-      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN, sea: fastRasterFrame() ? rasterSea() : undefined,
+      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN,
         drawLo: win?.drawOrigin ?? null, cutCentre: frameCut?.centre ?? null, phase: prof.phase });
     }
     prof.phase('view');
@@ -2850,7 +2854,7 @@ const frameHooks = {
     // On a capture frame the opaque meshes go over the kept scene in the meshes hook.
     const drew = frameMode !== 'capture' && threeMeshes(p, false, camera, true, frameMeshKinds);
     if (drew && !blocks && !raster) cut.capture(p.sceneTarget.depth);
-    worldPrepass(p);
+    worldPrepass(p, undefined, undefined, undefined, drew);
     return raster ? drew : farPass(p, drew);
   },
   draw: (rp, p) => { if (frameMode !== 'meshes') drawScene(rp, p); },
@@ -2876,7 +2880,10 @@ let frameDetailSeen = null, frameDetailV = 0;   // (the detail variant drawn, th
 function planMeshFrame(runDerived) {
   if (frameDetail !== frameDetailSeen) { frameDetailSeen = frameDetail; frameDetailV++; }
   if (!frameMeshKinds.opaque && !frameMeshKinds.transparent) { meshFrames.release(); return 'full'; }
-  if (runDerived || blocks || testNoVolume || (fastRasterFrame() && worldView.mesh.busy) || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
+  // Opaque props belong to the raster optics input. A cached background with
+  // new props drawn over it cannot reproduce transmission; transparent-only
+  // meshes still use the cache, as does the legacy march.
+  if (runDerived || blocks || testNoVolume || (fastRasterFrame() && (frameMeshKinds.opaque || worldView.mesh.busy || worldView.worldCopy.pendingChanges)) || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
     meshFrames.drop();
     return 'full';
   }
@@ -3512,14 +3519,11 @@ try {
       // A converged snapshot: frames until the view settles, with no physics,
       // input, player or multiplayer updates, then the GPU done with them.
       async render() {
+        testParked = true;
         await coreWait;
         if (graphicsFailure) throw graphicsFailure;
-        // Two initial frames observe post-setting and spawner-transform changes.
-        pacer.wake(); // also covers direct setting edits that aren't in the view key
-        let n = 0;
-        // The first render applies the requested upscale, which changes the limit.
-        do { tick(performance.now(), true); n++; } while ((n < 2 || !pacer.settled) && n < pacer.settleLimit);
-        if (!pacer.settled) throw new Error('Test render did not converge');
+        const n = await settleParkedView(pacer, () => tick(performance.now(), true),
+          () => fastRasterFrame() ? worldView : null);
         await gpu.fence();
         return n;
       },

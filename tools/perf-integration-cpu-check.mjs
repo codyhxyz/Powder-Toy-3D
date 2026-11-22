@@ -81,7 +81,7 @@ function recordingGpu({ deferOptics = false } = {}) {
     },
     renderPipeline: record, kernel: record, createBuffer: buffer, write() {},
     uniforms(struct, label) { return { buffer: buffer({ label, size: struct.size }), write: (v) => struct.pack(v) }; },
-    readback: { ring: () => ({ buffer: {}, next: () => 0, read: () => new Promise(() => {}), close() {} }), buffer: async (b, at, size) => new ArrayBuffer(size) },
+    readback: { ring: () => ({ buffer: {}, next: () => 0, read: () => new Promise(() => {}), close() {} }), buffer: async (b, at = 0, size = b.size - at) => new ArrayBuffer(size) },
     createTexture(d) {
       const t = Object.assign(new GPUTexture(), d, { width: d.size[0], height: d.size[1], createView() { return { texture: this }; }, destroy() { this.dead = true; } });
       textures.push(t);
@@ -185,12 +185,16 @@ for (const world of [null, [1024, 128, 1024]]) test(`default ${world ? 'streamed
   const post = createPost(gpu, { presenter });
   await post.ready;
   post.settings.upscale = UPSCALE.quality;
+  sim.deco = { active: true };
+  sim.decoPlane = { buffer: gpu.createBuffer({ size: 260, usage: GPUBufferUsage.STORAGE }), offset: 256, size: 4 };
+  const edgeSea = { seaY: 9, foot: [0, 0, 128, 128], mask: Array.from({ length: 32 }, (_, i) => [i ? 0 : 1, 0, 0, 0]) };
   const hooks = {
     prepare() { view.writeUniforms(values); },
-    compute() { view.update(gpu.frame, { camera, sun, sea: 9, floor: 2 }); },
+    compute() { view.update(gpu.frame, { camera, sun, floor: 2 }); },
     opaque(p) {
-      assert(view.prepass(gpu.frame, { target: p.sceneTarget.color, allocSize: p.allocSize, inSize: p.inSize }));
-      return false; // independent of whether the scene pass should load existing Three attachments
+      assert(view.prepass(gpu.frame, { target: p.sceneTarget.color, allocSize: p.allocSize, inSize: p.inSize,
+        edgeSea, opaqueSource: p.sceneTarget, loadOpaque: true }));
+      return true;
     },
     draw(rp) { assert(view.rasterPrepared); assert(view.draw(rp)); assert(!view.rasterPrepared); },
     overlay() {},
@@ -203,7 +207,28 @@ for (const world of [null, [1024, 128, 1024]]) test(`default ${world ? 'streamed
     const meshPass = pass(gpu, 'mesh ground');
     const opaqueView = meshPass.desc.colorAttachments[0].view;
     assert.equal(meshPass.desc.colorAttachments.length, 1);
-    assert.equal(draw(gpu, 'mesh ground background').params.sea, 9);
+    const raster = draw(gpu, 'mesh ground draw');
+    if (raster) {
+      assert.deepEqual(raster.params.physOrigin, sim.origin.toArray());
+      assert.equal(raster.params.deco, 1);
+      assert.equal(raster.bind[0].entries.find((e) => e.binding === 3).resource, sim.decoPlane);
+    }
+    const sky = draw(gpu, 'mesh ground background');
+    assert.equal(sky.params.sea, 1);
+    assert.equal(sky.params.seaY, 9);
+    assert.equal(sky.params.mask, edgeSea.mask);
+    assert.equal(sky.bind[1].entries[0].resource, volume.mediaNoiseView);
+    assert.equal(gpu.pipes.get(sky.name).desc.depthStencil.depthCompare, 'equal');
+    assert.equal(gpu.pipes.get(sky.name).desc.depthStencil.depthWriteEnabled, false);
+    assert.equal(meshPass.desc.colorAttachments[0].loadOp, 'load');
+    assert.equal(meshPass.desc.depthStencilAttachment.depthLoadOp, 'load');
+    const copies = gpu.log.filter((e) => e.type === 'copyTexture');
+    assert.equal(copies.length, 2);
+    assert.deepEqual(copies[0].size, [w, h]);
+    assert.deepEqual(copies[1].size, alloc);
+    assert.equal(copies[1].dst.texture, view.mesh.depthTexture);
+    assert(copies.every((e) => (e.src.texture.usage & GPUTextureUsage.COPY_SRC) && (e.dst.texture.usage & GPUTextureUsage.COPY_DST)));
+    assert(copies.every((e) => gpu.log.indexOf(e) < gpu.log.indexOf(meshPass)));
     assert.equal(draw(gpu, 'mesh ground background').params.floor, 2);
     const composite = draw(gpu, 'world raster composite');
     const [color, depth] = composite.bind[0].entries.map((e) => e.resource);
@@ -228,6 +253,7 @@ for (const world of [null, [1024, 128, 1024]]) test(`default ${world ? 'streamed
     return { order, opticsPass };
   }
   const fallback = render();
+  await view.mesh.waitForBuildReadbacks();
   assert.equal(fallback.order.length, 5, 'first frame runs writeback, lighting, mesh jobs, raster, and composite');
   assert(!fallback.opticsPass);
   for (const name of ['world mediaHalf', 'world opticsOverlay']) {
@@ -241,10 +267,10 @@ for (const world of [null, [1024, 128, 1024]]) test(`default ${world ? 'streamed
   const textures = gpu.textures.length;
   const fullTargets = gpu.textures.filter((t) => /world raster |mesh ground hardware depth/.test(t.label));
   const media = gpu.textures.find((t) => t.label === 'world media half');
-  assert.deepEqual(fullTargets.map((t) => t.format), ['rgba16float', 'rgba16float', 'depth32float', 'depth32float']);
+  assert.deepEqual(fullTargets.map((t) => t.format), ['rgba16float', 'depth32float', 'rgba16float', 'depth32float']);
   for (const t of fullTargets) {
     assert.deepEqual(backingSize(t), alloc);
-    assert.equal(t.usage, GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING);
+    assert.equal(t.usage, GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | (t.label.includes('raster opaque') ? GPUTextureUsage.COPY_DST : 0));
   }
   assert.deepEqual(backingSize(media), half(alloc));
   assert(!gpu.textures.some((t) => /gbuffer|world field |mesh ground clip depth/.test(t.label)));
@@ -258,7 +284,18 @@ for (const world of [null, [1024, 128, 1024]]) test(`default ${world ? 'streamed
     assert(fullTargets.every((t) => !t.dead) && !media.dead);
   }
   assert.equal(viewports.size, 8);
+  const thumb = [320, 200];
+  function prepassAt(size) {
+    assert(view.prepass(gpu.frame, { allocSize: size }));
+    return view.mesh.depthTexture;
+  }
+  const thumbDepth = prepassAt(thumb), texCount = gpu.textures.length;
+  assert.notEqual(thumbDepth, prepassAt(alloc));
+  assert.equal(thumbDepth, prepassAt(thumb));
+  assert.equal(texCount, gpu.textures.length);
+  assert(!thumbDepth.dead && fullTargets.every((t) => !t.dead) && !media.dead);
   view.dispose();
+  assert(thumbDepth.dead);
   assert(fullTargets.every((t) => t.dead) && media.dead);
   assert(gpu.buffers.filter((b) => /mesh ground/.test(b.label)).every((b) => b.dead));
 });

@@ -205,6 +205,33 @@ fn overlayOptical(id: i32) -> bool {
   let r = RCLASS(id);
   return r == R_LIQUID || r == R_GLASS;
 }
+// Continue from the first hit, stopping at the first nonzero segment of
+// another class (including empty space), at the world edge or at opaque depth.
+// Full homogeneous bricks can be crossed in one step; mixed/partial bricks
+// need the same shown-cell test as the front hit.
+fn overlayRun(ray: OverlayRay, start: OverlayWalk, rclass: i32) -> f32 {
+  var walk = start;
+  let stepDir = vec3i(sign(ray.rd));
+  let delta = abs(1.0 / ray.rd);
+  while (walk.t < walk.end && wcInWorld(walk.c)) {
+    let b = walk.c >> vec3u(2u);
+    let entry = wcEntry(b);
+    if ((entry & WC_MIXED) == 0u && (RCLASS(wcId(entry)) != R_LIQUID || (entry >> 24u) == WC_AUX_WHOLE)) {
+      let end = overlayBrickEnd(ray, walk);
+      if (end > walk.t && RCLASS(wcId(entry)) != rclass) { return walk.t; }
+      if (end >= walk.end) { return walk.end; }
+      overlayJump(ray, stepDir, &walk, BS);
+      continue;
+    }
+    while (walk.t < walk.end && all((walk.c >> vec3u(2u)) == b) && wcInWorld(walk.c)) {
+      let next = overlayMin(walk.next);
+      if (min(next, walk.end) > walk.t && RCLASS(wcShownId(wcCellIn(entry, walk.c), walk.c)) != rclass) { return walk.t; }
+      walk.t = next;
+      walk.ax = ddaStep(stepDir, delta, &walk.c, &walk.next);
+    }
+  }
+  return min(walk.t, walk.end);
+}
 fn overlayTrace(ray: OverlayRay) -> OpticsHit {
   var walk = overlayStart(ray);
   let stepDir = vec3i(sign(ray.rd));
@@ -218,7 +245,7 @@ fn overlayTrace(ray: OverlayRay) -> OpticsHit {
       // Uniform full liquid or glass: no cell-by-cell march to find its front.
       let end = overlayBrickEnd(ray, walk);
       if (end > walk.t && (RCLASS(id) == R_GLASS || (entry >> 24u) == WC_AUX_WHOLE)) {
-        return OpticsHit(walk.c, walk.ax, id, walk.t, end);
+        return OpticsHit(walk.c, walk.ax, id, walk.t, overlayRun(ray, walk, RCLASS(id)));
       }
     }
     // At most ten nonzero cell segments per brick. Use the same DDA as the
@@ -229,7 +256,7 @@ fn overlayTrace(ray: OverlayRay) -> OpticsHit {
       if (end > walk.t) {
         let w = wcCellIn(entry, walk.c);
         let id = wcShownId(w, walk.c);
-        if (overlayOptical(id)) { return OpticsHit(walk.c, walk.ax, id, walk.t, end); }
+        if (overlayOptical(id)) { return OpticsHit(walk.c, walk.ax, id, walk.t, overlayRun(ray, walk, RCLASS(id))); }
       }
       walk.t = tNext;
       walk.ax = ddaStep(stepDir, delta, &walk.c, &walk.next);
@@ -336,7 +363,7 @@ struct OverlayOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f3
   let startedInside = hit.ax < 0;
   let face = select(-ray.rd, -sign(ray.rd) * vec3f(axisMask(hit.ax)), !startedInside);
   let zFront = clipDepth(OP.eyeToClip * vec4f(eyeToHit, 1.0));
-  let cells = max(select(ray.stop, hit.exit, glass) - hit.t, 0.0);
+  let cells = max(hit.exit - hit.t, 0.0);
   let ior = IOR(hit.id);
   var n = face;
   if (!glass && !startedInside) { n = overlayLiquidNormal(hit.c, p, face, ray.rd, water); }
