@@ -11,6 +11,7 @@ import { QUARRY_SPAWN } from '../industry/catalog.js';
 import { PRESERVATION_SPAWN } from '../lab/preservation/index.js';
 import { DESTROYABLE_CITY_SPAWN } from '../scenes/destroyableCity.js';
 import { NUCLEAR_REACTOR_SPAWN } from '../scenes/nuclearReactor.js';
+import { NUCLEAR_BUNKER_SPAWN } from '../scenes/nuclearBunker.js';
 import { Vector3 } from 'three';
 
 const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
@@ -20,6 +21,7 @@ const PRESET_SPAWNS = {
   labStudies: [128, 2, 16],
   destroyableCity: DESTROYABLE_CITY_SPAWN,
   nuclearReactor: NUCLEAR_REACTOR_SPAWN,
+  nuclearBunker: NUCLEAR_BUNKER_SPAWN,
 };
 let factoryBelt = null;
 
