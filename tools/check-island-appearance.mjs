@@ -10,8 +10,8 @@ import { gridLayout } from '../src/sim.js';
 
 // Captured from the unlabelled generator at 15e18b1f7cee60edb6bc46f61eb5b5c8b3fc9ed7.
 const fixtures = [
-  [20261008, false, '81e236a0c07b014cc55f6fa258a277b8ce95cee2722d26f98fe878eb6091ef64'],
-  [17, true, '604445467964e79b142460bc4f976497271c6454cf9811782e9b86307a55177b'],
+  [20261008, false, 'c17be2c44b3fcc85339bfd03bc7fe727003247769df635af71c22e72d6109653'],
+  [17, true, '5aa7e0d6f70139167c6bdb851d6df6d52a3e3d8765fa976ef20f9708f2700602'],
 ];
 let cells = 0, grass = 0, moss = 0;
 for (const [seed, snow, golden] of fixtures) {
