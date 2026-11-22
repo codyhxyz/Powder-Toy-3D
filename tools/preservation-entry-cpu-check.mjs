@@ -38,7 +38,7 @@ test('fresh legacy generation is normalized without mutating a saved snapshot he
   assert.equal(header.preset, 'labStudies');
   assert.equal(freshPresetKey('lab'), 'lab');
   const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  assert.match(source, /function loadPreset\(name, undoable = true\) \{\s+name = freshPresetKey\(name\)/);
+  assert.match(source, /function loadPreset\(name, undoable = true\) \{[\s\S]*?name = freshPresetKey\(name\)/);
 });
 
 test('the actual scene-plaque getter refuses unrelated replica terrain', () => {
@@ -64,6 +64,7 @@ test('regeneration then undo restores the old snapshot manifest, independent of 
   const current = [{ ...old[0], cell: [99, 2, 16] }];
   const h = {
     freshPresetKey, decodeScenePlaques, savedScenePlaques: old,
+    checkpointRestoring: () => false, checkpoint: { clear() {} }, clearCheckpoint() {}, shapeDrag: null, pendingShape: null,
     settings: { preset: 'preservationLab' }, graphicsFailure: null, selectedMode: 'sandbox',
     mp: { replica: false, frozen: false, guard: () => false },
     mapKind: { presets: true, sceneUndo: true }, presetWire: () => null,

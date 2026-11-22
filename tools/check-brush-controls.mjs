@@ -28,6 +28,7 @@ const c = vm.createContext({
   hover: { valid: true, cell: new THREE.Vector3(32, 19, 32), face: 2, id: E.WALL },
   tmpV: new THREE.Vector3(), povRay: { origin: new THREE.Vector3(32, 30, 32) },
   aimScreenRay: () => true, presentationPoint: (p, out) => out.copy(p),
+  checkpointRestoring: () => false, hoverOnSlice: () => false,
   mp: { isGuest: false }, sim: { snapshot: () => snapshots++ },
   toolbar: { setUndoEnabled() {} }, hud: {}, pacer: { wake() {} },
   toolById: id => ({ name: String(id) }), clickTool: () => { clicks++; return null; },

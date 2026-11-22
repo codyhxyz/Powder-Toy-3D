@@ -38,7 +38,7 @@ export const KEYS = {
   brushBigger: [']'],
   brushShape: ['b'],
   builderMode: ['l'],
-  builderHollow: ['o'],       // H drinks from the flask; J/K/N/M own cutaway & checkpoints
+  builderHollow: ['\\'],      // next to [ / ] brush size; H drinks, J/K/N/M own cutaway & checkpoints
   replaceMode: ['x', ';', 'Insert'],              // TPT's ; and Insert
   specificDelete: ['Delete', 'Backspace', 'Mod+;'],   // TPT's Delete and Ctrl+; (a Mac's delete key is Backspace)
   target: ['Alt+KeyI'],   // (⌥I types a dead key on a Mac: by its code)
