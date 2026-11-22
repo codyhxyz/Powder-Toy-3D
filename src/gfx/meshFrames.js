@@ -213,8 +213,8 @@ export function createMeshFrames(gpu, { onReady = null } = {}) {
   let token = null;        // what the kept scene was drawn with (plan's key)
   let frames = 0;          // capture frames accumulated under it
   let settle = Infinity;   // capture frames a complete scene takes
-  let sum = null, weight = null, depth = null;   // the sums (output size), the depth (input size)
-  let size = [0, 0], inSize = [0, 0];
+  let sum = null, weight = null, depth = null;   // the sums (output size), the depth (scene allocation)
+  let size = [0, 0], inSize = [0, 0], allocSize = [0, 0];
   const same = (a, b) => a[0] === b[0] && a[1] === b[1];
 
   // views and bind groups, made once per texture (post's way: B6)
@@ -244,25 +244,28 @@ export function createMeshFrames(gpu, { onReady = null } = {}) {
     Promise.all([pipes.accum.ready, pipes.restore.ready]).then(() => onReady?.(), () => {});
   }
   const ready = () => !!pipes && pipes.accum.state === 'ready' && pipes.restore.state === 'ready';
-  const fits = (p) => frames >= settle && !!sum && same(p.size, size) && same(p.inSize, inSize);
+  const fits = (p) => frames >= settle && !!sum && same(p.size, size) && same(p.inSize, inSize) && same(p.allocSize, allocSize);
 
-  // the sums and the depth at post's sizes now (made again, empty, on a change)
+  // A viewport change invalidates the accumulation, not its allocations.
   function sizeFor(p) {
-    const s = p.size, i = p.inSize;
-    if (sum && same(s, size) && same(i, inSize)) return;
+    const s = p.size, i = p.inSize, a = p.allocSize;
+    if (sum && same(s, size) && same(a, allocSize)) {
+      if (!same(i, inSize)) { inSize = [...i]; frames = 0; }
+      return;
+    }
     if (sum) gpu.flush('mesh frames resize');   // (commands recorded with the old textures go first)
     free();
     const attach = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING;
     sum = gpu.createTexture({ label: 'mesh frames sum', size: s, format: SUM_FORMAT, usage: attach });
     weight = gpu.createTexture({ label: 'mesh frames weight', size: s, format: WEIGHT_FORMAT, usage: attach });
-    depth = gpu.createTexture({ label: 'mesh frames depth', size: i, format: SCENE.depth, usage: TEX.COPY_DST | TEX.TEXTURE_BINDING });
-    size = [...s]; inSize = [...i];
+    depth = gpu.createTexture({ label: 'mesh frames depth', size: a, format: SCENE.depth, usage: TEX.COPY_DST | TEX.TEXTURE_BINDING });
+    size = [...s]; inSize = [...i]; allocSize = [...a];
     frames = 0;
   }
   function free() {
     sum?.destroy(); weight?.destroy(); depth?.destroy();
     sum = weight = depth = null;
-    size = [0, 0]; inSize = [0, 0];
+    size = [0, 0]; inSize = [0, 0]; allocSize = [0, 0];
     groups = new Map();
   }
 
@@ -307,7 +310,9 @@ export function createMeshFrames(gpu, { onReady = null } = {}) {
       if (!ready()) return;
       sizeFor(p);
       const t = p.sceneTarget, first = frames === 0;
-      if (first) gpu.frame.direct().copyTextureToTexture({ texture: t.depth }, { texture: depth }, [inSize[0], inSize[1]]);
+      // WebGPU depth copies must cover the entire subresource. The resolve
+      // only samples the active rectangle, just like the rest of the scene.
+      if (first) gpu.frame.direct().copyTextureToTexture({ texture: t.depth }, { texture: depth }, p.allocSize);
       const load = first ? 'clear' : 'load';
       const rp = gpu.frame.render({
         colorAttachments: [
@@ -332,6 +337,7 @@ export function createMeshFrames(gpu, { onReady = null } = {}) {
       if (!ready() || !fits(p)) return false;
       const rp = gpu.frame.render(p.sceneDescriptor({ load: false }), 'mesh frames restore');
       try {
+        p.sceneViewport(rp);
         pipes.restore.draw(rp, { bind: [, , group(L.RESTORE, [sum, weight, depth])], params: { jitter: p.jitter, inSize, size } });
       } finally { rp.end(); }
       return true;

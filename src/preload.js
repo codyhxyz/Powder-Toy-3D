@@ -182,8 +182,9 @@ async function startWarmer() {
   const [sim, render, post, overlays, brush, detail, views, ...lists] = mods;
   const names = await layoutNames();
   const { volumeShaderGrid, sessionVolumeFormat } = await import('./gfx/volume.js');
-  // every map's material views draw through the world march (gfx/worldView.js): it, not the box's realistic volume
-  const { warmMarchChecks } = await import('./shaders/world/march.js');
+  // Flat material views no longer warm the march unless explicitly requested.
+  const legacyMarch = new URLSearchParams(globalThis.location?.search).get('renderer') === 'march';
+  const warmMarchChecks = legacyMarch ? (await import('./shaders/world/march.js')).warmMarchChecks : null;
   if (device !== made) return;   // (lost meanwhile: the next warmMap starts over)
   const settings = savedSettings(detail);
   const fallback = gpu.adapterInfo.isFallbackAdapter;
@@ -233,9 +234,13 @@ async function startWarmer() {
       }
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick,
       // in the read format the session's engine draws it in: V2's packed cells (2, or 3 for the air views), not V1's A/B (0)
-      const march = views.isMaterialView(view) && !curved;
+      const flatMaterial = views.isMaterialView(view) && !curved;
       const volume = render.warmChecks(view, settings, { fallback, curved, fixedReadFormat: sessionVolumeFormat(view, physicsEngine() === 'v2') })
-        .flatMap((e) => (march && e.name.startsWith('volume.') ? warmMarchChecks(view, e.detail) : [e]));
+        .flatMap((e) => {
+          if (!flatMaterial) return [e];
+          if (e.name.startsWith('volume.')) return warmMarchChecks?.(view, e.detail) ?? [];
+          return e.name === 'shadow' ? [] : [e];
+        });
       // Match createVolume's specialization so menu warm-up is reused, not
       // a second, expensive variable-division version of the same shader.
       const volumeGrid = volumeShaderGrid(g, world, sourceAppearance);

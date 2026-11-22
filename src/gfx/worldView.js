@@ -1,13 +1,12 @@
-// The seamless world's view (docs/seamless-world.md, "M"): the material views of every map, small
-// and big, drawn by one full-screen march in world cells (shaders/world/march.js) over the world
-// copy (W), the field clipmaps (F) and the lighting (L). It owns their objects, its pipelines,
-// its own FrameUniforms in world cells and its bind groups; app.js calls, each frame:
+// Flat material views of every map: opaque full-world LOD terrain and sky,
+// depth-bounded media and optics, then an HDR + hardware-depth composite.
+// ?renderer=march retains the legacy full-screen march, field clipmaps (F)
+// and split G-buffer. Both renderers read the world copy (W) and lighting (L).
 //
-//   const view = createWorldView(gpu, sim, { volume });   // volume: gfx/volume.js (its shadow map, its noise)
-//   prepare:  view.writeUniforms(values, writeFrameUniforms(gpu, values));
-//   compute:  physics, then view.update(gpu.frame, { boxes, camera, sun })   // W writeback → F → L
-//   before the scene pass: view.prepass(gpu.frame, { view, detail, meshDepth, marchNear, aerCopy, boxed, target })
-//   draw:     view.draw(rp, { view: 'realistic', detail, meshDepth, marchNear, aerCopy, boxed })
+//   prepare: view.writeUniforms(values, writeFrameUniforms(gpu, values));
+//   compute: physics, then view.update(gpu.frame, { boxes, camera, sun });
+//   opaque:  view.prepass(gpu.frame, { inSize, allocSize, … });
+//   draw:    post.sceneViewport(rp); view.draw(rp, { inSize, … });
 //
 // boxed: a big map's frame whose far view draws: the march draws inside physics' window only (live's
 // full-detail box, shaders/world/reach.js), the far view the rest; else the whole world (a small map, or a
@@ -23,7 +22,10 @@
 // data views, the shadow kernel and GI still read. The march's copy is the same values with the
 // model moved to the world's corner (worldModelMatrix: the eye comes out in world cells) and those
 // positions moved by sim.origin. A small map's origin is 0: both copies are equal.
-import { Matrix4 } from 'three/webgpu';
+import { Matrix4, Vector3 } from 'three/webgpu';
+import { createMeshGround } from './meshGround.js';
+import { createOpticsOverlay } from './opticsOverlay.js';
+import { WGSL_CHECK as rasterCompositeCheck } from '../shaders/world/rasterComposite.js';
 import { FrameUniformsStruct, frameUniformValues, frameUniformValuesFor, worldModelMatrix, frameUniformsOf } from './uniforms.js';
 import { drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
@@ -35,9 +37,6 @@ import {
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
 import { materialTextures } from './materialTextures.js';
-// The owners' classes. Until W, F and L land these are the stand-ins (shaders/world/stubs.js); the
-// lead swaps them for world/worldCopy.js WorldCopy, gfx/worldFields.js WorldFields and
-// gfx/worldLight.js WorldLight at integration (same constructors and methods).
 import { WorldLight } from './worldLight.js';
 import { worldFieldsWGSL, fieldsBindingsWGSL, FIELDS_BINDINGS, fieldClipFor, fieldFocus } from '../shaders/world/fields.js';
 import { RENDER_LAYOUT } from '../shaders/bindings.js';
@@ -46,7 +45,7 @@ import { WorldFields } from './worldFields.js';
 import { worldCopyWGSL } from '../shaders/world/copy.js';
 import { costify, costBinding, costLayoutEntry } from '../shaders/costView.js';
 import { worldPickFrag, WORLD_PICK_LAYOUTS } from '../shaders/world/pick.js';
-import { PickParams, PICK_BATCH, PICK_RESULT_BYTES } from '../shaders/render.js';
+import { PickParams, PICK_BATCH, PICK_RESULT_BYTES, SCENE_FORMATS } from '../shaders/render.js';
 
 const PICK_RING_SLOTS = 64;   // (gfx/volume.js's: rays in flight)
 const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits, importable in Node)
@@ -56,41 +55,56 @@ const xyz = (o) => [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0];
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim
- * @param {{ volume: object, onVariant?: () => void }} opts volume: the window's (gfx/volume.js): the shadow map and media noise it owns,
- *   and whether its grid wants the rich optics (opticsWanted); onVariant: a rich optics' variant has landed (redraw)
+ * @param {{ volume: object, renderer?: string, sea?: number, floor?: number, onVariant?: () => void }} opts
+ *   volume lends its media noise and the legacy optics hint. onVariant requests
+ *   another frame when pipelines land or more mesh batches remain.
  */
-export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
+export function createWorldView(gpu, sim, { volume, onVariant = () => {}, renderer, sea, floor }) {
+  const useLegacyMarch = (renderer ?? new URLSearchParams(globalThis.location?.search).get('renderer')) === 'march';
+  const fastRaster = !useLegacyMarch;
   const label = (x) => `sim${sim.id} world ${x}`;
   const size = [sim.world?.[0] ?? sim.g.nx, sim.world?.[1] ?? sim.g.ny, sim.world?.[2] ?? sim.g.nz];
   const worldCopy = new WorldCopy(gpu, { size });
   // W's build: a small map's from its box's cells now; a big map's from its window once that has loaded
   // (wire/world.js calls build(win)), so the whole map is in before the first frame (app.js waits on ready)
   let settle;
-  const ready = new Promise((resolve) => { settle = resolve; });
-  const build = (source) => worldCopy.build(source).then(async (c) => { await Promise.all([fields.ready, light.ready]); primed = false; settle(c); return c; }, (err) => {
+  const copyReady = new Promise((resolve) => { settle = resolve; });
+  const build = (source) => worldCopy.build(source).then((c) => { primed = false; settle(c); return c; }, (err) => {
     console.error('world copy: the build failed', err);
     settle(null);
     throw err;
   });
-  if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
   // F's level 0 is physics' window's box at a texel a cell (fieldClipFor), centred on the full-detail box (update)
   const win = [sim.g.nx, sim.g.ny, sim.g.nz];
-  const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES, ...fieldClipFor(size, win) });
+  const fields = useLegacyMarch ? new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES, ...fieldClipFor(size, win) }) : null;
   const light = new WorldLight(gpu, worldCopy, fields, {
-    copyWGSL: worldCopyWGSL(), fieldsWGSL: `${fieldsBindingsWGSL(2)}\n${worldFieldsWGSL()}`, fieldsBindings: FIELDS_BINDINGS, mediaNoise: volume.mediaNoiseView,
+    copyWGSL: worldCopyWGSL(), mediaNoise: volume.mediaNoiseView,
+    ...(fields && { fieldsWGSL: `${fieldsBindingsWGSL(2)}\n${worldFieldsWGSL()}`, fieldsBindings: FIELDS_BINDINGS }),
   });
+  const meshOpts = { sea, floor, compact: true };
+  const mesh = fastRaster ? createMeshGround(gpu, sim, worldCopy, light, meshOpts) : null;
+  const optics = fastRaster ? createOpticsOverlay(gpu, sim, worldCopy, light) : null;
+  const rasterDesc = rasterCompositeCheck()[0];
+  const rasterLayout = fastRaster ? gpu.layout('WORLD_RASTER_COMPOSITE', rasterDesc.layouts()[0]) : null;
+  const rasterPipe = fastRaster ? gpu.renderPipeline({
+    name: rasterDesc.name, code: rasterDesc.code(), layouts: [rasterLayout], fragment: rasterDesc.fragment, depthStencil: rasterDesc.depthStencil,
+  }) : null;
+  // Optional optics never hold up the first opaque frame; redraw when they land.
+  optics?.ready.then(() => { if (!disposed) onVariant(); }, () => {});
+  const ready = Promise.all([copyReady, fields?.ready, light.ready, mesh?.ready, rasterPipe?.ready]).then(([copy]) => copy);
+  ready.catch(() => {});
 
   const list = WORLD_GROUP2();
   const [frameEntries, , group2Entries] = WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT);
-  const L = {
+  const L = useLegacyMarch ? {
     frame: gpu.layout(WORLD_MARCH_LAYOUT_NAMES[0], frameEntries),
     copy: worldCopy.layout,
     group2: gpu.layout(WORLD_MARCH_LAYOUT_NAMES[2], group2Entries),
-  };
+  } : null;
   // each split stage's group 0 (the frame's four and its G-buffer textures) and the composite's
-  const stageL = Object.fromEntries(MARCH_STAGES.map((st) => [st,
-    gpu.layout(worldMarchLayoutNames(st)[0], WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0])]));
-  const compositeL = gpu.layout(COMPOSITE_LAYOUT_NAMES[0], COMPOSITE_LAYOUT);
+  const stageL = useLegacyMarch ? Object.fromEntries(MARCH_STAGES.map((st) => [st,
+    gpu.layout(worldMarchLayoutNames(st)[0], WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0])])) : null;
+  const compositeL = useLegacyMarch ? gpu.layout(COMPOSITE_LAYOUT_NAMES[0], COMPOSITE_LAYOUT) : null;
   // the cost view's twins (gfx/costView.js): each stage's group 0 and the counters' storage texture
   const frameEntriesOf = (st) => WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT, st)[0];
   const costL = {};
@@ -98,15 +112,33 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     costLayoutEntry(costBinding(frameEntriesOf(st)))]));
   const fu = frameUniformsOf(gpu);
   const uniforms = gpu._worldFrameUniforms ??= gpu.uniforms(FrameUniformsStruct, 'FrameUniforms (world cells)');
-  const last = { viewProj: new Matrix4(), model: new Matrix4() };
-  const clamp = gpu._volumeSamplers?.clamp ?? gpu.device.createSampler({ label: 'linearClamp', magFilter: 'linear', minFilter: 'linear' });
-  const dummy = gpu._worldDummies ??= {
+  const last = { viewProj: new Matrix4(), model: new Matrix4(), eye: new Vector3() };
+  const clamp = useLegacyMarch ? (gpu._volumeSamplers?.clamp ?? gpu.device.createSampler({ label: 'linearClamp', magFilter: 'linear', minFilter: 'linear' })) : null;
+  const dummy = useLegacyMarch ? (gpu._worldDummies ??= {
     buffer: gpu.createBuffer({ label: 'world group 2 (none)', size: 16, usage: GPUBufferUsage.STORAGE }),
     tex3d: gpu.createTexture({ label: 'world 3d (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba8unorm', usage: TEX.TEXTURE_BINDING }).createView({ dimension: '3d' }),
     tex2d: gpu.createTexture({ label: 'world 2d (none)', size: [1, 1], format: 'rgba32float', usage: TEX.TEXTURE_BINDING }).createView(),
     depth: gpu.createTexture({ label: 'mesh depth (none)', size: [1, 1], format: 'depth32float', usage: TEX.TEXTURE_BINDING }),
     plane: gpu.createBuffer({ label: 'deco plane (none)', size: 16, usage: GPUBufferUsage.STORAGE }),
-  };
+  }) : null;
+
+  let rasterTargets = null, rasterPrepared = null;
+  const viewProjModel = new Matrix4();
+  function dropRasterTargets() {
+    if (!rasterTargets) return;
+    gpu.flush('world raster targets');
+    rasterTargets.textures.forEach((t) => t.destroy());
+    rasterTargets = rasterPrepared = null;
+  }
+  function compactTargets(allocSize) {
+    if (rasterTargets && allocSize.every((n, i) => n === rasterTargets.size[i])) return rasterTargets;
+    dropRasterTargets();
+    const tex = (name, format) => gpu.createTexture({ label: label(name), size: allocSize, format,
+      usage: TEX.TEXTURE_BINDING | TEX.RENDER_ATTACHMENT });
+    const textures = [tex('raster opaque color', SCENE_FORMATS.color), tex('raster final color', SCENE_FORMATS.color), tex('raster final depth', SCENE_FORMATS.depth)];
+    const [opaqueColor, finalColor, finalDepth] = textures.map((t) => t.createView());
+    return rasterTargets = { size: [...allocSize], textures, opaqueColor, finalColor, finalDepth, groups: new WeakMap() };
+  }
 
   // ---- bind groups, cached by their resources' identities ----
   const ids = new WeakMap();
@@ -169,18 +201,25 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
           : STAGE_GATE[st] === 'test' ? { view: g.views.Z, depthReadOnly: true } : undefined;
       const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k) => attach(k, g, STAGE_LOADS.has(st))), ...(gate ? { depthStencilAttachment: gate } : {}) }, names(st));
       try {
+        const k = STAGE_TARGETS[st][0] ?? 'Z';
+        const [w, h] = gbufSize(k, ...params.sceneRes);
+        const [aw, ah] = gbufSize(k, g.w, g.h);
+        if (w !== aw || h !== ah) {
+          rp.setViewport(0, 0, w, h, 0, 1);
+          rp.setScissorRect(0, 0, w, h);
+        }
         parts[st].draw(rp, { bind: [frameGroup(depth, st, g, stageCounted(st) ? cost?.[st] ?? null : null), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
       } finally { rp.end(); }
     }
   }
   // cut: the full-detail box ({ lo, hi }, world cells) when boxed (world/window.js cutBox), else physics' window
   // size: the split stages' target (the beam stage's tiles), [w, h]
-  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, boxed = false, cut = null, size = null }) => {
+  const marchParams = ({ meshDepth, marchNear, aerCopy, floorLines, boxed = false, cut = null, inSize = null }) => {
     const depth = meshDepth ?? dummy.depth, phys = physParams(sim);
     return {
-      meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
+      meshInv, meshRes: inSize ?? [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
       deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...phys, boxed: boxed ? 1 : 0,
-      cutLo: cut?.lo ?? phys.physOrigin, cutHi: cut?.hi ?? phys.physOrigin.map((v, i) => v + phys.physSize[i]), sceneRes: size ?? [1, 1],
+      cutLo: cut?.lo ?? phys.physOrigin, cutHi: cut?.hi ?? phys.physOrigin.map((v, i) => v + phys.physSize[i]), sceneRes: inSize ?? [1, 1],
     };
   };
   let drawNo = 0;
@@ -196,6 +235,11 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
   const meshInv = new Matrix4();
   let disposed = false;
   let lightFrame = null;
+  function worldFrameGroup() {
+    return lightFrame ??= gpu.bindGroup(mesh?.frameLayout ?? gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
+      { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } },
+    ], label('frame tables and uniforms'));
+  }
   // F's levels are filled whole on the first update after a build (fields.prime), so the first frame
   // has every level around the camera, not a few thousand bricks of them
   let primed = true;
@@ -215,7 +259,8 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
   const recordPicksQuietly = () => { try { view.recordPicks(); } catch { /* (the picks carry it) */ } };
 
   const view = {
-    worldCopy, fields, light,
+    worldCopy, fields, light, fastRaster, mesh, optics,
+    get rasterPrepared() { return !!rasterPrepared; },
     /** Whether pick() can run: the world copy built. */
     get picks() { return !!worldCopy.bindGroup && !disposed; },
     /**
@@ -279,7 +324,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     /** Whether `detail` draws through the split stages (prepass, then draw composites). */
     // (Intentional: a device with WebGPU's default colour bytes, 32, draws the one-pass march: the split's gated
     // stages need EVENT_COLOR_BYTES, shaders/world/march.js "The event kernels")
-    splits(detail = {}) { return view.split && !view.testVariant && (gpu.limits?.maxColorAttachmentBytesPerSample ?? 0) >= EVENT_COLOR_BYTES && marchSplits(drawableDetail(detail, fallback)); },
+    splits(detail = {}) { return useLegacyMarch && view.split && !view.testVariant && (gpu.limits?.maxColorAttachmentBytesPerSample ?? 0) >= EVENT_COLOR_BYTES && marchSplits(drawableDetail(detail, fallback)); },
     /**
      * The march's pipeline for a material view and its detail, made on first use. One module per
      * (view, detail, optics) serves every map: the world's size is a uniform (W's WC.size).
@@ -288,6 +333,7 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * meanwhile, as gfx/volume.js pipeline does.
      */
     pipeline(v, detail = {}, build = 'now') {
+      if (fastRaster) return rasterPipe;
       const plain = view.variant(v, detail, build, false);
       if (!volume.opticsWanted) return plain;
       const rich = view.variant(v, detail, 'now', true);
@@ -346,27 +392,48 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       return set;
     },
     /**
-     * Records the split march's stages before the scene pass, each a pass of its own, into a
-     * G-buffer the size of `target` (the scene target's colour). Returns whether it did: draw()
-     * then composites them. False (nothing recorded) for a variant that doesn't split, while a
-     * pipeline builds, or before the world copy is ready.
-     * @param {object} frame gpu.frame
-     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, floorLines?: boolean, boxed?: boolean, target: GPUTexture }} opts
+     * Records raster + optics or the legacy split stages before the scene
+     * pass. Returns true when draw() has a picture to composite. The active
+     * viewport is anchored at [0,0] inside the reusable allocSize targets.
      */
-    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null, target } = {}) {
+    prepass(frame, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null, target,
+      allocSize = target && [target.width, target.height], inSize = allocSize } = {}) {
       prepared = false;
+      rasterPrepared = null;
       view.lastDraw = { view: v, detail };   // (tests: what the frame draws)
-      if (disposed || !view.splits(detail)) return false;
+      if (disposed || !worldCopy.bindGroup) return false;
+      if (fastRaster) {
+        if (rasterPipe.state !== 'ready' || !mesh.isReady) return false;
+        const [w, h] = inSize;
+        const targets = compactTargets(allocSize);
+        const frameGroup = worldFrameGroup();
+        viewProjModel.multiplyMatrices(last.viewProj, last.model);
+        if (!mesh.draw(frame, { views: { S: targets.opaqueColor }, w, h, allocSize }, frameGroup, viewProjModel)) return false;
+        const opaqueDepth = mesh.depthView;
+        const eye = last.eye.toArray();
+        const maxDist = Math.hypot(...size.map((n, i) => Math.max(Math.abs(eye[i]), Math.abs(n - eye[i]))));
+        const overlaid = optics.render(frame, {
+          frameGroup0: frameGroup, opaqueColorView: targets.opaqueColor, opaqueDepthView: opaqueDepth,
+          outColorView: targets.finalColor, outDepthView: targets.finalDepth, w, h, allocSize,
+          viewProj: viewProjModel, invViewProj: meshInv.copy(viewProjModel).invert(), eye, maxDist,
+        });
+        const [color, depth] = overlaid ? [targets.finalColor, targets.finalDepth] : [targets.opaqueColor, opaqueDepth];
+        let group = targets.groups.get(depth);
+        if (!group) targets.groups.set(depth, group = gpu.bindGroup(rasterLayout, [
+          { binding: 0, resource: color }, { binding: 1, resource: depth },
+        ], label('raster composite')));
+        rasterPrepared = group;
+        return true;
+      }
+      if (!view.splits(detail)) return false;
       const set = view.pipeline(v, detail, 'now');
       if (set.state !== 'ready') return false;
-      const copy = worldCopy.bindGroup;
-      if (!copy) return false;
-      gbuffer(target.width, target.height);
+      gbuffer(...allocSize);
       meshInv.multiplyMatrices(last.viewProj, last.model).invert();   // clip → world cells, the jittered camera's
       const header = { ...sim.readHeader(), origin: [0, 0, 0] };
-      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, cut, size: [target.width, target.height] });
+      const params = marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, cut, inSize });
       recordStages(frame, set.parts, gb, meshDepth ?? dummy.depth, header, params);
-      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, cut, size: [target.width, target.height], pipe: set, n: ++drawNo, at: performance.now() };
+      view.lastRecorded = { split: true, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, cut, inSize, size: inSize, pipe: set, n: ++drawNo, at: performance.now() };
       compositeParams = params;
       prepared = true;
       return true;
@@ -386,43 +453,51 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       if (values.digMax[3] > 0) { shift(values.digMin); shift(values.digMax); }
       last.viewProj.copy(values.viewProj);
       last.model.copy(values.model);
+      last.eye.copy(values.cam);
       uniforms.write(values);
     },
     /**
-     * The frame's world upkeep, in the contract's order, after physics' step: W writes back the
-     * boxes physics changed, then F updates its clip levels and L its lighting for those changes.
-     * @param {object} frame gpu.frame
-     * @param {{ boxes?: object[], camera?: object, sun?: number[], drawLo?: number[], cutCentre?: number[], phase?: (id: string) => void }} [opts] phase: the
-     *   profiler's (gfx/profiler.js PHASES: worldCopy, worldFields, worldLight), so its CPU and passes say whose they are
+     * World upkeep after physics: writeback, fields (legacy only), lighting,
+     * then the raster path's bounded mesh jobs.
      */
-    update(frame, { boxes = [], camera = null, sun = null, drawLo = null, cutCentre = null, phase = () => {} } = {}) {
+    update(frame, { boxes = [], camera = null, sun = null, drawLo = null, cutCentre = null, sea, floor, phase = () => {} } = {}) {
       const rev = worldCopy.revision ?? 0;
       phase('worldCopy');
       worldCopy.recordWriteback(frame, sim, boxes);
       const changes = worldCopy.changesSince ? worldCopy.changesSince(rev) : [];
-      const eye = camera ? camera.position.clone().applyMatrix4(last.model.clone().invert()).toArray() : null;
+      const eye = camera ? last.eye.toArray() : null;
       // F follows the march's full detail, not the eye (a god view's eye is often past level 0's reach of it,
       // which read thin walls from coarse levels: gone). cutCentre: the full-detail box's centre (world/window.js
       // cutBox), the focus itself, so level 0 scrolls a brick's slab at a time as the box slides (a slab a
       // frame: the per-frame budget's, gfx/worldFields.js), never refilling behind a window walking WIN_STEP a frame.
       // Else where the window comes to rest (drawLo: world/window.js drawOrigin).
-      const focus = cutCentre ?? fieldFocus(drawLo ?? xyz(sim.origin), win);
-      phase('worldFields');
-      if (!primed && eye && worldCopy.bindGroup) { fields.prime(frame, focus); primed = true; } else if (eye) fields.update(frame, focus, changes);
-      // L's writers read the tables and FrameUniforms in world cells (group 0 without the march's extras)
-      lightFrame ??= gpu.bindGroup(gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
-        { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } }], label('light frame'));
+      if (fields && eye) {
+        const focus = cutCentre ?? fieldFocus(drawLo ?? xyz(sim.origin), win);
+        phase('worldFields');
+        if (!primed && worldCopy.bindGroup) { fields.prime(frame, focus); primed = true; } else fields.update(frame, focus, changes);
+      }
       phase('worldLight');
-      if (eye) light.update(frame, eye, sun, changes, { frameGroup: lightFrame });
+      if (eye) light.update(frame, eye, sun, changes, { frameGroup: worldFrameGroup() });
+      if (mesh && eye) {
+        if (sea !== undefined) meshOpts.sea = sea;
+        if (floor !== undefined) meshOpts.floor = floor;
+        phase('worldMesh');
+        mesh.update(frame, eye);
+        if (worldCopy.bindGroup && mesh.busy) onVariant();  // keep bounded chunk batches progressing while idle
+      }
     },
     /**
-     * Draws the march into the scene pass. Returns false (draws nothing) while its pipeline builds
-     * or a group isn't available yet.
-     * @param {GPURenderPassEncoder} rp
-     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, boxed?: boolean }} [opts]
+     * Draws into the scene pass at its active viewport. Returns false if a
+     * required pipeline, bind group or prepass result isn't available yet.
      */
-    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null } = {}) {
+    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true, boxed = false, cut = null, inSize = null } = {}) {
       if (disposed) return false;
+      if (fastRaster) {
+        if (!rasterPrepared) return false;
+        rasterPipe.draw(rp, { bind: [rasterPrepared] });
+        rasterPrepared = null;
+        return true;
+      }
       if (view.splits(detail)) {
         // the split march's picture, recorded by prepass this frame, over the sky
         if (!prepared) return false;
@@ -441,10 +516,10 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
         bind: [frameGroup(depth), copy, group2()], header: { ...sim.readHeader(), origin: [0, 0, 0] },
-        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, cut }),
+        params: marchParams({ meshDepth, marchNear, aerCopy, floorLines, boxed, cut, inSize }),
         count: WORLD_MARCH_VERTICES,
       });
-      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, cut, pipe, n: ++drawNo, at: performance.now() };
+      view.lastRecorded = { split: false, view: v, detail, meshDepth, marchNear, aerCopy, floorLines, boxed, cut, inSize, pipe, n: ++drawNo, at: performance.now() };
       return true;
     },
 
@@ -514,9 +589,13 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       failPicks(new Error('world view disposed'));
       picker.ring.close();
       worldCopy.dispose?.();
-      fields.dispose?.();
+      fields?.dispose();
+      mesh?.dispose();
+      optics?.dispose();
+      dropRasterTargets();
       light.dispose?.();
     },
   };
+  if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
   return view;
 }

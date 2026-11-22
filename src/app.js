@@ -26,7 +26,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { createGpu } from './gpu/device.js';
 import { createPresenter } from './gpu/present.js';
-import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/three.js';
+import { createThreeRenderer, useWebGPUCamera } from './gpu/three.js';
 import { Simulation, GI_BLEND } from './sim.js';
 import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
@@ -618,9 +618,10 @@ function build(savedWorldSize = null) {
   owner.integrationReady.then(() => wakeLoop(), () => {});
   derived = new Derived(sim);
   blocksOn = plainView();
-  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance,
+  const bootView = viewKeyOf(settings.view);
+  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(bootView) && (!isMaterialView(bootView) || !!warpNow()?.k), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance,
     onVariant: () => pacer.wake() });   // (the rich optics' variant: gfx/opticsScan.js)
-  worldView = createWorldView(gpu, sim, { volume: vol, onVariant: () => pacer.wake() });
+  worldView = createWorldView(gpu, sim, { volume: vol, renderer: params.get('renderer'), onVariant: () => pacer.wake() });
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: mapKind.streamed });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -703,7 +704,7 @@ const baseDetail = () => (isMaterialView(settings.view) ? detailDefines(settings
 let giWait = Promise.resolve(), giBuilt = 0;
 function prepareGI() {
   const d = derived;
-  if (!d || blocksOn || !isMaterialView(settings.view)) return;
+  if (!d || blocksOn || !isMaterialView(settings.view) || worldView?.draws(viewKeyOf(settings.view), !!warpNow()?.k)) return;
   const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
   p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
@@ -1938,7 +1939,8 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
   const v = vol, format = v.format, b = view === 'plain' ? blocks : null;
   if (view === 'plain' && !b) return false;
-  const wv = worldView?.draws(view) ? worldView : null;   // (the material views: the world march, as a frame draws them)
+  const wv = worldView?.draws(view) ? worldView : null;   // (material views: the same renderer as a frame)
+  let meshKinds;
   const built = wv ? wv.pipeline(view, detail, 'manual').state === 'ready' : v.viewBuilt(view, detail);
   const shadows = viewShadows(view) && !wv;   // (the march's are L's: windowShadows)
   if (!build && !b && !(built && (!shadows || v.shadowState === 'ready'))) return false;
@@ -1958,24 +1960,29 @@ async function renderThumb(viewId, out, { build = true } = {}) {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     const drawStill = () => presentation.neutral(() => post.renderStill({
       prepare() { const fv = frameValues(thumbCam, viewId, [0, 0]); const written = writeFrameUniforms(gpu, fv); wv?.writeUniforms(fv, written); frameBoxed = marchBoxed(view, false); },
+      compute() { if (wv?.fastRaster && !b) wv.update(gpu.frame, { boxes: null, camera: thumbCam, sun: SUN, sea: rasterSea() }); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => {
-        const drew = threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false;
-        if (wv && !b) worldPrepass(p, view, detail, null);   // (the split march's stages, as a frame records them)
-        return farPass(p, drew, view, false);
+        meshKinds = collectThreeMeshes(thumbCam);
+        const drew = threeMeshes(p, false, thumbCam, true, meshKinds);
+        if (drew && !b && !wv?.fastRaster) cut.capture(p.sceneTarget.depth);
+        if (wv && !b) worldPrepass(p, view, detail, null);   // (as a frame records it)
+        return wv?.fastRaster ? drew : farPass(p, drew, view, false);
       },
-      draw(rp) {
+      draw(rp, p) {
+        const raster = wv?.rasterPrepared;
         const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;   // the sea past its walls
-        drawSkyFor(rp, view, sea);
-        if (mapKind.boxFrame) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit, sea });
+        if (!raster) drawSkyFor(rp, view, sea);
+        if (mapKind.boxFrame && !raster) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit, sea });
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: mapKind.boxFrame });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
-        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0, boxed: frameBoxed, cut: frameCut });
+        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), inSize: p.inSize, marchNear: pov?.marchNear ?? 0, aerCopy: 0, boxed: frameBoxed, cut: frameCut });
         prepassed = false;
+        if (mapKind.boxFrame && raster) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit, sea });
         if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
-      meshes: (p) => { threeMeshes(p, true, thumbCam); },
+      meshes: (p) => { threeMeshes(p, true, thumbCam, false, meshKinds); },
     }, thumbCam, thumbTarget));
     drawStill();
   } finally {
@@ -2558,18 +2565,28 @@ const frameWires = createFrameWires(live, () => ctx);
 // marches to their depth), the transparent ones after it. False when there are none.
 // clear false: the opaque ones over what the target holds, depth-tested
 // against it (a mesh-only frame's kept scene, gfx/meshFrames.js).
-const isTransparent = (o) => (Array.isArray(o.material) ? o.material.some((m) => m.transparent) : !!o.material?.transparent);
-function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
-  if (!threeHasVisible(scene, cam)) return false;
-  const others = [];
-  let any = false;
+function collectThreeMeshes(cam) {
+  const kinds = { opaque: false, transparent: false };
   scene.traverseVisible((o) => {
-    if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) return;
-    if (isTransparent(o) === transparent) any = true;
-    else others.push(o);
+    if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite) || !o.layers.test(cam.layers)
+      || (o.isInstancedMesh && o.count === 0)) return;
+    const collect = (m) => {
+      if (!m?.visible) return;
+      if (m.transparent || m.transmission > 0 || m.transmissionNode?.isNode || m.backdropNode?.isNode) kinds.transparent = true;
+      else kinds.opaque = true;
+    };
+    if (Array.isArray(o.material)) o.material.forEach(collect);
+    else collect(o.material);
   });
-  if (!any) return false;
-  for (const o of others) o.visible = false;
+  return kinds;
+}
+function threeMeshes(p, transparent, cam = camera, clear = !transparent, kinds = collectThreeMeshes(cam)) {
+  if (!(transparent ? kinds.transparent : kinds.opaque)) return false;
+  const { opaque, transparent: trans } = renderer;
+  // Three already splits its render list by material; scene visibility (and
+  // in particular the children of a mesh from the other pass) stays untouched.
+  renderer.opaque = !transparent;
+  renderer.transparent = transparent;
   try {
     renderer.setRenderTarget(p.sceneTarget.rt);
     if (clear) { renderer.setClearColor(0x000000, 0); renderer.autoClear = true; }
@@ -2578,7 +2595,8 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
   } finally {
     renderer.autoClear = false;
     renderer.setRenderTarget(null);
-    for (const o of others) o.visible = true;
+    renderer.opaque = opaque;
+    renderer.transparent = trans;
   }
   return true;
 }
@@ -2619,7 +2637,7 @@ function selectRenderView() {
 // The volume's draw into rp (the scene pass), its
 // options this frame's (cut.take(): the meshes' depth, once a frame).
 // Returns whether it drew.
-function drawVolume(rp) {
+function drawVolume(rp, p) {
   const view = viewKeyOf(renderView), detail = frameDetail;
   const meshDepth = prepassed ? null : cut.take();   // (the split march took it before the scene pass)
   prepassed = false;
@@ -2630,8 +2648,8 @@ function drawVolume(rp) {
   // march of physics' window for now.
   const world = !testBoxMarch && worldView?.draws(view, curved);
   const drew = !testNoVolume && (world
-    ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, cut: frameCut })
-    : vol.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp }));
+    ? worldView.draw(rp, { view, detail, meshDepth, inSize: p.inSize, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, cut: frameCut })
+    : vol.draw(rp, { view, detail, meshDepth, inSize: p.inSize, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp }));
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
     const pipe = world ? worldView.pipeline(view, detail, 'now') : vol.pipeline(view, detail, 'now', curved);
@@ -2645,13 +2663,19 @@ function drawVolume(rp) {
 let prepassed = false;
 function worldPrepass(p, view = viewKeyOf(renderView), detail = frameDetail, warp = warpNow()) {
   prepassed = false;
-  if (blocks || testNoVolume || testBoxMarch || !worldView?.draws(view, !!warp && warp.k !== 0) || !worldView.splits(detail)) return;
+  if (testNoVolume || !worldMarchFrame(view, !!warp?.k) || (!worldView.fastRaster && !worldView.splits(detail))) return;
   const meshDepth = cut.take();
   prepassed = true;
-  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, cut: frameCut, target: p.sceneTarget.color });
+  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, cut: frameCut, target: p.sceneTarget.color, inSize: p.inSize, allocSize: p.allocSize });
 }
 // Whether the world march draws `view` this frame (else the box volume or the blocks do).
 function worldMarchFrame(view, curved) { return !blocks && !testBoxMarch && !!worldView?.draws(view, curved); }
+function fastRasterFrame(view = viewKeyOf(renderView), curved = !!warpNow()?.k) {
+  return worldMarchFrame(view, curved) && worldView.fastRaster;
+}
+function usesFarField(view = viewKeyOf(renderView), curved = !!warpNow()?.k) {
+  return mapKind.streamed && isMaterialView(view) && !fastRasterFrame(view, curved);
+}
 // A big map's full detail is live's: physics' window's box (shaders/world/reach.js). The world march draws
 // inside it and the far view (world/far.js) outside it, once the far view draws (its pipeline ready, the
 // far field built); until then the march draws the whole world, so there is no hole. Latched per frame
@@ -2662,7 +2686,7 @@ let frameBoxed = false;
 // cutBox, unsnapped: the far view fades in across its band, shaders/world/reach.js CUT_BAND)
 let frameCut = null;
 function marchBoxed(view, curved) {
-  return !truthView && !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
+  return !truthView && usesFarField(view, curved) && worldMarchFrame(view, curved) && !!win?.far?.drawable;
 }
 // A big map's far view (world/far.js drawPass): its own pass, 'far view', after three's opaque meshes and
 // the world march's stages, before the scene pass, into the scene target with its depth (drew: the meshes
@@ -2673,8 +2697,8 @@ let farDrawn = false;
 function farPass(p, drew, view = viewKeyOf(renderView), curved = !!warpNow()?.k) {
   farDrawn = false;
   const far = win?.far;
-  if (!far || mapKind.boxFrame || !isMaterialView(view) || (worldMarchFrame(view, curved) && !frameBoxed)) return drew;
-  farDrawn = far.drawPass(gpu.frame, { color: p.sceneTarget.color, depth: p.sceneTarget.depth, load: drew, march: frameBoxed, winLo: win?.drawOrigin ?? null, cut: frameCut });
+  if (!far || !usesFarField(view, curved) || (worldMarchFrame(view, curved) && !frameBoxed)) return drew;
+  farDrawn = far.drawPass(gpu.frame, { color: p.sceneTarget.color, depth: p.sceneTarget.depth, inSize: p.inSize, load: drew, march: frameBoxed, winLo: win?.drawOrigin ?? null, cut: frameCut });
   return drew || farDrawn;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
@@ -2682,11 +2706,17 @@ let testBoxMarch = false;  // test.renderOnce({ boxMarch: true }): the box's mar
 // The sea past a World's edge where its water reaches it (gfx/edgeSea.js), for
 // the sky pass, in the window's grid cells; the edge's mask is found once a world.
 const edgeSeas = new WeakMap();
-function worldSea() {
+function worldEdgeSea() {
   if (!win?.P || !sim) return null;
   if (!edgeSeas.has(win.P)) edgeSeas.set(win.P, sceneEdgeSea(win.scene, win.P));
-  return edgeSeaParams(edgeSeas.get(win.P), win.P.size, sim.origin);
+  return edgeSeas.get(win.P);
 }
+function worldSea() {
+  const sea = worldEdgeSea();
+  return sea ? edgeSeaParams(sea, win.P.size, sim.origin) : null;
+}
+// The mesh sky works in world cells, unlike the window's sky pass.
+function rasterSea() { return (mapKind.edgeSeaFromCells ? boxSea : worldEdgeSea())?.sea ?? 0; }
 // A small map's sea past its walls (boxSea, build), for the sky pass, in the
 // box's grid cells (its origin is 0: one window over its whole grid).
 function boxSeaParams() {
@@ -2706,14 +2736,16 @@ function drawSkyFor(rp, view, sea) {
   if (far) return;
   overlays.drawSky(rp, worldSea(), sim.origin.toArray());
 }
-function drawScene(rp) {
+function drawScene(rp, p) {
   const g = sim.g, view = viewKeyOf(renderView);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
   // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
   // (and the sea past its walls where its water reaches them: boxSeaParams; the floor's seams don't show through it)
   const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;
-  drawSkyFor(rp, view, sea);
-  if (mapKind.boxFrame) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit, sea });   // one scene pixel wide: fade as it widens past a CSS pixel
+  const raster = fastRasterFrame() && worldView.rasterPrepared;
+  const gridOpacity = Math.min(1, post.renderScale * pixelRatio);   // fade as one scene pixel widens past a CSS pixel
+  if (!raster) drawSkyFor(rp, view, sea);
+  if (mapKind.boxFrame && !raster) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: gridOpacity, lit, sea });
   frameWires.sceneBelow(rp);
   if (blocks) {
     // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
@@ -2727,7 +2759,8 @@ function drawScene(rp) {
     brush.draw(rp);
     return;
   }
-  volumeDrawn = drawVolume(rp);
+  volumeDrawn = drawVolume(rp, p);
+  if (mapKind.boxFrame && raster) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: gridOpacity, lit, sea });
   frameWires.sceneAbove(rp);
   if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
   brush.draw(rp);
@@ -2743,7 +2776,7 @@ function drawScene(rp) {
 let windowLightStale = false;
 let testWindowLight = false;   // __app.test.windowLight: the A/B
 // whether `view` reads the window's sun shadow map (the world march's shadows are L's cascades)
-function windowShadows(view, curved) { return viewShadows(view) && !worldView?.draws(view, curved); }
+function windowShadows(view, curved) { return viewShadows(view) && (testBoxMarch || !worldView?.draws(view, curved)); }
 function worldLit() {
   return !testWindowLight && !blocks && !testBoxMarch && !!worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k);
 }
@@ -2751,7 +2784,7 @@ function worldLit() {
 // This view frame's kind (gfx/meshFrames.js): 'full', or while only three's
 // meshes move, 'capture' (the scene drawn without them first, and kept) and
 // then 'meshes' (the kept scene, the meshes over it: no volume, no far field)
-let frameMode = 'full';
+let frameMode = 'full', frameMeshKinds;
 // post.render's hooks (gfx/post.js), made once
 const frameHooks = {
   prepare: (p) => {
@@ -2760,9 +2793,13 @@ const frameHooks = {
     const fv = frameValues(camera, renderView, p.jitter);
     const written = writeFrameUniforms(gpu, fv);
     worldView?.writeUniforms(fv, written);   // (the same values in world cells, the camera and settings shared: gfx/worldView.js)
-    // a big map's far view (farPass), its derived levels brought up to date; full or mixed resolution by the detail level
-    if (win?.far) win.far.light = worldView?.light ?? null;   // (the flat far view is lit by the world's light: world/far.js)
-    win?.far?.viewBehind(isMaterialView(renderView), !!frameDetail.DETAIL_FAR_FULL);
+    if (usesFarField()) {
+      wire('world')?.prepareFar(ctx);
+      if (win?.far) {
+        win.far.light = worldView?.light ?? null;
+        win.far.viewBehind(true, !!frameDetail.DETAIL_FAR_FULL);
+      }
+    }
     frameBoxed = marchBoxed(viewKeyOf(renderView), !!warpNow()?.k);
     frameCut = win?.cutBox ?? null;
   },
@@ -2793,34 +2830,37 @@ const frameHooks = {
     // the world after physics' step: W writes back what physics changed, then F's fields and L's
     // lighting update for it, before the march draws (docs/seamless-world.md, "frame order")
     if (!blocks && worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k)) {
-      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN, drawLo: win?.drawOrigin ?? null, cutCentre: frameCut?.centre ?? null, phase: prof.phase });
+      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN, sea: fastRasterFrame() ? rasterSea() : undefined,
+        drawLo: win?.drawOrigin ?? null, cutCentre: frameCut?.centre ?? null, phase: prof.phase });
     }
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
     frameWires.compute((w) => frameMode === 'meshes' && !!w.scene);
-    if (!blocks) vol.recordCensus(renderView);   // (the scanned textures of what is in the grid: gfx/materialCensus.js)
+    if (!blocks) vol.recordCensus(renderView, { scanOptics: !fastRasterFrame() });   // (the scanned textures of what is in the grid: gfx/materialCensus.js)
     vol.recordPicks();
     worldView?.recordPicks();   // (a big map's god view aims at the whole map: gfx/worldView.js pick)
   },
   // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)
   opaque: (p) => {
     // the kept scene, then the opaque meshes over it, depth-tested against its depth
-    if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
+    farDrawn = false;
+    if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false, frameMeshKinds); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
-    if (frameMode === 'capture') { worldPrepass(p); return farPass(p, false); }   // (the volume uncut: the meshes go over it in the meshes hook)
-    const drew = threeMeshes(p, false);
-    if (drew && !blocks) cut.capture(p.sceneTarget.depth);
+    const raster = fastRasterFrame();
+    // On a capture frame the opaque meshes go over the kept scene in the meshes hook.
+    const drew = frameMode !== 'capture' && threeMeshes(p, false, camera, true, frameMeshKinds);
+    if (drew && !blocks && !raster) cut.capture(p.sceneTarget.depth);
     worldPrepass(p);
-    return farPass(p, drew);
+    return raster ? drew : farPass(p, drew);
   },
-  draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },
+  draw: (rp, p) => { if (frameMode !== 'meshes') drawScene(rp, p); },
   meshes: (p) => {
     if (frameMode === 'capture') {
       // the scene as drawn, before the meshes, kept; then the opaque meshes over it
       if (volumeDrawn) meshFrames.capture(p); else meshFrames.drop();
-      threeMeshes(p, false, camera, false);
+      threeMeshes(p, false, camera, false, frameMeshKinds);
     }
-    threeMeshes(p, true);
+    threeMeshes(p, true, camera, false, frameMeshKinds);
   },
   overlay: frameWires.hasOverlay ? (rp) => frameWires.overlay(rp) : undefined,
 };
@@ -2835,8 +2875,8 @@ let viewSeen = -1, stillSeen = -1, meshesMoved = false, lastFrameMode = 'full';
 let frameDetailSeen = null, frameDetailV = 0;   // (the detail variant drawn, the last frame's: a new one is a new scene)
 function planMeshFrame(runDerived) {
   if (frameDetail !== frameDetailSeen) { frameDetailSeen = frameDetail; frameDetailV++; }
-  if (!threeHasVisible(scene, camera)) { meshFrames.release(); return 'full'; }
-  if (runDerived || blocks || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
+  if (!frameMeshKinds.opaque && !frameMeshKinds.transparent) { meshFrames.release(); return 'full'; }
+  if (runDerived || blocks || testNoVolume || (fastRasterFrame() && worldView.mesh.busy) || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
     meshFrames.drop();
     return 'full';
   }
@@ -3126,6 +3166,7 @@ function tick(now, renderOnly = false) {
   if (runView && !postOnly) {
     prof.phase('view');
     updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
+    frameMeshKinds = collectThreeMeshes(camera);
     frameMode = renderOnly ? 'full' : planMeshFrame(runDerived);
     meshesMoved = false;
     viewClock(frameMode !== 'full');   // (before the wires read it: the meshes' light under the clouds)
@@ -3205,7 +3246,7 @@ function tick(now, renderOnly = false) {
   // J3's app: { gpu, three, sim, derived, scene, camera, settings, pacer, post } (three is the renderer, also as `renderer`)
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
-  threeMeshes,
+  threeMeshes, usesFarField,
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   get worldView() { return worldView; },
   get worldLight() { return worldLit() ? worldView.light : null; },   // L, on frames it lights alone (worldLit)
@@ -3502,7 +3543,11 @@ try {
       async renderOnce({ capture = false, volume = true, boxMarch = false } = {}) {
         await coreWait;
         if (graphicsFailure) throw graphicsFailure;
-        if (boxMarch) await vol.viewReady(viewKeyOf(renderView), frameDetail);
+        if (boxMarch) {
+          const view = viewKeyOf(renderView);
+          await vol.viewReady(view, frameDetail);
+          if (viewShadows(view)) await vol.shadowReady();
+        }
         pacer.wake();
         let shot = null;
         if (capture) captureNext = (p) => { shot = p; };

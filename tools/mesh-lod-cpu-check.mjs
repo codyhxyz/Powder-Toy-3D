@@ -156,7 +156,7 @@ test('recording holds old coverage during retarget, budgets rebuilds and writes 
       createSampler: (s) => s,
       queue: { writeBuffer: (buf, offset, jobs, start, count) => assert.equal(count % 8, 0) },
     },
-    emptyGroup: {}, stats: { draws: 0 },
+    emptyGroup: {}, stats: { draws: 0 }, flush() {},
     createBuffer: (d) => ({ ...d, destroy() { this.destroyed = true; } }),
     createTexture: (d) => {
       const tex = { ...d, width: d.size[0], height: d.size[1], createView: () => ({ tex }), destroy() { this.destroyed = true; } };

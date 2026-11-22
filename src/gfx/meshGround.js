@@ -469,7 +469,7 @@ fn quartzGlints(p: vec3f, n: vec3f, v: vec3f, fp: f32) -> f32 {
   return FU.glints * 0.85 * mix(quartzFacet(p, n, h, scale), quartzFacet(p, n, h, 2.0 * scale), fract(l)) * (1.0 - smoothstep(0.6, 1.0, fp));
 }`;
 
-const drawWGSL = (g) => /* wgsl */ `
+const drawWGSL = (g, compact) => /* wgsl */ `
 ${prelude(g, { state: false })}${frameBindings()}${glslMod}${noiseGLSL}
 ${atmosphere}${renderLight}${sandDetail}${unpackNormal}
 @group(1) @binding(0) var<storage, read> verts: array<vec4u>;
@@ -498,7 +498,7 @@ fn matTextured(id: i32, p: vec3f, n: vec3f, dx: vec3f, dy: vec3f) -> vec3f {
   else if (a.y >= a.z) { uv = p.xz; gx = dx.xz; gy = dy.xz; }
   return srgb(textureSampleGrad(tMat, sMat, uv * tm.y, layer, gx * tm.y, gy * tm.y).rgb) * TEXTINT(id).rgb;
 }
-@fragment fn fs(i: Vertex) -> ColorDepth {
+@fragment fn fs(i: Vertex) -> ${compact ? '@location(0) vec4f' : 'ColorDepth'} {
   let dx = dpdx(i.p);
   let dy = dpdy(i.p);
   let fp = max(length(dx), length(dy));
@@ -533,13 +533,14 @@ fn matTextured(id: i32, p: vec3f, n: vec3f, dx: vec3f, dy: vec3f) -> vec3f {
   let glow = glowClipAt(i.p + geom * 0.5) * FU.lightGain;
   let color = direct + albedo * (meshIrradiance(probe, n) + glow) + emit;
   let skyShare = clamp(probe.c0.a * (SH_Y0 / SKYVIS_OPEN_DC), 0.0, 1.0);
-  return ColorDepth(vec4f(farHazeAir(color, -view, dist, skyShare), 1.0), i.pos.z);
+  let hdr = vec4f(farHazeAir(color, -view, dist, skyShare), 1.0);
+  return ${compact ? 'hdr' : 'ColorDepth(hdr, i.pos.z)'};
 }`;
 
-const backgroundWGSL = () => /* wgsl */ `
+const backgroundWGSL = (compact) => /* wgsl */ `
 ${frameBindings()}${atmosphere}
 struct SkyVertex { @builtin(position) p: vec4f, @location(0) ndc: vec2f }
-struct SkyOut { @location(0) color: vec4f, @location(1) clipDepth: f32, @builtin(frag_depth) depth: f32 }
+struct SkyOut { @location(0) color: vec4f, ${compact ? '' : '@location(1) clipDepth: f32,'} @builtin(frag_depth) depth: f32 }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> SkyVertex {
   let ndc = vec2f(f32((i & 1u) * 4u), f32((i >> 1u) * 4u)) - 1.0;
   return SkyVertex(vec4f(ndc, 0.0, 1.0), ndc);
@@ -570,13 +571,13 @@ struct SkyOut { @location(0) color: vec4f, @location(1) clipDepth: f32, @builtin
       depth = clamp(clip.z / clip.w, 0.0, 1.0);
     }
   }
-  return SkyOut(vec4f(color, 1.0), min(depth, 0.99999994), depth);
+  return SkyOut(vec4f(color, 1.0), ${compact ? '' : 'min(depth, 0.99999994), '}depth);
 }`;
 
 /** All entry-point modules (CPU validation uses these exact strings). */
-export const meshGroundWGSL = (g) => ({
+export const meshGroundWGSL = (g, compact = false) => ({
   reset: resetWGSL, occupied: occupiedWGSL(g), field: fieldWGSL(g), blurX: blurWGSL(0), blurY: blurWGSL(1), blurZ: blurWGSL(2),
-  verts: vertsWGSL, quads: quadsWGSL, args: argsWGSL, draw: drawWGSL(g), background: backgroundWGSL(),
+  verts: vertsWGSL, quads: quadsWGSL, args: argsWGSL, draw: drawWGSL(g, compact), background: backgroundWGSL(compact),
 });
 
 const ro = { buffer: { type: 'read-only-storage' } };
@@ -599,7 +600,8 @@ const textureEntry = (binding, resource) => ({ binding, resource });
 const bufferEntry = (binding, buffer) => textureEntry(binding, { buffer });
 
 /** Full-world opaque mesh. `eye` and `viewProjModel` are in WorldCopy's cell space.
- * `draw` targets an rgba16float S and optional r32float D, both render attachments.
+ * `draw` targets rgba16float S. The legacy MRT variant also writes r32float D;
+ * compact mode exposes only hardware depth. `allocSize` is the attachment extent.
  */
 export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
   const size = worldCopy.size ?? [sim.g.nx, sim.g.ny, sim.g.nz];
@@ -628,15 +630,16 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
     draw: gpu.layout('MESH_GROUND_DRAW', drawLayout),
     light: gpu.layout('MESH_GROUND_LIGHT', lightLayout),
   };
-  const source = meshGroundWGSL(sim.g);
-  const isWorld = (name) => name === 'occupied' || name === 'field';
+  const { compact = false } = opts;
+  const source = meshGroundWGSL(sim.g, compact);
+  const readsWorldCopy = (name) => name === 'occupied' || name === 'field';
   const K = Object.fromEntries(work.map(([name]) => [name, gpu.kernel({ name: `mesh ground ${name}`, code: source[name],
-    layouts: isWorld(name) ? [sim.L.TABLES, worldCopy.layout, L.field] : [undefined, undefined, L.build],
+    layouts: readsWorldCopy(name) ? [sim.L.TABLES, worldCopy.layout, L.field] : [undefined, undefined, L.build],
     workgroupSize: [WG, 1, 1], params: BuildParams,
   })]));
   const render = (name, layouts, depthCompare) => gpu.renderPipeline({
     name: `mesh ground ${name}`, code: source[name], layouts, params: ViewParams,
-    vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets },
+    vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets: compact ? targets.slice(0, 1) : targets },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare },
   });
@@ -662,6 +665,11 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
     ready,
     get isReady() { return pipelines.every((p) => p.state === 'ready'); },
     get coverageReady() { return active.length > 0; },
+    get busy() {
+      if (pending.length) return true;
+      for (const ch of resident.values()) if (ch.dirty) return true;
+      return false;
+    },
     get resident() { return resident.size; },
     get depthTexture() { return depth; },
     get depthView() { return depthView; },
@@ -696,7 +704,7 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
         const buildBind = [gpu.emptyGroup, gpu.emptyGroup, buildGroup];
         const wcBind = [sim.tables, worldCopy.bindGroup, fieldGroup];
         for (const [name, n] of work) K[name].dispatch(frame, n === 1 ? [1, 1, 1] : [Math.ceil(n / WG), jobs.length, 1], {
-          bind: isWorld(name) ? wcBind : buildBind, params: { n: jobs.length },
+          bind: readsWorldCopy(name) ? wcBind : buildBind, params: { n: jobs.length },
         });
         for (const ch of jobs) { ch.built = true; ch.dirty = false; }
         stats.meshedLast = jobs.length;
@@ -704,23 +712,24 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
       }
       if (pending.length && pending.every((ch) => resident.get(ch.key).built)) { active = pending; pending = []; sync(active); }
     },
-    draw(frame, { views, w, h }, frameGroup, viewProjModel) {
+    draw(frame, { views, w, h, allocSize = [w, h] }, frameGroup, viewProjModel) {
       if (!mesh.isReady) return false;
-      const tex = (format, name) => gpu.createTexture({ label: label(name), size: [w, h], format,
+      const tex = (format, name) => gpu.createTexture({ label: label(name), size: allocSize, format,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-      if (!depth || depth.width !== w || depth.height !== h) {
+      if (!depth || depth.width !== allocSize[0] || depth.height !== allocSize[1]) {
+        if (depth) gpu.flush('mesh ground resize');
         depth?.destroy(); distance?.destroy(); distance = distanceView = null;
         depth = tex('depth32float', 'hardware depth');
         depthView = depth.createView();
       }
-      if (!views.D && !distance) { distance = tex('r32float', 'clip depth'); distanceView = distance.createView(); }
-      lastDepthOut = views.D ?? distanceView;
+      if (!compact && !views.D && !distance) { distance = tex('r32float', 'clip depth'); distanceView = distance.createView(); }
+      lastDepthOut = compact ? null : views.D ?? distanceView;
       const mt = materialTextures(gpu);
       if (matView !== mt.view) {
         matView = mt.view;
         matGroup = group(L.draw, [bufferEntry(0, buffers.verts), textureEntry(1, mt.view), textureEntry(2, repeat)], 'draw');
       }
-      const colorAttachments = [views.S, lastDepthOut].map((view) => ({ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }));
+      const colorAttachments = (compact ? [views.S] : [views.S, lastDepthOut]).map((view) => ({ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }));
       const rp = frame.render({ colorAttachments, depthStencilAttachment: {
         view: depthView, depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store',
       } }, 'mesh ground');
@@ -729,6 +738,10 @@ export function createMeshGround(gpu, sim, worldCopy, worldLight, opts = {}) {
       const fr = meshFrustum(viewProjModel);
       let drawn = 0;
       try {
+        if (w !== allocSize[0] || h !== allocSize[1]) {
+          rp.setViewport(0, 0, w, h, 0, 1);
+          rp.setScissorRect(0, 0, w, h);
+        }
         sky.draw(rp, { bind: [frameGroup], params });
         for (const ch of active.length ? active : pending) {
           const r = resident.get(ch.key);

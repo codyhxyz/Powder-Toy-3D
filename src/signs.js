@@ -302,18 +302,21 @@ export class Signs {
   }
 
   _probe(sim, info) {
-    const pr = this.probe, brick = sim.brick;
-    // (no brick map before the derived passes' first frame; the kernel builds in the background)
-    if (!brick || pr.kernel.state !== 'ready') return;
+    const pr = this.probe;
+    if (pr.kernel.state !== 'ready') return;
+    // Raster does not produce a brick map. Probe the cells directly rather
+    // than making a saved sign allocate all of the window's Derived storage.
+    const brick = sim.derived?.allocated ? sim.brick : null;
+    const brickBinding = brick ?? pr.data;   // read-only placeholder, not read without useBricks
     if (this.dataDirty) this._uploadSigns(sim.g);
     const n = this.batch.length;
     this.lastProbe = info.now;
     if (!n) return;
-    let group = pr.groups.get(brick);
+    let group = pr.groups.get(brickBinding);
     if (!group) {
       const b = (binding, buffer) => ({ binding, resource: { buffer } });
-      group = pr.gpu.bindGroup(pr.L, [b(0, brick), b(1, pr.data), b(2, pr.ring.buffer)], 'signs');
-      pr.groups.set(brick, group);
+      group = pr.gpu.bindGroup(pr.L, [b(0, brickBinding), b(1, pr.data), b(2, pr.ring.buffer)], 'signs');
+      pr.groups.set(brickBinding, group);
     }
     // V2: the physical view, whose B is the live coarse air ({p}); the drawn
     // projection's B is empty there (shaders/common.js fetchBs). V1: unchanged.
@@ -321,7 +324,7 @@ export class Signs {
     if (!read) return;   // (the native dynamics are still building)
     const slot = pr.ring.next();
     pr.kernel.dispatch(pr.gpu.frame, [1, 1, 1], {
-      bind: [sim.tables, read, group], header: sim.readHeader({ physical: true }), params: { cam: info.camGrid, count: n, slot },
+      bind: [sim.tables, read, group], header: sim.readHeader({ physical: true }), params: { cam: info.camGrid, count: n, slot, useBricks: brick ? 1 : 0 },
     });
     const batch = this.batch.slice();
     const gen = this.generation;

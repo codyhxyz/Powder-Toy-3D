@@ -1173,7 +1173,7 @@ const FAR_VIEW_FIELDS = {
 };
 export const FarViewParams = uniformStruct('FarViewParams', FAR_VIEW_FIELDS);
 // The mixed-resolution variant's (FAR_MIXED): 0 the quarter-pixel pass, 1 the full-resolution resolve.
-export const FarViewParamsMixed = uniformStruct('FarViewParams', { ...FAR_VIEW_FIELDS, resolve: 'u32' });
+export const FarViewParamsMixed = uniformStruct('FarViewParams', { ...FAR_VIEW_FIELDS, resolve: 'u32', lowSize: 'vec2u' });
 
 // ---- mixed resolution (the efficient detail levels: gfx/detail.js DETAIL_FAR_FULL off) ----
 // The view is drawn twice: first at half resolution each way (a quarter of the pixels) into a target of
@@ -1891,7 +1891,7 @@ struct FarOut {
   gFarRay = warpRay(ro, rd);` : ''}${mixed ? `
   // the resolve (FAR_MIXED): the four low-resolution samples around this pixel, bilinear where they agree
   if (P.resolve != 0u) {
-    let lowSize = vec2i(textureDimensions(tFarLow));
+    let lowSize = vec2i(P.lowSize);
     let q = (v.ndc * vec2f(0.5, -0.5) + 0.5) * vec2f(lowSize) - 0.5;
     let i0 = vec2i(floor(q));
     let f = q - floor(q);

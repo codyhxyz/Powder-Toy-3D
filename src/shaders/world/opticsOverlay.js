@@ -13,7 +13,7 @@ import { lightLookupWGSL } from './lightLookup.js';
 import { worldGroup2Layout, worldGroup2WGSL } from './bindings.js';
 
 export const OpticsParams = uniformStruct('OpticsParams', {
-  clipToEye: 'mat4x4f', eyeToClip: 'mat4x4f', eye: 'vec3f', maxDist: 'f32',
+  clipToEye: 'mat4x4f', eyeToClip: 'mat4x4f', eye: 'vec3f', maxDist: 'f32', inSize: 'vec2f',
 });
 
 const F = STAGE.FRAGMENT;
@@ -67,7 +67,7 @@ ${opticsMathWGSL}
 
 struct OverlayRay { rd: vec3f, near: f32, stop: f32 }
 fn overlayNdc(px: vec2i) -> vec2f {
-  let uv = (vec2f(px) + 0.5) / vec2f(textureDimensions(tOpaqueDepth));
+  let uv = (vec2f(px) + 0.5) / OP.inSize;
   return uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
 }
 fn overlayRayAt(ndc: vec2f, z: f32) -> OverlayRay {
@@ -265,7 +265,7 @@ fn overlayBend(px: vec2i, eyeToHit: vec3f, rd: vec3f, n: vec3f, face: vec3f, eta
   if (clip.w <= 0.0) { return px; }
   let uv = clip.xy / clip.w * vec2f(0.5, -0.5) + 0.5;
   if (any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0))) { return px; }
-  let dst = vec2i(uv * vec2f(textureDimensions(tOpaqueDepth)));
+  let dst = vec2i(uv * OP.inSize);
   let dstZ = textureLoad(tOpaqueDepth, dst, 0);
   if (dstZ <= z) { return px; }
   // Also test the geometric face plane: at grazing angles an offset pixel's
@@ -301,7 +301,7 @@ fn overlayMedia(px: vec2i, z: f32) -> vec4f {
   let q = overlayMediaCoord(px);
   let base = vec2i(q);
   let f = fract(q);
-  let hi = vec2i(textureDimensions(tMediaHalf)) - 1;
+  let hi = vec2i(ceil(OP.inSize * 0.5)) - 1;
   let w = OP.clipToEye[3].w + OP.clipToEye[2].w * z;
   var sum = vec4f(0.0);
   var total = 0.0;

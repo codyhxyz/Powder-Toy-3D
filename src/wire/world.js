@@ -14,6 +14,7 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
+const farStarted = new WeakSet();
 // The simulation's passes a world's load records beyond its window's own (WorldWindow.whenReady):
 // the blank state it fills (sim.clear: sim.load's). Never a step kernel (sim.kernels).
 export const WORLD_LOAD_PASSES = Object.freeze(['fromAtlas']);
@@ -65,12 +66,19 @@ const world = {
     // The cumulus deck overhead and its optical shadows.
     gfxUniforms.uClouds.value=true;
     gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
-    // Its distance pass (world/far.js, app.js farPass): the far field's brick-resolution grid of the
-    // whole world, drawn past physics' window (the world march's full detail: shaders/world/reach.js) in a
-    // pass of its own, as live drew it past the window. Joined once its kernels are built, so it never holds
-    // up the load (win.whenReady waits on win.far), and built from the world copy then (useWorldCopy: until
-    // it has built the far view doesn't draw and the march keeps the whole world). Its lighting group is
-    // the window volume's, with the far grid in it (attachVolume).
+  },
+  // Only fallback views need a separate distance field. Create it on demand,
+  // without coupling its readiness to world load.
+  prepareFar(app) {
+    const win = app.win;
+    if (!win || !app.usesFarField()) return;
+    if (win.far) {
+      const copy = app.worldView?.worldCopy;
+      if (!win.far.copy && copy?.bindGroup) win.far.useWorldCopy(copy);
+      return;
+    }
+    if (farStarted.has(win)) return;
+    farStarted.add(win);
     const far = new FarField(app.renderer, win, { sun: app.sun });
     far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
     far.attachVolume(app.vol);
@@ -80,7 +88,7 @@ const world = {
       win.far = far;
       // built from the world copy (world/far.js useWorldCopy): now if it is in, else when it is (buildWorldCopy)
       const copy = app.worldView?.worldCopy;
-      if (win.loaded && copy?.bindGroup) far.useWorldCopy?.(copy);
+      if (copy?.bindGroup && app.usesFarField()) far.useWorldCopy(copy);
       app.wakeLoop();
     }, error => { console.warn('World far field could not build', error); far.dispose(); });
   },
@@ -92,14 +100,14 @@ const world = {
   },
   // The far field's chunks still to build keep the loop running.
   busy(app) {
-    return (app.win?.far?.queue.length ?? 0) > 0;
+    return app.usesFarField() && (app.win?.far?.queue.length ?? 0) > 0;
   },
   follow(app) {
     if (!app.mapKind.streamed) return;
-    // Replicas do not move or simulate their window, but render-only streaming
-    // must still progress; the host's live cells retain their authority.
-    if (app.mp.replica) app.win.far?.tick();
-    else world.moveWindow(app);
+    world.prepareFar(app);
+    // Replicas keep the host's live window but still stream its distance field.
+    if (app.usesFarField()) app.win?.far?.tick();
+    if (!app.mp.replica) world.moveWindow(app);
   },
   // (every map's frame: wire/frameWires.js lighting)
   lighting(app) {
@@ -176,7 +184,7 @@ const world = {
     if (!view) return;
     view.build(w).then((copy) => {
       if (app.win !== w || !copy?.bindGroup) return;
-      w.far?.useWorldCopy?.(copy);   // the far field, built from it and kept current from its changes (world/far.js)
+      if (app.usesFarField()) w.far?.useWorldCopy(copy);   // only fallback views draw a separate distance field
       return w.attachWorldCopy(copy, { wgsl: worldCopyWGSL });
     }).then(() => app.wakeLoop(), (err) => console.error('world copy: not attached', err));
   },

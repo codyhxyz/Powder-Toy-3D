@@ -358,6 +358,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @param {GPURenderPassEncoder} rp
      * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, warp?: object | null }} [opts]
      *   meshDepth: the meshes' depth this frame (gfx/meshCut.js take()), or null for no cut;
+     *   inSize: the active scene viewport, which may be smaller than meshDepth's allocation;
      *   marchNear: cells nothing nearer the eye is drawn (first person's eye clip);
      *   aerCopy: Whitewater's current aeration copy (0 or 1); warp: the rolling
      *   log's parameters while it bends the view ({ k, anchor, dir }, world
@@ -365,7 +366,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      *   drawn when src/deco.js decoShown(sim) says so (painted, display on)
      * @returns {boolean}
      */
-    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null, pipe: twin = null, cost = null } = {}) {
+    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, inSize = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null, pipe: twin = null, cost = null } = {}) {
       const curved = isCurved(warp);
       const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
       if ((header.format ?? 0) !== format) return false;
@@ -374,13 +375,13 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       if (pipe.state !== 'ready') return false;
       opticsDrawn = pipe.name?.includes('.optics') ?? false;
       // the cost view (gfx/costView.js): what was drawn, and its counted twin of `pipe` drawn the same way
-      if (!twin) volume.lastDraw = { view, detail, meshDepth, marchNear, aerCopy, warp, pipe, n: (volume.lastDraw?.n ?? 0) + 1, at: performance.now() };
+      if (!twin) volume.lastDraw = { view, detail, meshDepth, inSize, marchNear, aerCopy, warp, pipe, n: (volume.lastDraw?.n ?? 0) + 1, at: performance.now() };
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       (twin ?? pipe).draw(rp, {
         bind: [cost ? costFrameGroup(depth, cost) : volumeFrameGroup(depth), state, lightingGroup(L.LIGHTING)], header,
         params: {
-          meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
+          meshInv, meshRes: inSize ?? [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
           deco: decoShown(sim) && sim.decoPlane ? 1 : 0,
           warpK: curved ? warp.k : 0, warpAnchor: curved ? warp.anchor : [0, 0], warpDir: curved ? warp.dir : [0, 1],
         },
@@ -470,8 +471,8 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * frame's compute hook, outside any render pass.
      * @param {string} view the view drawn this frame
      */
-    recordCensus(view) {
-      if (isMaterialView(view)) optics.tick();
+    recordCensus(view, { scanOptics = true } = {}) {
+      if (scanOptics && isMaterialView(view)) optics.tick();
       if (materialStyleForView(view) !== SCANNED_STYLE) return;
       census.tick();
       // a small map's floor photo (a big map's floor lies under its ground)

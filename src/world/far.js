@@ -414,7 +414,7 @@ export class FarField {
     if (queued) this._sortQueue();
   }
 
-  // Every frame (world/window.js update; a replica's follow): what the copy changed, the queue's next chunks,
+  // On fallback frames (wire/world.js follow): what the copy changed, the queue's next chunks,
   // and the levels, tops and shadows due for a rebuild. Nothing here reads the window.
   tick() {
     if (!this.built || !this.copy?.bindGroup) return;
@@ -508,7 +508,10 @@ export class FarField {
     params.march = marched ? 1 : 0;
     const mixed = pipe === this._pipeline(this.curved, true);
     // (the mixed variant: the low pass, or with resolve its targets read; drawn alone it is the low pass)
-    if (mixed) params.resolve = resolve ? 1 : 0;
+    if (mixed) {
+      params.resolve = resolve ? 1 : 0;
+      params.lowSize = low?.activeSize ?? (low ? [low.w, low.h] : [1, 1]);
+    }
     const curved = this.curved;
     const frameGroup = mixed ? this._frameGroupMixed(resolve ? low : null, !curved) : this._frameGroup(!curved);
     // (the flat view's light is the world's, L: shaders/bindings.js LIGHTING_FAR; the curved one's the window's)
@@ -523,9 +526,9 @@ export class FarField {
    * pass: colour and depth cleared, or loaded (load: three's opaque meshes are in them), and stored for
    * the scene pass to load. Returns whether it drew (nothing recorded if not).
    * @param {object} frame gpu.frame
-   * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean, march?: boolean, winLo?: number[] | null, cut?: { lo: number[], hi: number[] } | null }} opts
+   * @param {{ color: GPUTexture, depth: GPUTexture, inSize?: number[], load?: boolean, march?: boolean, winLo?: number[] | null, cut?: { lo: number[], hi: number[] } | null }} opts
    */
-  drawPass(frame, { color, depth, load = false, march = false, winLo = null, cut = null }) {
+  drawPass(frame, { color, depth, inSize = [color.width, color.height], load = false, march = false, winLo = null, cut = null }) {
     const pipe = this._drawPipeline();
     if (!pipe) return false;
     const views = (this._targetViews ??= new WeakMap());   // the scene target's views, by texture
@@ -534,15 +537,28 @@ export class FarField {
       colorAttachments: [{ view: c, loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
       depthStencilAttachment: { view: d, depthClearValue: 1, depthLoadOp: load ? 'load' : 'clear', depthStoreOp: 'store' },
     });
+    const viewport = (rp, [w, h], aw, ah) => {
+      if (w !== aw || h !== ah) {
+        rp.setViewport(0, 0, w, h, 0, 1);
+        rp.setScissorRect(0, 0, w, h);
+      }
+    };
     let low = null;
     if (pipe === this._pipeline(this.curved, true)) {
       // mixed resolution (FAR_MIXED): the quarter-pixel pass first, into the view's own targets
       low = this._lowTargets(color.width, color.height);
       const lp = frame.render(target(low.colorView, low.depthView, false), 'far view low');
-      try { this.drawBehind(lp, { march, winLo, cut, resolve: false }); } finally { lp.end(); }
+      low.activeSize = inSize.map((n) => Math.ceil(n / LOW_SCALE));
+      try {
+        viewport(lp, low.activeSize, low.w, low.h);
+        this.drawBehind(lp, { march, winLo, cut, resolve: false });
+      } finally { lp.end(); }
     }
     const rp = frame.render(target(view(color), view(depth), load), 'far view');
-    try { return this.drawBehind(rp, { march, winLo, cut, resolve: !!low, low }); } finally { rp.end(); }
+    try {
+      viewport(rp, inSize, color.width, color.height);
+      return this.drawBehind(rp, { march, winLo, cut, resolve: !!low, low });
+    } finally { rp.end(); }
   }
 
   /** Whether the view draws this frame (viewBehind said so, it is built, its pipeline is ready); asks for the pipeline when it isn't. */

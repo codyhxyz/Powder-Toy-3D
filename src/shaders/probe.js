@@ -23,6 +23,7 @@ export const SignParams = uniformStruct('SignParams', {
   cam: 'vec3f',    // the eye, grid cells
   count: 'i32',    // signs in signData
   slot: 'u32',     // the ring slot
+  useBricks: 'u32', // fast empty-brick skips when the legacy brick map exists
 });
 const ro = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } });
 export const SIGN_LAYOUT = [ro(0), ro(1), { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
@@ -61,9 +62,11 @@ fn sightLine(ro: vec3f, toward: vec3f) -> f32 {
   var tau = 0.0;
   for (var i = 0; i < MAX_STEPS; i++) {
     if (outside(cell) || tEnter >= t1) { break; }
-    let bc = cell / BS;
-    if (any(bc != lastB)) { lastB = bc; occ = brickMatter(brick[brickId(bc)].info); }
-    if (!occ) { skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
+    if (P.useBricks != 0u) {
+      let bc = cell / BS;
+      if (any(bc != lastB)) { lastB = bc; occ = brickMatter(brick[brickId(bc)].info); }
+      if (!occ) { skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
+    }
     let ax = argmin3(tMax);
     let seg = min(tMax[ax], t1) - tEnter;
     let id = eid(fetchA(cell));

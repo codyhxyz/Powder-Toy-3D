@@ -32,7 +32,7 @@ export function createOpticsOverlay(gpu, sim, worldCopy, worldLight) {
   ];
   const [mediaPipe, opticsPipe] = WGSL_CHECK.map(({ name, code, fragment, depthStencil }, i) => gpu.renderPipeline({
     name: `world ${name}`, code: code(sim.g), layouts: [frameLayout, worldCopy.layout, layouts[i]],
-    params: OpticsParams, fragment, ...(depthStencil ? { depthStencil } : {}), build: 'later',
+    params: OpticsParams, fragment, ...(depthStencil ? { depthStencil } : {}), build: 'later', optional: true,
   }));
   const ready = Promise.all([mediaPipe.ready, opticsPipe.ready]);
   ready.catch(() => {}); // reported by the pipelines; still rejects for callers awaiting it
@@ -80,22 +80,33 @@ export function createOpticsOverlay(gpu, sim, worldCopy, worldLight) {
      * `eye` and `maxDist` are in world cells; no camera object is needed.
      * Color is rgba16float and both depth views are depth32float, all single-sampled. */
     render(frame, { frameGroup0, opaqueColorView, opaqueDepthView, outColorView, outDepthView,
-      w, h, invViewProj, viewProj, eye, maxDist }) {
+      w, h, allocSize = [w, h], invViewProj, viewProj, eye, maxDist }) {
       if (disposed || mediaPipe.state !== 'ready' || opticsPipe.state !== 'ready') return false;
       const copy = worldCopy.bindGroup;
       if (!copy || !frameGroup0 || w <= 0 || h <= 0) return false;
       if (opaqueColorView === outColorView || opaqueDepthView === outDepthView) throw new Error('optics overlay requires distinct input and output views');
-      ensureHalf(w, h);
+      ensureHalf(...allocSize);
+      const [hw, hh] = mediaHalfSize(w, h);
       const [media, optics] = bindGroups(opaqueDepthView, opaqueColorView);
-      const params = opticsCameraParams({ invViewProj, viewProj, eye, maxDist });
+      const params = { ...opticsCameraParams({ invViewProj, viewProj, eye, maxDist }), inSize: [w, h] };
       const mp = frame.render({ colorAttachments: [attachment(half.view, 1)] }, 'world media half');
-      mediaPipe.draw(mp, { bind: [frameGroup0, copy, media], params });
-      mp.end();
+      try {
+        if (hw !== half.w || hh !== half.h) {
+          mp.setViewport(0, 0, hw, hh, 0, 1);
+          mp.setScissorRect(0, 0, hw, hh);
+        }
+        mediaPipe.draw(mp, { bind: [frameGroup0, copy, media], params });
+      } finally { mp.end(); }
       const op = frame.render({ colorAttachments: [attachment(outColorView)], depthStencilAttachment: {
         view: outDepthView, depthLoadOp: 'clear', depthStoreOp: 'store', depthClearValue: 1,
       } }, 'world optics overlay');
-      opticsPipe.draw(op, { bind: [frameGroup0, copy, optics], params });
-      op.end();
+      try {
+        if (w !== allocSize[0] || h !== allocSize[1]) {
+          op.setViewport(0, 0, w, h, 0, 1);
+          op.setScissorRect(0, 0, w, h);
+        }
+        opticsPipe.draw(op, { bind: [frameGroup0, copy, optics], params });
+      } finally { op.end(); }
       return true;
     },
     dispose() {

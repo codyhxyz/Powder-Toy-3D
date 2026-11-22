@@ -304,7 +304,6 @@ export class WorldWindow {
     this.goal = this.goalFor(fx, fz);
     this.focus = [fx, fz];
     if (this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
-    this.far?.tick();   // (the world copy's changes and the far build's chunks: nothing of the window)
     if (this.capturing || this._moveWait || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
     // (V2: the leaving slab's copy reads its cells natively: renderSource.js nativePackOf)

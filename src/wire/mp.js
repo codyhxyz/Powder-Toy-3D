@@ -42,7 +42,7 @@ const mp = {
       copied.add(win);
       return app.worldView.build(win).then((copy) => {
         if (app.win !== win || !app.mp.replica || !copy?.bindGroup) return;
-        win.far?.useWorldCopy?.(copy);   // the far field from it (world/far.js); one joining later takes it then
+        if (app.usesFarField()) win.far?.useWorldCopy(copy);   // lazy fallback takes the copy when enabled
         app.wakeLoop();
       }, (err) => { copied.delete(win); throw err; });
     };
