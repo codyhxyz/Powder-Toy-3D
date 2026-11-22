@@ -202,7 +202,7 @@ const RULES = [
   { k: 'shadowSteps', fn: 'sunRayClear', when: (c, body) => c.slice(...body).includes('traceNearSteps('), text: SUN_SET, counts: [] },
   { k: 'nearSteps', fn: 'traceNearSteps', text: WALK_TAKE, counts: [] },
   { k: 'nearSteps', loop: 'traceNearSteps', header: /maxSteps/, unless: 'lcNext', text: WALK_BUMP, counts: ['nearSteps', 'shadowSteps'] },
-  { k: 'nearSteps', loop: 'lcNext', header: /^loop$/, text: WALK_BUMP, counts: ['nearSteps', 'shadowSteps'] },
+  { k: 'nearSteps', loop: 'lcNextStride', header: /^loop$/, text: WALK_BUMP, counts: ['nearSteps', 'shadowSteps'] },
   { k: 'reflSteps', loop: 'reflectHit', header: /REFL_MAX_STEPS/ },
   { k: 'refractions', fn: 'liquidInterface' },
   { k: 'refractions', fn: 'crystalInterface' },

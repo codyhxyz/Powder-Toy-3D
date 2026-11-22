@@ -184,7 +184,7 @@ fn field(j: u32, p: vec3i) -> u32 { return scratch[base(j) + FIELD + index(p + 2
 fn den(w: u32) -> f32 { return f32((w >> 8u) & 65535u) / 4096.0; }
 fn occ(w: u32) -> bool { return (w & 255u) != 0u; }
 fn lowOwner(job: Job) -> vec3i {
-  return select(vec3i(0), vec3i(-1), (vec3u(job.faces) & vec3u(1u, 4u, 16u)) != vec3u(0u) | (job.origin == vec3i(0)));
+  return select(vec3i(0), vec3i(-1), ((vec3u(job.faces) & vec3u(1u, 4u, 16u)) != vec3u(0u)) | (job.origin == vec3i(0)));
 }
 fn highOwner(job: Job) -> vec3i {
   return vec3i(C - 1) + vec3i((vec3u(job.faces) & vec3u(2u, 8u, 32u)) != vec3u(0u));
