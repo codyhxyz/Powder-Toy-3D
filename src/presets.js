@@ -4,6 +4,7 @@ import { SEED_MAX } from './shaders/common.js';
 import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
 import { buildQuarry } from './industry/quarry.js';
 import { buildPreservation, PRESERVATION_SIZE } from './lab/preservation/index.js';
+import { buildDestroyableCity, DESTROYABLE_CITY_SIZE } from './scenes/destroyableCity.js';
 
 // Arena presets (src/arenas): handmade maps for team games, each built for one
 // grid size (app.js switches to it). Their layouts (spawns, flags, zones...)
@@ -20,6 +21,9 @@ export function buildPreset(name, sim) {
   // The old preset key remains readable for saved snapshots, not a menu map.
   if (name === 'preservationLab' && PRESERVATION_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
     throw new RangeError(`Preservation requires a ${PRESERVATION_SIZE.join('×')} grid.`);
+  }
+  if (name === 'destroyableCity' && DESTROYABLE_CITY_SIZE.some((n, i) => n !== [g.nx, g.ny, g.nz][i])) {
+    throw new RangeError(`Destroyable City requires a ${DESTROYABLE_CITY_SIZE.join('×')} grid.`);
   }
   const [A, B] = sim.blankState();
   const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
@@ -45,6 +49,8 @@ export function buildPreset(name, sim) {
 
   if (name === 'preservationLab') {
     layout = buildPreservation({ box, set });
+  } else if (name === 'destroyableCity') {
+    buildDestroyableCity({ box, set });
   } else if (name === 'quarry') {
     buildQuarry({ g, set, box });
   } else if (name in ARENA_PRESETS) {
