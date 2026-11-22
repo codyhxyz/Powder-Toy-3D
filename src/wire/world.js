@@ -121,28 +121,26 @@ const world = {
   // time), so the load carries a token: it lands only if it is still the
   // latest, the box still shows the Islet on the same grid, and its undo
   // snapshot (loadPreset's, the top of the history now) hasn't been undone.
-  // Another scene, a Clear or an Undo meanwhile wins; cancelIsland is for the
-  // other whole-grid writers (a save's load, a session's frame). Returns the
-  // load's promise (loadIsland's: its world P once it landed, else null).
-  loadIsland(app) {
+  // Another scene, a Clear or an Undo meanwhile wins. Returns the load's
+  // promise (loadIsland's: its world P once it landed, else null).
+  loadIsland(app, mark = null, finish = null) {
     if (app.mp.replica) return null;
-    const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
+    const sim = app.sim, t = world._islandLoad = { sim };
+    const note = mark?.note;   // a later snapshot can recycle the history entry
     // A new scene over the box's cells, as sim.load replaces them: V2's flying matter, air and
     // pending requests start over with it (V1's moving state is in the cells the fill replaced).
     // In the same task as the fill, so no tick runs between them.
     t.done = loadIsland(sim, {
       seed: app.worldSeed,
-      still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && app.mapKind.presets
-        && (t.mark === null || sim.history.includes(t.mark)),
-    }).then((P) => {
-      if (P) {
+      still: () => world._islandLoad === t && !app.mp.replica && app.sim === sim && app.settings.preset === 'island' && app.mapKind.presets
+        && (!mark || (mark.note === note && sim.history.includes(mark))),
+      onLoaded(P) {
         sim.resetNativeDynamics();
         placeShrineOrbs(app, P);   // same generated offers as the streamed Island
-      }
-      return P;
+        finish?.(P);
+      },
     });
-    t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
-    return t.done.catch(() => null);
+    return t.done;
   },
   // A pending Island load (above) is dropped.
   cancelIsland() { world._islandLoad = null; },

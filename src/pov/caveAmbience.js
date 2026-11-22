@@ -6,7 +6,8 @@ import { ELEMENTS, E, K } from '../elements.js';
 const ROOF_REACH = 16;   // cells above the eye; the body probe is 32 cells tall
 const ROOF_OFFSETS = [[-2, 0], [2, 0], [0, -2], [0, 2]];
 const STRATUM = new Set([E.ROCK, E.LIMESTONE, E.SANDSTONE, E.COAL, E.BASALT,
-  E.IRON_ORE, E.COPPER_ORE, E.LITHIUM_ORE, E.URANIUM_ORE, E.TUNGSTEN_ORE, E.ROCK_SALT]);
+  E.NOITA_SNOWROCK, E.NOITA_VAULT, E.NOITA_TEMPLE, E.NOITA_LUSH,
+  E.IRON_ORE, E.COPPER_ORE, E.LITHIUM_ORE, E.URANIUM_ORE, E.TUNGSTEN_ORE, E.ROCK_SALT, E.SULFUR, E.CINNABAR]);
 // Moss grows on damp rock; the body probe has no moisture/ctype channel, so
 // moss and mud are local signs of dampness, not direct moisture measurements.
 const DAMP = new Set([E.WATER, E.SALTWATER, E.MUD, E.MOSS]);

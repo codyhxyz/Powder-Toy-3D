@@ -87,6 +87,12 @@ test('requires a broad geological roof and a probed, unburied eye', () => {
   }
 });
 
+test('Descent native bedrock qualifies as a cave roof', () => {
+  for (const roof of [E.NOITA_SNOWROCK, E.NOITA_VAULT, E.NOITA_TEMPLE, E.NOITA_LUSH]) {
+    assert.equal(fixture({ roof, kind: BIG_MAP }).roof(), true);
+  }
+});
+
 test('damp signs schedule soft drips; drip pitch and spacing vary', () => {
   for (const wet of [E.WATER, E.SALTWATER, E.MUD, E.MOSS]) {
     const log = record(fixture({ wet }).player, () => 0);

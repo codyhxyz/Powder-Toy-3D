@@ -15,8 +15,10 @@
 //     most in sight with a view, its cell nearest the
 //     block's middle (look), and a dry cave floor in sight of it to stand on,
 //     under the ground
-//     (feet), as tools/caves-preview.mjs finds them.
-// usage: node tools/nature-check.mjs [outDir] [--islet] [--box x0 z0 nx nz]
+//     (feet), as tools/caves-preview.mjs finds them;
+//   - the structure overlay, across all placed footprints regardless of --box,
+//     must not cut into seals or introduce dry-mineral reaction contacts.
+// usage: node tools/nature-check.mjs [outDir] [--islet] [--seed n] [--box x0 z0 nx nz]
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { E, ELEMENTS, K } from '../src/elements.js';
@@ -25,10 +27,13 @@ import { WORLD_SIZE } from '../src/shaders/far.js';
 import { worldParams, islandTwin } from '../src/world/generator.js';
 import { NATURE } from '../src/world/island/nature.js';
 import { CAVE } from '../src/world/island/caves.js';
+import { island } from '../src/world/scenes/island.js';
+import { structuresOf, structureCellAt } from '../src/world/structures.js';
 
 const args = process.argv.slice(2);
 const out = args[0] && !args[0].startsWith('--') ? args[0] : 'nature-check';
-const bi = args.indexOf('--box');
+const bi = args.indexOf('--box'), si = args.indexOf('--seed');
+const seed = si < 0 ? undefined : Number(args[si + 1]);
 const islet = args.includes('--islet');
 const size = islet ? [128, 128, 128] : WORLD_SIZE;
 const NY = size[1];
@@ -49,7 +54,7 @@ const EYE_AT = 6;              // ...this far, as near as can be
 const LOG_EVERY = 64;          // rows of z between progress lines
 mkdirSync(out, { recursive: true });
 
-const P = worldParams({ size, snow: islet });
+const P = islet ? worldParams({ size, seed }) : island.params({ size, seed });
 const T = islandTwin(P);
 const name = (id) => ELEMENTS[id]?.key ?? id;
 const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -137,7 +142,52 @@ function auditSeal(x, y, z, id) {
   if (geode && interior === 0) fault('geode not hollow', [x, y, z]);
   if (poolY !== null) count(features, 'geode pools');
 }
+function auditStructureOverlay() {
+  const list = structuresOf(P);
+  const breaches = { OIL: 0, PROPANE: 0, HEALTHIUM: 0, GEODE: 0 };
+  const overlay = (x, y, z, base = cell(x, y, z)) => structureCellAt(P, x, y, z, base, (yy) => cell(x, yy, z));
+  const checked = new Set();
+  let dryMineralContacts = 0;
+  for (const { x0, y, z0, s } of list) {
+    // Visit any natural cell whose own space or two-layer buffer the stamp
+    // can change, including the deepest possible footing and diagonals.
+    const r = CAVE.SEAL;
+    for (let z = z0 - r; z < z0 + s.d + r; z++) for (let x = x0 - r; x < x0 + s.w + r; x++)
+      for (let yy = Math.max(0, y - s.foot - r); yy < Math.min(NY, y + s.h + r); yy++) {
+        const id = cell(x, yy, z);
+        const k = FLUIDS.has(id) ? name(id) :
+          (id === E.EMPTY || id === E.BASALT || id === E.CRYSTAL || id === E.DIAMOND) && T.caveSealed(x, yy, z, -2) >= 0 ? 'GEODE' : null;
+        if (!k && !DRY.has(id)) continue;
+        const at = [x, yy, z];
+        const key = at.join(',');
+        if (checked.has(key)) continue;
+        checked.add(key);
+        const contacts = (test, offsets) => offsets.some(([dx, dy, dz]) => {
+          const [px, py, pz] = [x + dx, yy + dy, z + dz];
+          const before = cell(px, py, pz);
+          return test(before, overlay(px, py, pz, before));
+        });
+        if (k && (overlay(...at, id) !== id || contacts((before, after) => solidRock(before) && !solidRock(after), RING))) {
+          breaches[k]++;
+          fault(`structure breached ${k}`, at);
+        }
+        const reactive = (n) => n === E.WATER || n === E.SALTWATER || (id === E.SULFUR && (n === E.COAL || n === E.FIRE));
+        if (DRY.has(id) && contacts((before, after) => !reactive(before) && reactive(after), TOUCH)) {
+          dryMineralContacts++;
+          fault(`structure exposed ${name(id)} to reaction contact`, at);
+        }
+      }
+  }
+  if (islet && seed === 316) {
+    const oil = [55, 20, 51];
+    if (cell(...oil) !== E.OIL || overlay(...oil) !== E.OIL) fault('Islet seed 316 regression: expected intact oil', oil);
+  }
+  return { count: list.length, caveRooms: list.filter((s) => s.underground).length, breaches, dryMineralContacts };
+}
+
 const t0 = performance.now();
+const postStructures = auditStructureOverlay();
+console.log('post-structure overlay', JSON.stringify(postStructures));
 const [x0, z0, nx, nz] = box;
 for (let z = z0; z < z0 + nz; z++) {
   if ((z - z0) % LOG_EVERY === 0) console.log(`z ${z} (${((performance.now() - t0) / 1000).toFixed(0)} s)`);
@@ -229,7 +279,7 @@ for (let z = z0; z < z0 + nz; z++) {
 // The standard sample is a coverage fixture, not permission to suppress a
 // feature everywhere. Arbitrary boxes and small Islets need not contain all
 // rare sites; they must still pass all isolation checks.
-if (!islet && box.join(',') === '384,384,256,256') {
+if (!islet && si < 0 && box.join(',') === '384,384,256,256') {
   for (const [id, n] of Object.entries(census)) if (!n) fault(`standard sample missing ${id}`, box);
   for (const k of ['geodes', 'geode pools', 'OIL pockets', 'PROPANE pockets', 'grotto fungus', 'vault ROCK_SALT',
     'vault SULFUR', 'gallery ember', 'air bell air', 'air bell crystal', 'flooded tungsten', 'outcrop IRON_ORE', 'outcrop COPPER_ORE'])
@@ -310,5 +360,5 @@ const spots = {   // in daylight where there is a view of one (from a cave mouth
   nuggets: spotFor(E.NUGGETS, GOLD_VIEW),
 };
 writeFileSync(join(out, 'spots.json'), JSON.stringify(spots, null, 1));
-console.log(JSON.stringify({ box, islet, secs: +secs.toFixed(0), census, inSight: seen, changes, features, faults: bad, faultsAt: badAt, spots }, null, 1));
+console.log(JSON.stringify({ box, islet, seed: P.seed, secs: +secs.toFixed(0), census, inSight: seen, changes, features, postStructures, faults: bad, faultsAt: badAt, spots }, null, 1));
 if (Object.keys(bad).length) process.exitCode = 1;

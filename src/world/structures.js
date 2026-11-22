@@ -557,6 +557,22 @@ function caveRoomSite(T, P, K, c, quarter, list, wall) {
       if (f > s.foot) return null;
     }
   }
+  // A room can carve air or introduce reactive materials. Include its
+  // footings and keep the same diagonal clearance as natural reservoirs.
+  for (let cz = z0 - CAVE.SEAL; cz < z0 + s.d + CAVE.SEAL; cz++)
+    for (let cx = x0 - CAVE.SEAL; cx < x0 + s.w + CAVE.SEAL; cx++)
+      for (let yy = y - s.foot - CAVE.SEAL; yy < top + CAVE.SEAL; yy++) {
+        const id = at(cx, yy, cz);
+        if (id === E.OIL || id === E.PROPANE || id === E.HEALTHIUM) return null;
+        // Distinguish geode interiors and shells from ordinary cave air and
+        // crystals. The sentinel leaves the surrounding host rock unmarked.
+        if ((id === E.EMPTY || id === E.CRYSTAL || id === E.BASALT || id === E.DIAMOND) &&
+            T.caveSealed(cx, yy, cz, -2) >= 0) return null;
+        if (id === E.LIMESTONE) {
+          const ore = T.islandNature(cx, yy, cz, id);
+          if (ore === E.ROCK_SALT || ore === E.SULFUR) return null;
+        }
+      }
   return st;
 }
 
