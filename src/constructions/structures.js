@@ -565,4 +565,106 @@ export function bridge({ put, box, rod, vec, footing, T }, variant) {
   }
 }
 
-export const STRUCTURES = { DOCK: dock, TOWER: tower, STONES: stones, WELL: well, MINE: mine, WRECK: wreck, BRIDGE: bridge };
+// ---------------------------------------------------------------- cave rooms
+
+// Like the shrine these are fixed at player scale, with a clear entrance on
+// +z. AIR cuts cave rock; the floor and walls are built over that cut.
+function caveRoom({ box, footing }, w, d, floor, o) {
+  footing(5);
+  box(-w, 0, -d, w, 0, d, floor, o);
+  box(-w, 1, -d, w, HUMAN.ROOM_H, d, 'AIR');
+}
+
+// A fully lined, open-topped rectangular bin. The corner and the bottom
+// perimeter are solid too: 2x2x2 sim blocks can flow through diagonal gaps.
+function bin({ box }, x0, y, z0, x1, z1, wall, fill, depth = 1) {
+  box(x0, y, z0, x1, y + depth + 1, z1, wall);
+  box(x0 + 1, y + 1, z0 + 1, x1 - 1, y + depth, z1 - 1, fill);
+  box(x0 + 1, y + depth + 1, z0 + 1, x1 - 1, y + depth + 1, z1 - 1, 'AIR');
+}
+
+// Collapsed Blasting Stope: a timber set and rail spur ending in a rockfall.
+export function stope(api) {
+  const { put, box } = api;
+  caveRoom(api, 6, 6, 'PLANKS', PLANK_X);
+  for (const x of [-1, 1]) box(x, 0, -4, x, 0, 6, 'METAL');
+  for (const z of [-5, 0, 5]) {
+    for (const x of [-6, 6]) box(x, 1, z, x, 7, z, 'PLANKS', PLANK_Y);
+    box(-6, 8, z, 6, 8, z, 'PLANKS', PLANK_X);
+    put(-5, 5, z, 'WALL_TORCH');
+  }
+  box(-5, 1, -6, 5, 3, -6, 'ROCK');
+  box(-3, 1, -5, 2, 2, -5, 'ROCK');
+  put(4, 4, -6, 'ROCK');
+  for (const z of [-2, 0]) box(-1, 1, z, 1, 1, z, 'METAL');  // wheels and axle on the rails
+  bin(api, -2, 2, -3, 2, 1, 'METAL', 'BROKENCOAL');
+  box(0, 3, -1, 1, 3, 0, 'SCRAP');
+  // This is a cold cache; wall torches emit light but no heat or flame cells.
+  box(4, 1, -4, 6, 3, -2, 'PLANKS', PLANK_Y);
+  box(4, 1, -1, 5, 1, 0, 'TNT');
+  box(4, 2, -1, 5, 2, -1, 'FUSE');
+}
+
+// Flooded Pump Room: the machinery is above the water table. As in the
+// gallery, Noita-style breakable lamps get their power from touching batteries.
+export function pumproom(api) {
+  const { put, box } = api;
+  caveRoom(api, 6, 6, 'BRICK');
+  box(-6, 1, -6, 6, 8, -6, 'BRICK');
+  for (const x of [-6, 6]) {
+    box(x, 1, -5, x, 8, 5, 'BRICK');
+    box(x, 8, -6, x, 8, 6, 'METAL');
+  }
+  for (const z of [-3, 3]) {
+    box(-6, 8, z, 6, 8, z, 'METAL');
+    put(0, 8, z, 'BATTERY');
+    put(0, 7, z, 'LAMP');
+  }
+  box(-5, 1, -5, -5, 5, -5, 'COPPER');
+  box(-5, 5, -5, 5, 5, -5, 'COPPER');
+  box(5, 2, -5, 5, 5, -5, 'METAL');
+  box(5, 1, -5, 5, 2, -2, 'METAL');
+  bin(api, -5, 1, -3, -2, 1, 'METAL', 'SCRAP');
+  bin(api, 2, 1, -1, 5, 3, 'METAL', 'COPPER_SCRAP');
+  bin(api, -2, 1, -5, 2, -2, 'BRICK', 'WATER');   // a flooded, contained sump
+}
+
+// Smuggler's Sea-Cave Cove: a landing on piles, with a vat and hidden gold.
+export function cove(api) {
+  const { put, box, footing } = api;
+  footing(8);
+  box(-5, 2, -4, 5, 7, 4, 'AIR');
+  box(-5, 1, -4, 5, 1, 1, 'PLANKS', PLANK_X);
+  box(-2, 1, 2, 2, 1, 4, 'PLANKS', PLANK_Z);
+  for (const z of [-4, 1, 4]) for (const x of (z === 4 ? [-2, 2] : [-4, 4])) put(x, 0, z, 'PLANKS', PLANK_Y);
+  for (const x of [-5, 5]) {
+    box(x, 1, -4, x, 6, -4, 'PLANKS', PLANK_Y);
+    put(x, 6, -3, 'WALL_TORCH');
+  }
+  bin(api, -5, 2, -3, -1, 0, 'PLANKS', 'WHISKEY', 2);
+  box(2, 2, -4, 4, 5, -3, 'PLANKS', PLANK_Y);
+  bin(api, 2, 2, -2, 5, 1, 'PLANKS', 'NUGGETS');
+  put(3, 3, -1, 'GOLD');
+}
+
+// Alchemist's Potion Grotto: open, reachable stone wells, like Noita's flasks
+// and pools. Their liquids are kept apart, not mixed or plugged with lids.
+export function grotto(api) {
+  const { put, box } = api;
+  caveRoom(api, 8, 6, 'LIMESTONE');
+  box(-8, 1, -6, 8, 8, -6, 'BRICK');
+  for (const x of [-8, 8]) {
+    box(x, 1, -6, x, 7, 3, 'LIMESTONE');
+    put(x - Math.sign(x), 5, 3, 'WALL_TORCH');
+  }
+  for (const [x, el] of [[-5, 'HEALTHIUM'], [0, 'TELEPORTATIUM'], [5, 'LEVITATIUM']]) {
+    bin(api, x - 2, 1, -5, x + 2, -1, 'LIMESTONE', el, 2);
+    box(x - 1, 1, 0, x + 1, 1, 1, 'BRICK');
+    put(x, 5, -5, 'CRYSTAL');
+  }
+}
+
+export const STRUCTURES = {
+  DOCK: dock, TOWER: tower, STONES: stones, WELL: well, MINE: mine, WRECK: wreck, BRIDGE: bridge,
+  STOPE: stope, PUMPROOM: pumproom, COVE: cove, GROTTO: grotto,
+};
