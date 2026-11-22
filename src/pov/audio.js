@@ -7,13 +7,13 @@ import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
 import { gridSpace } from './space.js';
 import { createSprintMusic } from './sprintMusic.js';
+import { createCaveAmbience } from './caveAmbience.js';
 
-// POV sound. Every noise in first person comes from an event (docs/pov.md,
-// "Gunplay v2"): the gun, the tools and the shell announce what happened on
-// povEvents, the body on player.on(...), and this module turns each into a
-// ZzFX sound. Presets are rendered to AudioBuffers once (a few randomised
-// variants each, so repeats don't sound identical) and played through pooled
-// THREE.PositionalAudio voices at the event's world position, or a plain
+// POV sound. Most sounds come from events (docs/pov.md, "Gunplay v2"):
+// the gun, tools and shell use povEvents, and the body uses player.on(...).
+// Cave ambience follows the body's cached cell probe. Presets are rendered
+// to AudioBuffers once, with a few randomised variants, and played through
+// pooled THREE.PositionalAudio voices at the event's world position, or a plain
 // THREE.Audio for sounds that come from you (your shot, your feet, your tools).
 //
 // The AudioListener rides on the POV camera. It is created on the first user
@@ -260,6 +260,16 @@ PRESETS.weatherRain = [.18, 0, 850, .05, 1, .05, 4, 1, , , , , , 4, , , , .5, , 
 PRESETS.weatherThunder = [.7, .08, 55, .04, .7, 2.8, 4, 1.4, -.15, , , , .1, 2, , .1, .1, .55, , , -450];
 LOOPS.add('weatherRain');
 
+const CAVE_PRESETS = {
+  // A falling-pitch droplet with a short, quiet reflection.
+  caveDrip: [.32, .06, 1160, .002, .018, .13, 0, 1.4, -.28, , , , , , , , .09, .45, .025, , 3100],
+  // The faint, dry tick of a counter, not an alarm.
+  caveGeiger: [.28, .08, 1700, .001, .008, .026, 4, 1.6, -.12, , , , , .8, , , , .28, , , -650],
+  // A low, soft breath from the rock that fades before it becomes a bed.
+  caveSettle: [.32, .07, 92, .19, .12, .85, 1, 1.4, -.11, , , , , .08, 2, , , .7, .18, , 360],
+};
+Object.assign(PRESETS, CAVE_PRESETS);
+
 // ---- material families: which sound a struck element makes. An element's
 // own (elements.js sound: glass shatters, wood thunks, metal pings), else its
 // kind's: any rock or other solid cracks.
@@ -352,7 +362,7 @@ const S = {
   underwater: false, filterHz: OPEN_HZ, master: 0,
 };
 
-// (camera, grid → world) are the app's; state() → { active, player, toolbelt, sprintMusic } is the shell's.
+// (camera, grid → world) are the app's; state() supplies the shell's POV and pause state.
 export function createPovAudio({ camera, getVolume, getScale, state }) {
   let starting = false, gestured = false;
   let zz = null;
@@ -365,6 +375,16 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   const now = () => S.ctx.currentTime;              // the audio clock: for scheduling audio params
   const clock = () => performance.now() / 1000;     // s, wall clock: for this module's own timers (the audio clock can stall or race)
   const { toWorld } = gridSpace({ getScale, getVolume });
+  const cave = createCaveAmbience({ play });
+  let caveOn = false;
+  function stopCave() {
+    if (!caveOn) return;
+    caveOn = false;
+    cave.reset();
+    for (const voice of S.flat) {
+      if (Object.hasOwn(CAVE_PRESETS, voice.name) && voice.audio.isPlaying) voice.audio.stop();
+    }
+  }
 
   // ---- start-up, on a user gesture in POV
   async function start() {
@@ -775,6 +795,11 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     if (S.started) {
       setMaster(s.active && !document.hidden);
       setUnderwater(!!(s.active && s.player?.headInLiquid));
+      if (cave.update(frameDt, {
+        active: s.caveActive, paused: s.paused, player: s.player,
+        muted: S.master === 0 || S.listener.getMasterVolume() <= 0 || S.ctx.state !== 'running',
+      })) caveOn = true;
+      else stopCave();
       if (!s.active || s.player?.dead) stopLoops();
       if (S.loops.pourLoop.on && clock() - lastPour > Math.max(POUR_TAIL_S, POUR_TAIL_FRAMES * frameDt)) loop('pourLoop', false);
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
@@ -808,7 +833,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   document.addEventListener('visibilitychange', () => {
     if (!S.started) return;
     setMaster(state().active && !document.hidden);
-    if (document.hidden) stopLoops();
+    if (document.hidden) { stopLoops(); stopCave(); }
     else { cancelAnimationFrame(next); clearTimeout(idle); tick(); }   // wake now, without starting another chain
   });
   tick();

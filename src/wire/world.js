@@ -3,7 +3,7 @@
 // following the focus, the shrine every world gets, and the Island box
 // scene's generator.
 import * as THREE from 'three';
-import { structureClear, shrineAltars as worldShrineAltars } from '../world/structures.js';
+import { allShrineAltars, structureClear, structuresOf } from '../world/structures.js';
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
 import { WorldWindow, WIN_STEP } from '../world/window.js';
 import { bakedAir } from '../constructions/runtime.js';
@@ -14,6 +14,11 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
+
+function placeShrineOrbs(app, P) {
+  const o = app.sim.origin;
+  for (const altars of allShrineAltars(P)) app.perkOrbs?.shrineAt(altars.map((a) => a.sub(o)));
+}
 // The simulation's passes a world's load records beyond its window's own (WorldWindow.whenReady):
 // the blank state it fills (sim.clear: sim.load's). Never a step kernel (sim.kernels).
 export const WORLD_LOAD_PASSES = Object.freeze(['fromAtlas']);
@@ -116,22 +121,26 @@ const world = {
   // time), so the load carries a token: it lands only if it is still the
   // latest, the box still shows the Islet on the same grid, and its undo
   // snapshot (loadPreset's, the top of the history now) hasn't been undone.
-  // Another scene, a Clear or an Undo meanwhile wins; cancelIsland is for the
-  // other whole-grid writers (a save's load, a session's frame). Returns the
-  // load's promise (loadIsland's: its world P once it landed, else null).
-  loadIsland(app) {
+  // Another scene, a Clear or an Undo meanwhile wins. Returns the load's
+  // promise (loadIsland's: its world P once it landed, else null).
+  loadIsland(app, mark = null, finish = null) {
     if (app.mp.replica) return null;
-    const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
+    const sim = app.sim, t = world._islandLoad = { sim };
+    const note = mark?.note;   // a later snapshot can recycle the history entry
     // A new scene over the box's cells, as sim.load replaces them: V2's flying matter, air and
     // pending requests start over with it (V1's moving state is in the cells the fill replaced).
     // In the same task as the fill, so no tick runs between them.
     t.done = loadIsland(sim, {
       seed: app.worldSeed,
-      still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && app.mapKind.presets
-        && (t.mark === null || sim.history.includes(t.mark)),
-    }).then((P) => { if (P) sim.resetNativeDynamics(); return P; });
-    t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
-    return t.done.catch(() => null);
+      still: () => world._islandLoad === t && !app.mp.replica && app.sim === sim && app.settings.preset === 'island' && app.mapKind.presets
+        && (!mark || (mark.note === note && sim.history.includes(mark))),
+      onLoaded(P) {
+        sim.resetNativeDynamics();
+        placeShrineOrbs(app, P);   // same generated offers as the streamed Island
+        finish?.(P);
+      },
+    });
+    return t.done;
   },
   // A pending Island load (above) is dropped.
   cancelIsland() { world._islandLoad = null; },
@@ -201,9 +210,9 @@ const world = {
     const { win, sim, builds } = app;
     if (!win || !builds || win.scene.shrine === false) return;   // (Descent's temples have their own altars)
     const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
-    // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
-    const altars = worldShrineAltars(P);
-    if (altars) { app.perkOrbs?.shrineAt(altars.map((a) => a.sub(o))); return; }
+    // Generated shrines are part of the scene's cells; add every offer once.
+    placeShrineOrbs(app, P);
+    if (structuresOf(P).some((st) => st.kind === 'shrine')) return;
     const sea = P.sea ?? 0;
     const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
     // the ground's lowest and highest under a footprint centred on grid column (x, z)

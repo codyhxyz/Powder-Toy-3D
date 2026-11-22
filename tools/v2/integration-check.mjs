@@ -9,6 +9,8 @@ import { nativeHostSteps, nativeReadiness } from '../../src/v2/host.js';
 import { emitNativeRay, nativeImpulse, worldPosition } from '../../src/v2/tools.js';
 import { NativeBrickStore, encodeNativeBrick, decodeNativeBrick, validateNativeWorldStore } from '../../src/world/nativeStore.js';
 import { WorldWindow } from '../../src/world/window.js';
+import { LeaveQueue } from '../../src/world/physicsRegion.js';
+import { loadIsland, releaseGenerator } from '../../src/world/gpu.js';
 import { BrickStore } from '../../src/world/store.js';
 import { TerrainEditCache } from '../../src/world/terrainEditCache.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
@@ -360,17 +362,73 @@ assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 // any scene does (sim.load), in the same task as its fill (M5). The actual wire/world.js loadIsland.
 {
   const source = readFileSync(new URL('../../src/wire/world.js', import.meta.url), 'utf8');
-  const start = source.indexOf('  loadIsland(app) {'), brace = source.indexOf('{', start); let depth = 1, end = brace + 1;
-  for (; depth; end++) { if (source[end] === '{') depth++; else if (source[end] === '}') depth--; }
+  const start = source.indexOf('  loadIsland(app,'), end = source.indexOf('\n  // A pending Island load', start);
   const wireWorld = { _islandLoad: null }, order = [];
-  wireWorld.loadIsland = new Function('loadIsland', 'world', `return ({${source.slice(start, end)}}).loadIsland;`)(
-    async (_sim, { still }) => { await null; if (!still()) return null; order.push('fill'); return { size: [32, 32, 32] }; }, wireWorld);
+  let fail = false;
+  wireWorld.loadIsland = new Function('loadIsland', 'world', 'placeShrineOrbs', `return ({${source.slice(start, end)}}).loadIsland;`)(
+    async (_sim, { still, onLoaded }) => {
+      await null;
+      if (fail) throw new Error('failed fill');
+      if (!still()) return null;
+      const P = { size: [32, 32, 32] };
+      order.push('fill'); onLoaded(P); return P;
+    }, wireWorld, () => order.push('orbs'));
   const islet = { history: [], resetNativeDynamics() { order.push('reset'); } };
   const app = { mp: { replica: false }, sim: islet, worldSeed: 1, settings: { preset: 'island' }, win: null, mapKind: SMALL_MAP };
-  assert.deepEqual((await wireWorld.loadIsland(app)).size, [32, 32, 32]);
-  assert.deepEqual(order, ['fill', 'reset'], "the old box's dynamics go with its cells");
-  order.length = 0; app.settings.preset = 'empty';
-  assert.equal(await wireWorld.loadIsland(app), null); assert.deepEqual(order, [], 'an overtaken load resets nothing');
+  assert.deepEqual((await wireWorld.loadIsland(app, null, () => order.push('finish'))).size, [32, 32, 32]);
+  assert.deepEqual(order.splice(0), ['fill', 'reset', 'orbs', 'finish'], 'complete the live load in order');
+  const mark = { note: {} };
+  islet.history.push(mark);
+  const pending = wireWorld.loadIsland(app, mark);
+  islet.history.pop();
+  assert.equal(await pending, null, 'undo overtakes the fill');
+  islet.history.push(mark);
+  const recycled = wireWorld.loadIsland(app, mark);
+  mark.note = {};
+  assert.equal(await recycled, null, 'recycling an undo entry does not keep the old fill alive');
+  app.settings.preset = 'empty';
+  assert.equal(await wireWorld.loadIsland(app), null);
+  assert.deepEqual(order, [], 'overtaken loads neither reset nor place orbs');
+  fail = true;
+  await assert.rejects(wireWorld.loadIsland(app), /failed fill/, 'load failures reach the scene caller');
+}
+// The real Islet generator records its fill and the existing construction
+// writer's tree edits before calling the completion hook (no GPU device).
+{
+  const order = [];
+  let release;
+  const native = { isReady: false, dynamics: { _externalWork() {} }, nativeDynamics: { layout: [], group: {} },
+    sync() {}, wake() {}, tick: 0, cells: {}, aux: {}, act: {} };
+  native.ready = new Promise(resolve => { release = () => { native.isReady = true; resolve(); }; });
+  const mockGpu = { ...gpu, uniforms: () => ({ buffer: buffer({ size: 16 }), write() {} }),
+    kernel: ({ name }) => ({ name, state: 'ready', ready: Promise.resolve(), dispatch(_f, _size, { params }) {
+      if (name === 'island native fill' || name.startsWith('nativeBuildStamp')) order.push(name);
+      if (name === 'nativeBuildStampEvaluate') assert.ok(params.seed > 0);
+    } }),
+  };
+  const box = {
+    g: gridLayout(128, 128, 128), gpu: mockGpu, L: sim.L, tables: {}, compact: native, compactOwner: native, version: 0,
+    editKernel() { return { ready: Promise.resolve() }; },
+    edit() { assert.fail('Islet fill must wait for the native owner'); },
+    _dispatch(k, size, opts) { k.dispatch(null, size, opts); }, header() {}, readHeader() {}, wake() {},
+    stillFlow() { order.push('still'); }, _retire() {},
+  };
+  const pending = loadIsland(box, { onLoaded: () => order.push('complete') });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, [], 'no fill before native readiness');
+  release();
+  const loaded = await pending;
+  assert.equal(loaded.size[0], 128);
+  assert.equal(order[0], 'island native fill');
+  const stamps = order.slice(1, -2);
+  assert.ok(stamps.length > 0 && stamps.length % 2 === 0 &&
+    stamps.every((k, i) => k === (i % 2 ? 'nativeBuildStampCommit' : 'nativeBuildStampEvaluate')));
+  assert.deepEqual(order.slice(-2), ['still', 'complete']);
+  assert.ok(box.fieldReset && box.giReset);
+  order.length = 0;
+  assert.equal(await loadIsland(box, { still: () => false }), null);
+  assert.deepEqual(order, []);
+  releaseGenerator(box);
 }
 const sparse = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 123, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-123));
 sim.nativeIntegration.restoreBricks([0, 0, 0], [2, 2, 2], [{ index: 5, bytes: sparse }]);
@@ -651,6 +709,7 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
     sim, gpu: { ...gpu, failure: null, fence: async () => {} }, wb, loaded: true, capturing: false, epoch: 4, pending: null,
     readbackError: null, persistenceError: null, lastKept: 0, last: null, P: {},
     store: new BrickStore(wb), nativeStore: new NativeBrickStore(wb), storeReads: new Set(), storeRevisions: new Map(),
+    leaveQueue: new LeaveQueue(),
     renderSource: { token: () => ({ epoch: 4, revision: 1, contentRevision: 0 }), commitStoreRevision() {} },
     leave: { head, cells: leaveCells }, gen: { diff() { words(head)[0] = 0; } },   // (the projection matches the generator)
   });

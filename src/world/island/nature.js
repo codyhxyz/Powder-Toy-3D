@@ -67,6 +67,9 @@ const N = {
     FUNGUS_DEPTH: 12,                // fungus at least this many cells under its column's ground (dark, below roots)
     FUNGUS_CELL: 20,                 // the fungus patch site grid, cells cube
     FUNGUS_MARGIN: 6,                // ...centres this far inside (at least the largest patch: FUNGUS_R_MAX)
+    GROTTO_CELL: 22, GROTTO_MARGIN: 9,
+    PIPE_CELL: 44, PIPE_MARGIN: 4,
+    IRON_CELL: 8,
     GOLD_CELL: 40,                   // the gold vein site grid, cells cube
     GOLD_MARGIN: 14,                 // ...centres this far inside (at least the largest lens: GOLD_R_MAX)
     PLACER_CELL: 16,                 // the placer site grid, columns square
@@ -96,6 +99,9 @@ const N = {
     FUNGUS: 0x6e10, FUNGUS_CELL: 0x6e11,
     GOLD: 0x6e20, GOLD_CELL: 0x6e21,
     PLACER: 0x6e30, PLACER_CELL: 0x6e31,
+    IRON: 0x6e40, COPPER: 0x6e41, SULFUR: 0x6e42, SALT: 0x6e43, CINNABAR: 0x6e44,
+    LITHIUM: 0x6e45, URANIUM: 0x6e46, TUNGSTEN: 0x6e47, PIPE: 0x6e48,
+    GALLERY: 0x6e49, VAULT: 0x6e4a, GROTTO: 0x6e4b,
   },
 };
 if (N.floats.FUNGUS_R_MAX > N.ints.FUNGUS_MARGIN) throw new Error('nature: fungus patches reach past their site cell');
@@ -131,8 +137,113 @@ bool natGoldVein(int x, int y, int z) {
   if (along >= 1.0 || abs(across) > NAT_GOLD_HALF * (1.0 - along)) return false;
   return thUnit(thKey(thHash2(x, z, NAT_SALT_GOLD_CELL), y)) < NAT_GOLD_SHARE;
 }
-// the element after the gold: veins only in the basement (the strata's ROCK)
-int natMineral(int x, int y, int z, int id) { return id == E_ROCK && natGoldVein(x, y, z) ? E_GOLD : id; }
+// Tabular sideritic ironstone: compact patches along the base of a coal
+// seam. Use the same bedding gate on exposed walls and in the interior.
+bool natIronPod(int x, int y, int z) {
+  int sx = thDiv(x, NAT_IRON_CELL), sz = thDiv(z, NAT_IRON_CELL);
+  uint h = thHash2(sx, sz, NAT_SALT_IRON);
+  if (thUnit(thKey(h, NAT_K_CHANCE)) >= 0.6) return false;
+  int dx = x - sx * NAT_IRON_CELL - thRange(thKey(h, NAT_K_X), 2, NAT_IRON_CELL - 3);
+  int dz = z - sz * NAT_IRON_CELL - thRange(thKey(h, NAT_K_Z), 2, NAT_IRON_CELL - 3);
+  return dx * dx + dz * dz <= thRange(thKey(h, NAT_K_R), 2, 4)
+      && stUnderCoal(float(x) + 0.5, float(y) + 0.5, float(z) + 0.5, 2.4);
+}
+
+// One pinched lens per occupied hash cell, adapted from natGoldVein. The
+// direction is one of four strikes; tilt 0 is bedding, 0.25 nearly vertical,
+// and 1 diagonal (pegmatites). No new noise fields or octaves.
+bool natLens(int x, int y, int z, uint salt, int grid, int r, float halfWidth, float tilt, float chance) {
+  int sx = thDiv(x, grid), sy = thDiv(y, grid), sz = thDiv(z, grid);
+  uint h = thKey(thHash2(sx, sz, salt), sy);
+  if (thUnit(thKey(h, NAT_K_CHANCE)) >= chance) return false;
+  int hi = grid - 1 - r;
+  int dx = x - sx * grid - thRange(thKey(h, NAT_K_X), r, hi);
+  int dy = y - sy * grid - thRange(thKey(h, NAT_K_Y), r, hi);
+  int dz = z - sz * grid - thRange(thKey(h, NAT_K_Z), r, hi);
+  int d2 = dx * dx + dy * dy + dz * dz;
+  if (d2 >= r * r) return false;
+  int strike = thRange(thKey(h, NAT_K_AZIMUTH), 0, 3);
+  float cross = strike == 0 ? float(dx) : (strike == 1 ? float(dz) : 0.707107 * float(dx + (strike == 2 ? dz : -dz)));
+  float normal = tilt == 0.0 ? float(dy) : cross + tilt * float(dy);
+  return abs(normal) <= halfWidth * (1.0 - thFdiv(float(d2), float(r * r)));
+}
+
+// Dry per the local cave water table AND surface water/lakes; include edges
+// and corners (the prepass supplies one extra cell in each horizontal axis).
+bool natDry(int x, int y, int z, bool sulfur) {
+  if (caveLakeClear(x, z)) return false;
+  for (int j = -1; j <= 1; j++)
+    for (int k = -1; k <= 1; k++)
+      for (int i = -1; i <= 1; i++) {
+        if (i == 0 && j == 0 && k == 0) continue;
+        int n = islandCellBare(x + i, y + j, z + k);
+        if (n == E_WATER || (sulfur && (n == E_COAL || n == E_FIRE))) return false;
+      }
+  return true;
+}
+
+// A face on a buried cave, rather than merely sticking out of a cliff.
+bool natCaveWall(int x, int y, int z, bool wet) {
+  for (int i = 0; i < 6; i++) {
+    int qx = x + natFace(i, 0), qy = y + natFace(i, 1), qz = z + natFace(i, 2);
+    if (qy >= genTop(qx, qz)) continue;
+    int n = islandCellBare(qx, qy, qz);
+    if (n == E_EMPTY || (wet && (n == E_WATER || n == E_CRYSTAL))) return true;
+  }
+  return false;
+}
+
+// Kimberlite diatremes: rare narrow volcanic columns widening upward.
+// A pipe has one small diamond string and discontinuous, heatless embers.
+int natKimberlite(int x, int y, int z, int sea) {
+  if (y < CAVE_BOTTOM || y > sea + 5) return E_ROCK;
+  int sx = thDiv(x, NAT_PIPE_CELL), sz = thDiv(z, NAT_PIPE_CELL);
+  uint h = thHash2(sx, sz, NAT_SALT_PIPE);
+  if (thUnit(thKey(h, NAT_K_CHANCE)) >= 0.19) return E_ROCK;
+  int lo = NAT_PIPE_MARGIN, hi = NAT_PIPE_CELL - 1 - lo;
+  int dx = x - sx * NAT_PIPE_CELL - thRange(thKey(h, NAT_K_X), lo, hi);
+  int dz = z - sz * NAT_PIPE_CELL - thRange(thKey(h, NAT_K_Z), lo, hi);
+  int r2 = y >= sea - 4 ? 9 : 5;
+  if (dx * dx + dz * dz > r2 || genTop(x, z) - y < CAVE_ROOF) return E_ROCK;
+  int gem = thRange(thKey(h, NAT_K_Y), CAVE_BOTTOM + 1, max(CAVE_BOTTOM + 1, sea - 5));
+  if (dx == 0 && dz == 0 && y >= gem && y < gem + thRange(thKey(h, NAT_K_R), 1, 3)) return E_DIAMOND;
+  if (dx == 1 && dz == 0 && thUnit(thKey(h, thDiv(y, 5) + 16)) < 0.38) return E_EMBER;
+  return E_BASALT;
+}
+
+int natMineral(int x, int y, int z, int id) {
+  int sea = natSea();
+  if (id == E_ROCK) {
+    if (natGoldVein(x, y, z)) return E_GOLD;
+    int pipe = natKimberlite(x, y, z, sea);
+    if (pipe != id) return pipe;
+    if (y <= sea + 2 && natLens(x, y, z, NAT_SALT_TUNGSTEN, 18, 4, 1.4, 0.4, 0.13)) return E_TUNGSTEN_ORE;
+    if (y <= sea + 6 && natLens(x, y, z, NAT_SALT_URANIUM, 17, 5, 1.65, 0.4, 0.66)
+        && genTop(x, z) - y >= 16 && (natCaveWall(x, y, z, true)
+          || natLens(x, y, z, NAT_SALT_URANIUM, 17, 5, 1.65, 0.4, 0.21))) return E_URANIUM_ORE;
+    if (y >= sea + 2 && natLens(x, y, z, NAT_SALT_LITHIUM, 13, 4, 2.2, 1.0, 0.65) && natDry(x, y, z, false)) return E_LITHIUM_ORE;
+  } else if (id == E_LIMESTONE) {
+    if (natLens(x, y, z, NAT_SALT_COPPER, 13, 5, 1.55, 0.32, 0.75)
+        && (stHeight(float(x) + 0.5, float(y) + 0.5, float(z) + 0.5) < STRATA_BASEMENT_TOP + 8.0
+          || natLens(x, y, z, NAT_SALT_COPPER, 13, 5, 1.55, 0.32, 0.35))) return E_COPPER_ORE;
+    if (natLens(x, y, z, NAT_SALT_CINNABAR, 15, 5, 0.8, 0.20, 0.24)) return E_CINNABAR;
+    if (y >= sea + 2) {
+      bool vault = caveRegion(x, z) == CAVE_VAULT && genTop(x, z) - y >= 12;
+      bool crust = thUnit(thHash2(x, z, NAT_SALT_VAULT)) < 0.16;
+      bool vaultWall = vault && y >= sea + 4 && natCaveWall(x, y, z, false);
+      if (((vaultWall && crust) || (natLens(x, y, z, NAT_SALT_SULFUR, 10, 3, 1.7, 0.0, 0.66) && natCaveWall(x, y, z, false)))
+          && natDry(x, y, z, true)) return E_SULFUR;
+      if (y >= sea + 4 && (vaultWall || natLens(x, y, z, NAT_SALT_SALT, 12, 4, 1.3, 0.0, 0.42))
+          && natDry(x, y, z, false)) return E_ROCK_SALT;
+    }
+  } else if (id == E_SANDSTONE) {
+    if (natIronPod(x, y, z)) return E_IRON_ORE;
+  } else if (id == E_COAL && caveRegion(x, z) == CAVE_GALLERY && genTop(x, z) - y >= 12) {
+    uint h = thHash2(thDiv(x, 4), z, NAT_SALT_GALLERY);
+    if (thUnit(h) < 0.42 && islandCellBare(x, y - 1, z) == E_EMPTY) return E_EMBER;
+  }
+  return id;
+}
 
 // ---- placer gold: a site per PLACER_CELL square of columns (some empty)
 // holds a placer PLACER_R across; in it, a bed cell of basement under cave
@@ -180,14 +291,16 @@ bool natLit(int x, int y, int z) {
 // ---- fungus patches: a site per FUNGUS_CELL cube (some empty), a ragged
 // ball around it (as caves.js caveCrystal's)
 bool natFungusPatch(int x, int y, int z) {
-  int sx = thDiv(x, NAT_FUNGUS_CELL), sy = thDiv(y, NAT_FUNGUS_CELL), sz = thDiv(z, NAT_FUNGUS_CELL);
-  uint h = thKey(thHash2(sx, sz, NAT_SALT_FUNGUS), sy);
-  if (thUnit(thKey(h, NAT_K_CHANCE)) >= NAT_FUNGUS_CHANCE) return false;
-  int lo = NAT_FUNGUS_MARGIN, hi = NAT_FUNGUS_CELL - 1 - NAT_FUNGUS_MARGIN;
-  float ox = float(x - sx * NAT_FUNGUS_CELL - thRange(thKey(h, NAT_K_X), lo, hi));
-  float oy = float(y - sy * NAT_FUNGUS_CELL - thRange(thKey(h, NAT_K_Y), lo, hi));
-  float oz = float(z - sz * NAT_FUNGUS_CELL - thRange(thKey(h, NAT_K_Z), lo, hi));
-  float R = mix(NAT_FUNGUS_R_MIN, NAT_FUNGUS_R_MAX, thUnit(thKey(h, NAT_K_R)));
+  bool grotto = y <= natSea() + 16 && caveRegion(x, z) == CAVE_GROTTO;
+  int size = grotto ? NAT_GROTTO_CELL : NAT_FUNGUS_CELL;
+  int sx = thDiv(x, size), sy = thDiv(y, size), sz = thDiv(z, size);
+  uint h = thKey(thHash2(sx, sz, grotto ? NAT_SALT_GROTTO : NAT_SALT_FUNGUS), sy);
+  if (thUnit(thKey(h, NAT_K_CHANCE)) >= (grotto ? 0.85 : NAT_FUNGUS_CHANCE)) return false;
+  int lo = grotto ? NAT_GROTTO_MARGIN : NAT_FUNGUS_MARGIN, hi = size - 1 - lo;
+  float ox = float(x - sx * size - thRange(thKey(h, NAT_K_X), lo, hi));
+  float oy = float(y - sy * size - thRange(thKey(h, NAT_K_Y), lo, hi));
+  float oz = float(z - sz * size - thRange(thKey(h, NAT_K_Z), lo, hi));
+  float R = mix(grotto ? 6.0 : NAT_FUNGUS_R_MIN, grotto ? float(NAT_GROTTO_MARGIN) : NAT_FUNGUS_R_MAX, thUnit(thKey(h, NAT_K_R)));
   float reach = R * mix(NAT_FUNGUS_RAGGED, 1.0, thUnit(thKey(thHash2(x, z, NAT_SALT_FUNGUS_CELL), y)));
   return ox * ox + oy * oy + oz * oz < reach * reach;
 }
@@ -236,7 +349,9 @@ int natGrower(int x, int y, int z, int id) {
     if (n < 0) {
       if (!natBed(natMineral(x, y, z, j))) return NAT_NONE;
     } else if (k >= 0) {
-      if (natBed(j)) return NAT_NONE;
+      // The prepass can now also supply basalt, itself a moss bed. The
+      // ore moss beds all replace members of natBed, already rejected here.
+      if (natBed(j) || j == E_BASALT) return NAT_NONE;
     } else {
       bool carved = qy < genTop(qx, qz);
       if (j == E_EMPTY) open += natBit(i);
@@ -254,8 +369,9 @@ int natGrower(int x, int y, int z, int id) {
 // growers down to the water's top row.
 int islandNature(int x, int y, int z, int id) {
   int m = natMineral(x, y, z, id);
-  if (m != id) return m;
+  if (m == E_GOLD) return m;
   if (natPlacer(x, y, z, id)) return E_NUGGETS;
+  if (m != id) return m;
   int sea = natSea();
   int down = y >= sea - 1 && y <= sea + NAT_WET_RISE ? y - (sea - 1) : 0;
   int kind = NAT_NONE;

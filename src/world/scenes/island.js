@@ -5,11 +5,12 @@ import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL, vec4s, preMainWGSL, preReadWGSL, PRE_MARGIN } from './sceneGpu.js';
 import { MAX_FOOT } from '../../constructions/runtime.js';
 import {
-  worldParams, heightAt, islandTwin, WORLD_SEED, islandParamValues, islandDefinesGLSL, islandDefinesTypes, treesIn,
+  worldParams, islandTwin, WORLD_SEED, islandParamValues, islandDefinesGLSL, islandDefinesTypes, treesIn,
   ISLAND_COLUMN_SRC, ISLAND_CELL_SRC, ISLAND_HEAD_GLSL, COLUMN_MARGIN,
 } from '../generator.js';
 import { landforms } from '../island/landforms.js';
-import { STRUCT_GLSL, STRUCT_FIELDS, structureWords, disposeStructureTextures, structuresReady } from '../structures.js';
+import { STRUCT_GLSL, STRUCT_FIELDS, structureWords, disposeStructureTextures, structuresReady, hasIslandStructures, islandStart } from '../structures.js';
+export { ISLAND_VIEW_XZ } from '../structures.js';
 import { bakeFor } from '../bake.js';
 
 // The island: the generator's own world (world/generator.js), an ordinary
@@ -29,20 +30,11 @@ import { bakeFor } from '../bake.js';
 //   - its trees (scene.trees): treesIn on the CPU, which the window stamps as
 //     constructions, and the far field's GPU twin of its candidates;
 //   - its structures (world/structures.js): houses, villages, docks, towers,
-//     placed from the seed and drawn by sceneCell over its own cells (the
-//     World's island has them, P.structures; the box's Island preset doesn't),
-//     from the scene's data after the columns.
+//     placed from the seed and drawn by sceneCell over its own cells, from the
+//     scene's data after the columns. Island and Islet share the cave layer.
 // The box's Island preset is the same scene over a world the size of the box,
 // with snow (world/gpu.js IslandGenerator).
 
-// It starts where the most is going on: on the shore the god view looks from
-// (app.js WORLD_VIEW_DIR, across x and z), the sea in front, then beach,
-// meadows and trees, and the hills behind. Found by walking from the island's
-// centre toward the camera to the waterline, START_STEP at a time, then this
-// share of the window's width back inland.
-export const ISLAND_VIEW_XZ = [11, 13];   // the god view's direction across the ground (app.js WORLD_VIEW_DIR's x, z)
-const START_STEP = 16;                    // cells per step of the walk (a window step, world/window.js WIN_STEP)
-const START_INLAND = 0.25;                // share of the window's width inland from the waterline
 const START_WIN = [128, 128];             // the World's window, x and z (app.js WORLDS.world.win): its shrine is placed near its start
 // Far field chunks a frame while it builds (world/far.js): the island's cells
 // cost a texel fetch or a few, so its 256 chunks (~0.3–0.6 ms of GPU each, M5)
@@ -229,17 +221,11 @@ export const island = {
   bake: { size: columnsSize, code: islandColumnFrag, workgroup: ISLAND_BAKE_WORKGROUP },
   // (nature reads a cell's neighbours; a structure's footing the island up to
   // MAX_FOOT cells above and below the cell it decides)
-  pre: { code: islandPreFrag, margin: (P) => [PRE_MARGIN, P.structures ? Math.max(PRE_MARGIN, MAX_FOOT) : PRE_MARGIN, PRE_MARGIN] },
+  pre: { code: islandPreFrag, margin: (P) => [PRE_MARGIN, hasIslandStructures(P) ? Math.max(PRE_MARGIN, MAX_FOOT) : PRE_MARGIN, PRE_MARGIN] },
   // the structures, off the main thread where there's a worker
   prepare: (P) => structuresReady(P),
   dispose() { disposeStructureTextures(); },
-  start(P, win) {
-    const len = Math.hypot(...ISLAND_VIEW_XZ), d = ISLAND_VIEW_XZ.map((v) => v / len);
-    const at = (r) => [P.center[0] + d[0] * r, P.center[1] + d[1] * r];
-    let r = 0;
-    while (r < Math.max(P.size[0], P.size[2]) / 2 && heightAt(...at(r), P) >= P.sea) r += START_STEP;
-    return at(r - START_INLAND * Math.max(...win));
-  },
+  start: islandStart,
   // the top of the topmost ground or water in the column, as islandCell makes it
   ground(x, z, P) {
     const T = islandTwin(P), xi = Math.floor(x), zi = Math.floor(z);

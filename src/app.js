@@ -993,21 +993,26 @@ function loadPreset(name, undoable = true) {
     hud.toast(`${notYet(sceneLabel(name))}. Here is the Lab instead`, { kind: 'error' });
     name = 'lab';
   }
+  let sceneEntry;
   if (undoable && mapKind.sceneUndo) {
-    // Scene undo must restore registered machines and conserved pump cargo,
-    // not just their physical decks. Ordinary brush snapshots stay terrain-only.
+    // Scene undo must restore shrine offers, registered machines and conserved
+    // pump cargo, not just their cells. Brush snapshots stay terrain-only.
     let industry;
-    try { if (ctx.industry) industry = { preset: settings.preset, data: ctx.industry.toJSON() }; }
+    try { if (ctx.industry) industry = ctx.industry.toJSON(); }
     catch (error) { hud.toast(error.message); return false; }
     sim.snapshot(sceneLabel(name));
+    sceneEntry = sim.history.at(-1);
     const scenePlaques = ctx.getScenePlaques();
-    if (industry || scenePlaques) sim.history.at(-1).note = {
-      ...(industry ? { industry } : {}),
-      ...(scenePlaques ? { scenePlaques: { preset: settings.preset, records: decodeScenePlaques(scenePlaques) } } : {}),
+    sceneEntry.note = {
+      preset: settings.preset,
+      perkOrbs: perkOrbs?.toJSON() ?? [],
+      scenePlaques: scenePlaques ? decodeScenePlaques(scenePlaques) : null,
+      industry,
     };
   }
   shapeDrag = pendingShape = null;
   clearCheckpoint();
+  wire('world')?.cancelIsland();
   settings.preset = name;
   savedScenePlaques = null;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
@@ -1016,13 +1021,15 @@ function loadPreset(name, undoable = true) {
   if (!mapKind.presets && !mp.replica) wire('world').loadScene(ctx);
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
-    if (mp.replica) return;
+    if (mp.replica || settings.preset !== name) return;
     let sceneBuild = null;
     if (!mapKind.presets) { /* loaded above */ }
     else if (name === 'empty') sim.clear();
     // (the Islet fills on the GPU, from the island scene: world/gpu.js loadIsland's world P. Its sea past
     // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
-    else if (name === 'island') wire('world').loadIsland(ctx)?.then((P) => { if (P && mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P); });
+    else if (name === 'island') wire('world').loadIsland(ctx, sceneEntry, (P) => {
+      if (mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P);
+    })?.catch(stopGraphics);
     else sceneBuild = buildPreset(name, sim);
     arenaLayout = mapKind.presets && name in ARENA_PRESETS ? sceneBuild : null;
     resetSimModes();
@@ -2037,14 +2044,11 @@ async function undo() {
     if (shrine) perkOrbs?.removeShrine(shrine);
     if (note?.scene || note?.industry || note?.scenePlaques) clearCheckpoint();
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
-    if (note?.industry) {
-      settings.preset = note.industry.preset;
-      ctx.industry?.fromJSON(note.industry.data);
-      save();
-    }
-    if (note?.scenePlaques) {
-      settings.preset = note.scenePlaques.preset;
-      savedScenePlaques = decodeScenePlaques(note.scenePlaques.records);
+    if (note?.perkOrbs) {
+      settings.preset = note.preset;
+      savedScenePlaques = note.scenePlaques;
+      if (note.industry) ctx.industry?.fromJSON(note.industry);
+      perkOrbs?.fromJSON(note.perkOrbs, { preserveShrineIds: true });
       save();
     }
     pov?.worldReplaced();

@@ -251,6 +251,10 @@ export function createPov(app) {
   }
   const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({
     active: active(), player, toolbelt, sprintMusic: app.settings.sprintMusic,
+    // World and Box both use the same cached player.cellAt probe for ambience.
+    caveActive: live() && !figureShown && !vehicles.seated && !village.bus.holding &&
+      !(app.mp.replica && (app.mp.stale || networkPending)),
+    paused: app.settings.paused,
   }) });
   connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
   announceMatches();            // ...and calls the matches' moments

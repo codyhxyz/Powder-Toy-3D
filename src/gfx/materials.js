@@ -493,6 +493,32 @@ const LOOKS = {
   NOITA_VAULT: { alb: uiColour('NOITA_VAULT'), tex: 'dark_rock', texVary: true },
   NOITA_TEMPLE: { alb: uiColour('NOITA_TEMPLE'), tex: 'sandstone_cracks', texVary: true },
   NOITA_LUSH: { alb: uiColour('NOITA_LUSH'), tex: 'forest_leaves_02', texVary: true },
+  // Ores keep the procedural crags: bedding and weathering break up the
+  // colour, and smoother fracture faces catch local lights. The glint share
+  // is for discrete sunlight facets; lamps use the regular specular lobe.
+  IRON_ORE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.56, alb: '#874c3e', glint: 0.55, surf: 'CRAG',
+    crag: { relief: 1.1, pits: 0.2, bands: 2.1, stain: 1.4 } },
+  // Bare copper F0, rounded from the optical constants of Johnson & Christy
+  // (Phys. Rev. B 6, 4370, 1972); fresh fragments have a duller, hazier polish.
+  COPPER: { rough: 0.28, metal: 1, alb: [0.95, 0.64, 0.54], surf: 'BRUSHED', brushed: { aniso: 1, scale: 0, wear: 0.8 } },
+  COPPER_ORE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.48, alb: '#437a62', glint: 0.72, surf: 'CRAG',
+    crag: { relief: 1.05, pits: 0.3, bands: 2.5, stain: 1.7 } },
+  COPPER_SCRAP: { rough: 0.47, metal: 1, alb: [0.81, 0.48, 0.34], glint: 0.73, surf: 'POLISHED', polished: { wave: 4, haze: 2 } },
+  SULFUR: { ch: 'ORGANIC', rough: 0.42, alb: '#dfbf28', sss: 0.12, glint: 0.6, surf: 'CRAG',
+    crag: { relief: 0.8, pits: 0, bands: 0.6, stain: 0.15 } },
+  SULFUR_DUST: { rough: 0.67, alb: '#e9cf4a', sss: 0.22, glint: 0.45 },
+  ROCK_SALT: { ch: 'ORGANIC', rough: 0.39, ior: 1.544, alb: '#e1dcd0', sss: 0.23, glint: 0.8, surf: 'CRAG',
+    crag: { relief: 0.85, pits: 0.15, bands: 1.4, stain: 0.12 } },
+  CINNABAR: { ch: 'ORGANIC', rough: 0.43, alb: '#a72b20', glint: 0.65, surf: 'CRAG',
+    crag: { relief: 1, pits: 0.1, bands: 1.45, stain: 0.35 } },
+  CINNABAR_DUST: { rough: 0.56, alb: '#b93728', glint: 0.52 },
+  LITHIUM_ORE: { ch: 'ORGANIC', rough: 0.41, ior: 1.66, alb: '#b4a3be', glint: 0.76, surf: 'CRAG',
+    crag: { relief: 0.82, pits: 0.05, bands: 1.8, stain: 0.3 } },
+  URANIUM_ORE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.47, alb: '#383c32', glint: 0.55, surf: 'CRAG',
+    crag: { relief: 1.15, pits: 0.2, bands: 0.4, stain: 0.35 } },
+  TUNGSTEN_ORE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.47, alb: '#4e4038', glint: 0.68, surf: 'CRAG',
+    crag: { relief: 1.15, pits: 0.1, bands: 1.35, stain: 0.55 } },
+  WOLFRAM_DUST: { rough: 0.56, alb: '#67594e', glint: 0.62 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).

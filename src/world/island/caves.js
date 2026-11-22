@@ -98,6 +98,13 @@ const C = {
     CRYSTAL_CELL: 14,       // the crystal site grid, cells cube
     CRYSTAL_MARGIN: 5,      // ...centres this far inside (at least the largest cluster: CRYSTAL_R_MAX)
     TREE_CLEAR: 3,          // trees stand at least this many columns from an open cave (caveOpenNear: the widest root flare)
+    REGION_CELL: 36,        // cavern biomes: one biome per group of columns
+    GROTTO: 0, VAULT: 1, GALLERY: 2, KARST: 3,
+    SEALED_CELL: 24,        // mutually exclusive geode/reservoir sites, in cubes
+    SEAL: 2,                // Chebyshev clearance: includes diagonal fluid moves
+    BELL_CELL: 16,
+    BELL_RADIUS: 4,
+    BELL_RISE: 4,
     VALUE: 0,               // caveNoise2 / caveNoise3: return the noise's value...
     DIST: 1,                // ...or its (value - shift) over its gradient's length: a distance, cells
     // parameter streams of a site's hash (thKey)
@@ -188,6 +195,7 @@ const C = {
     SHAFT: 0x5c70,
     SPELEO: 0x5c80,
     CRYSTAL: 0x5c90, CRYSTAL_CELL: 0x5c91,
+    REGION: 0x5ca0, SEALED: 0x5cb0, BELL: 0x5cc0,
   },
 };
 if (C.floats.SPELEO_R_MAX > C.ints.SPELEO_MARGIN) throw new Error('caves: speleothem bases reach past their site cell');
@@ -453,7 +461,7 @@ bool cavePowderNear(int x, int y, int z) {
 // its standing water's level, which says only where mouths and shafts may open
 // (dry land): the caves' own water table is the sea's (uGenSea), whatever a
 // lake's level.
-int islandCave(int x, int y, int z, float ground, float water, int id) {
+int caveOrdinary(int x, int y, int z, float ground, float water, int id) {
   if (y < CAVE_BOTTOM || id == E_EMPTY || id == E_WATER || id == E_SAND || id == E_SNOW) return id;
   if (caveLakeClear(x, z)) return id;
   float G = float(thRound(ground)), sea = uGenSea, py = float(y) + 0.5;
@@ -476,6 +484,121 @@ int islandCave(int x, int y, int z, float ground, float water, int id) {
   }
   if (f >= 0.0 || cavePowderNear(x, y, z)) return id;
   return float(y) < sea ? E_WATER : E_EMPTY;
+}
+
+// Regional cavern character, independent of the Perlin fields.
+int caveRegion(int x, int z) {
+  uint h = thHash2(thDiv(x, CAVE_REGION_CELL), thDiv(z, CAVE_REGION_CELL), CAVE_SALT_REGION);
+  return thRange(h, 0, 7);  // half the regions keep ordinary caves
+}
+
+// As with the existing crystal sites, carve only inside a site's own grid
+// cell. Test a whole footprint before placing anything: every column of the
+// reserve must have a full rock roof, be clear of standing water and lakes,
+// and keep the feature (not its enclosing rock) inside the correct stratum.
+// The ordinary caves yield to that reserve, so even a winding tunnel cutting
+// across a corner cannot puncture a shell. Do not choose a site centered in
+// an existing cavern. All queries here use the column bake, not the prepass.
+int caveSealed(int x, int y, int z, int id) {
+  int sx = thDiv(x, CAVE_SEALED_CELL), sy = thDiv(y, CAVE_SEALED_CELL), sz = thDiv(z, CAVE_SEALED_CELL);
+  uint h = thKey(thHash2(sx, sz, CAVE_SALT_SEALED), sy);
+  float chance = thUnit(thKey(h, CAVE_K_CHANCE));
+  if (chance >= 0.30) return -1;
+  bool geode = chance < 0.07, oil = chance >= 0.07 && chance < 0.15;
+  int r = geode ? thRange(thKey(h, CAVE_K_R), 4, 6) : (oil ? 3 : 2);
+  int ry = geode ? r : (oil ? 2 : 1);
+  int span = r + CAVE_SEAL, rise = ry + CAVE_SEAL;
+  int cx = sx * CAVE_SEALED_CELL + thRange(thKey(h, CAVE_K_X), span, CAVE_SEALED_CELL - 1 - span);
+  int cz = sz * CAVE_SEALED_CELL + thRange(thKey(h, CAVE_K_Z), span, CAVE_SEALED_CELL - 1 - span);
+  int base = sy * CAVE_SEALED_CELL;
+  int high = CAVE_SEALED_CELL - 1 - rise;
+  if (CAVE_BOTTOM + ry > base + high) return -1;
+  int cy = max(CAVE_BOTTOM + ry, base + thRange(thKey(h, CAVE_K_Y), rise, high));
+  int dx = x - cx, dy = y - cy, dz = z - cz;
+  if (abs(dx) > span || abs(dy) > rise || abs(dz) > span || cy - rise < 0) return -1;
+  // Keep even a clipped grid site wholly in the world, not against its wall.
+  if (cx - span < 0 || cz - span < 0 || float(cx + span + 1) > 2.0 * uGenCenterX
+      || float(cz + span + 1) > 2.0 * uGenCenterZ) return -1;
+  float gx = float(cx) + 0.5, gz = float(cz) + 0.5;
+  float ground = genColHeight(cx, cz), water = genColWater(cx, cz);
+  int host = islandRock(cx, cy, cz, ground);
+  if (geode ? host != E_ROCK : (oil ? host != E_SANDSTONE && host != E_LIMESTONE : host != E_SANDSTONE)) return -1;
+  if (!geode && !oil && !stUnderCoal(gx, float(cy) + 0.5, gz, 11.0)) return -1;
+  int roof = geode ? CAVE_CHEESE_ROOF : CAVE_ROOF;
+  if (genTop(cx, cz) - cy <= rise + roof || caveOrdinary(cx, cy, cz, ground, water, host) != host) return -1;
+  for (int j = -span; j <= span; j++) {
+    for (int i = -span; i <= span; i++) {
+      int qx = cx + i, qz = cz + j;
+      int top = genTop(qx, qz);
+      if (top <= cy + rise + CAVE_ROOF || genColWater(qx, qz) > float(top) || caveLakeClear(qx, qz)) return -1;
+      int h2 = i * i + j * j;
+      if (h2 > r * r) continue;
+      int extent = ry;
+      if (geode) extent = int(floor(sqrt(float(r * r - h2))));
+      float qxf = float(qx) + 0.5, qzf = float(qz) + 0.5;
+      // All heights between these limits are in this host: basement and
+      // limestone are single intervals; for a coal measure also rule out an
+      // intervening seam (the pocket itself is only 3-5 cells high).
+      float s = stHeight(qxf, float(cy - extent) + 0.5, qzf);
+      for (int k = 0; k <= 2 * extent; k++) {
+        if (stElement(stUnitAt(qxf, qzf, s + float(k))) != host) return -1;
+        if (host == E_ROCK || host == E_LIMESTONE) {
+          if (stElement(stUnitAt(qxf, qzf, s + float(2 * extent))) != host) return -1;
+          break;
+        }
+      }
+    }
+  }
+  int d2 = dx * dx + dy * dy + dz * dz;
+  if (!geode) {
+    // A low oil dome or a smaller flattened firedamp pod, both completely
+    // filled: no empty cell at any face, edge or corner of the fluid.
+    int disk = dx * dx + dz * dz;
+    if (disk * ry * ry + dy * dy * r * r <= r * r * ry * ry) return oil ? E_OIL : E_PROPANE;
+    return id;
+  }
+  if (d2 > r * r) return id;
+  int inner = r - 2;
+  bool pool = thUnit(thKey(h, CAVE_K_MITE)) < 0.5;
+  int fill = 1 - inner;
+  if (pool && dy < fill) return E_BASALT;  // solid cup floor, including the diagonals
+  if (d2 <= inner * inner) return pool && dy == fill ? E_HEALTHIUM : E_EMPTY;
+  if (d2 > (inner + 1) * (inner + 1)) return E_BASALT;
+  if (!pool && dz == 0 && dy == inner + 1 && dx == 0 && thUnit(thKey(h, CAVE_K_TITE)) < 0.5) return E_DIAMOND;
+  // No exposed air beside the geode anywhere except its sealed interior.
+  return E_CRYSTAL;
+}
+
+// An air bell extends upward from a known flooded limestone cell. Keep a
+// full roof and stay clear of the lake system, just like ordinary caves.
+int caveAirBell(int x, int y, int z, int id) {
+  int sea = thRound(uGenSea), dy = y - sea;
+  if (id != E_LIMESTONE || dy < 0 || dy > CAVE_BELL_RISE || genTop(x, z) - y <= CAVE_ROOF) return id;
+  int sx = thDiv(x, CAVE_BELL_CELL), sz = thDiv(z, CAVE_BELL_CELL);
+  uint h = thHash2(sx, sz, CAVE_SALT_BELL);
+  if (thUnit(thKey(h, CAVE_K_CHANCE)) >= 0.65) return id;
+  int lo = CAVE_BELL_RADIUS, hi = CAVE_BELL_CELL - 1 - lo;
+  int cx = sx * CAVE_BELL_CELL + thRange(thKey(h, CAVE_K_X), lo, hi);
+  int cz = sz * CAVE_BELL_CELL + thRange(thKey(h, CAVE_K_Z), lo, hi);
+  int dx = x - cx, dz = z - cz;
+  int d2 = dx * dx + dz * dz + dy * dy, r = CAVE_BELL_RADIUS;
+  if (d2 > r * r || caveRegion(cx, cz) != CAVE_KARST) return id;
+  float G = genColHeight(cx, cz), water = genColWater(cx, cz);
+  if (!caveOpenable(float(genTop(cx, cz)), water) || islandRock(cx, sea - 1, cz, G) != E_LIMESTONE
+      || caveOrdinary(cx, sea - 1, cz, G, water, E_LIMESTONE) != E_WATER || caveSealed(cx, sea - 1, cz, E_LIMESTONE) >= 0) return id;
+  if (d2 < (r - 1) * (r - 1)) return cavePowderNear(x, y, z) ? id : E_EMPTY;
+  return dy >= 2 ? E_CRYSTAL : id;
+}
+
+int islandCave(int x, int y, int z, float ground, float water, int id) {
+  if (y < CAVE_BOTTOM || thRound(ground) - y <= CAVE_ROOF
+      || (id != E_ROCK && id != E_LIMESTONE && id != E_SANDSTONE && id != E_COAL))
+    return caveOrdinary(x, y, z, ground, water, id);
+  int sealed = caveSealed(x, y, z, id);
+  if (sealed >= 0) return sealed;
+  int ordinary = caveOrdinary(x, y, z, ground, water, id);
+  if (ordinary == E_LIMESTONE && !caveLakeClear(x, z)) return caveAirBell(x, y, z, ordinary);
+  return ordinary;
 }
 
 // How open a hillside cave mouth is at world column (x, z): how many of its
