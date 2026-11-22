@@ -106,7 +106,8 @@ export function buildVolcanoTown({ box, set }) {
     if (water) column(x, z, top, WATERLINE, E.WATER);
     if (z >= 120 && Math.abs(x - course(SPILL, z)[0]) < 7 && top === 5) column(x, z, top, 6, E.WATER);
     // Deterministic fir stands on the flanks and reservoir's outer bank.
-    if (x % 7 === 3 && z % 7 === 3 && !lava && !water && !snow && (x < 108 && cone > 24 && cone < 46 && z < 91 || x > 231 && x < NX - 5 && z > 11 && z < 43)) {
+    const gallery = x >= 53 && x < 69 && z >= 46;
+    if (x % 7 === 3 && z % 7 === 3 && !lava && !water && !snow && !gallery && (x < 108 && cone > 24 && cone < 46 && z < 91 || x > 231 && x < NX - 5 && z > 11 && z < 43)) {
       pine(x, top, z, 6 + ((x + z) % 3));
     }
   }
@@ -121,7 +122,7 @@ export function buildVolcanoTown({ box, set }) {
     if (31 - r < 23) column(x, z, 31 - r, 23, E.LAVA, BASALT_MELT);
   }
   box(58, 46, 37, 65, 65, 44, E.EMPTY);
-  box(56, 23, 46, 66, 34, 64, E.EMPTY);
+  box(56, 23, 46, 66, 34, 90, E.EMPTY);
   box(56, 23, 60, 58, 29, 62, E.ROCK);
   box(59, 65, 36, 77, 76, 50, E.ROCK);
   box(61, 66, 38, 76, 75, 49, E.EMPTY);
@@ -194,6 +195,9 @@ export function buildVolcanoTown({ box, set }) {
     box(x, 7, z, x + 1, 14, z + 1, E.WOOD, { appearance: Appearance.LOG_Y });
   }
   for (const z of [103, 107]) box(139, 13, z, 166, 14, z + 1, E.PLANKS, { appearance: Appearance.PLANK_X });
+  // Low landing attached to the river cottage; the piles stand in both flows.
+  box(146, 10, 113, 153, 11, 118, E.PLANKS, { appearance: Appearance.PLANK_X });
+  for (const z of [113, 117]) box(151, 6, z, 152, 10, z + 1, E.WOOD, { appearance: Appearance.LOG_Y });
   for (const [x, y, z] of [[137, 11, 104], [160, 11, 109], [165, 11, 97], [119, 11, 105]]) {
     box(x, y, z, x + 1, y + 6, z + 1, E.WOOD, { appearance: Appearance.LOG_Y });
     set(x, y + 6, z, E.BATTERY);
@@ -235,6 +239,10 @@ export function buildVolcanoTown({ box, set }) {
   magmaSpine(57, 70, 45, 73, 46);
   // Across the vent width, leaving a face of air before each charge pack.
   box(63, 69, 46, 74, 71, 47, E.PCLN, { ctype: E.LAVA });
+  // A shallow pocket of basalt-rich melt at the confluence keeps its own
+  // composition. The lower cascade can overrun it after it crusts over.
+  box(138, 6, 96, 144, 7, 98, E.LAVA, BASALT_MELT);
+  box(138, 7, 96, 144, 8, 98, E.EMPTY);
   for (const [z, x, y] of [[79, 104, 22], [89, 116, 12], [96, 140, 8]]) {
     box(x - 18, y, z - 3, x - 5, y + 4, z + 1, E.ROCK);
     // Low spill steps restart the visible cascade if the upstream flow

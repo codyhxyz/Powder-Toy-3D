@@ -72,10 +72,10 @@ test('bounds, snow-capped stratovolcano and distinct molten chamber and crest', 
   assert.equal(get([61, 66, 34]), E.ROCK);
   assert.equal(get([61, 40, 40]), E.EMPTY);
   assert.equal(get([61, 20, 40]), E.LAVA);
-  assert.equal(get([61, 27, 60]), E.EMPTY);
+  for (let z = 46; z < 90; z++) assert.equal(get([61, 27, z]), E.EMPTY, 'open gallery adit');
   assert.equal(get([67, 75, 44]), E.ROCK);
   assert.equal(get([67, 76, 44]), E.SAND);
-  for (const p of [[61, 20, 40], [66, 66, 45], [39, 24, 72]]) {
+  for (const p of [[61, 20, 40], [66, 66, 45], [39, 24, 72], [140, 6, 96]]) {
     assert.equal(get(p), E.LAVA);
     assert.equal(extra(p).ctype, E.BASALT);
     assert(extra(p).temp > ELEMENTS[E.BASALT].melt);
@@ -117,6 +117,8 @@ test('village has hollow combustible houses, glazing, a crossing and lit streetl
   assert.equal(get([125, 14, 107]), E.GLASS);
   assert.equal(get([129, 14, 112]), E.EMPTY);
   for (let x = 139; x < 166; x++) assert([E.PLANKS, E.WOOD].includes(get([x, 10, 105])));
+  assert.equal(get([151, 6, 113]), E.WOOD);
+  assert.equal(get([151, 10, 113]), E.PLANKS);
   assert.equal(get([160, 17, 109]), E.BATTERY);
   assert.equal(get([160, 17, 110]), E.LAMP);
   assert.equal(extra([160, 17, 110]).ctype, LAMP_DC);
@@ -280,21 +282,21 @@ test('walkable overlook, short unobstructed use rays and attached plaques', () =
     assert.equal(get([x, y - 1, 114]), E.ROCK);
     assert.equal(get([x, y, 114]), E.EMPTY);
   }
-  const ray = p => {
+  const ray = (p, sameFeature = () => false) => {
     const center = add(p, [0.5, 0.5, 0.5]);
     const dir = center.map((v, i) => v - eye[i]), distance = Math.hypot(...dir);
     for (let d = 0; d < distance; d += 0.25) {
       const v = eye.map((n, i) => Math.floor(n + dir[i] * d / distance));
-      if (at(v) === at(p)) break;
+      if (at(v) === at(p) || sameFeature(v)) break;
       assert.equal(get(v), E.EMPTY, `sightline to ${p} obstructed by ${v}`);
     }
     return distance;
   };
   for (const p of [erupt, dam, stop]) assert(ray(p) <= HAND_REACH);
-  for (const p of [[69, 73, 49], [199, 44, 59], [127, 19, 121]]) {
-    assert.notEqual(get(p), E.EMPTY);
-    ray(p);
-  }
+  ray([69, 73, 49]);
+  ray([199, 40, 64], ([x, y, z]) => x >= 185 && x < 214 && y >= 39 && z === 64 && get([x, y, z]) === E.BRICK);
+  ray([130, 16, 120], ([x, y, z]) => x >= 122 && x <= 136 && z >= 106 && z <= 121 &&
+    [E.PLANKS, E.BRICK].includes(get([x, y, z])));
   assert.deepEqual(decodeScenePlaques(built.plaques), volcanoTownManifest().plaques);
   assert.equal(nearbyPlaques(built.plaques, eye).filter(r => r.normal[2] === 1 && r.cell[2] === 109).length, 4);
   for (const { cell, normal, text } of built.plaques) {
