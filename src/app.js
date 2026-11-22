@@ -38,9 +38,11 @@ import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { sceneEdgeSea, boxEdgeSea, edgeSeaParams } from './gfx/edgeSea.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
-import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
+import { propIndex, parseProp, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS, boxFromCorners, boxShellThickness, lineRadius,
+  nextBuilderMode, builderPress, previewBuilder, builderBox, builderPlanePoint, builderExtrudeGuide, builderExtrudeDepth } from './editing.js';
 import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
+import { builderNote } from './pov/hud.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS, freshPresetKey } from './presets.js';
 import { enterAuthoredMap } from './lab/entry.js';
@@ -986,6 +988,7 @@ function loadPreset(name, undoable = true) {
       ...(scenePlaques ? { scenePlaques: { preset: settings.preset, records: decodeScenePlaques(scenePlaques) } } : {}),
     };
   }
+  shapeDrag = pendingShape = null;
   settings.preset = name;
   savedScenePlaques = null;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
@@ -1050,6 +1053,7 @@ let releasePending = false;   // its button went up before it had: it stops afte
 let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
 let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
 let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
+let toolGunBuilding = false; // its input is live, not behind a menu or unlocked
 let dragY = 0;
 // A big map's god view works where you aim (Minecraft's simulation distance follows the player; an editor's
 // player is its cursor): a press anywhere on the map brings physics' window there (workFocus, world cells
@@ -1060,7 +1064,7 @@ const WORK_FOCUS_RELEASE = 0.5;   // × the window's width: eye travel that hand
 // frame: across a 1024-cell island in about two seconds), then it's dropped and says so.
 const WORK_ARRIVAL_MS = 5000;
 let workFocus = null, workEye = null;
-let parked = null;        // a one-click, fill or shape press waiting for the window: { e, hover (world cells), at, released }
+let parked = null;        // a one-click or fill press waiting for the window: { e, hover (world cells), at }
 let heldCenter = null;    // a click's brush centre (world cells) while its one paint waits for the window
 let heldAt = 0;
 const brushCenter = new THREE.Vector3();
@@ -1176,12 +1180,18 @@ function updateBrush() {
     builds?.update({ hover, active: false });
     return;
   }
-  if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
+  if (shapeDrag && (shapeDrag.sim !== sim || shapeDrag.pov !== !!pov?.active)) shapeDrag = null;
+  if (pov?.active) { updateGunBrush(); return; }
+  if (shapeDrag) {
+    updateShapeDrag();
+    showShapeDrag();
+    return;
+  }
   if (isBrush(settings.tool)) {
     if (painting && releasePending && heldCenter) {
       brushCenter.copy(heldCenter).sub(sim.origin);   // (a click's one paint, waiting for the window: where it was clicked)
       brushValid = true;
-    } else if (painting || shapeDrag) {
+    } else if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
     } else if (hover.valid) {
@@ -1191,14 +1201,9 @@ function updateBrush() {
   }
   // (a big map's god view: the brush goes anywhere on the map; the window follows a stroke, which paints once it's there)
   const aimWorld = worldAim();
-  if (aimWorld && brushValid && (painting || shapeDrag)) workAt(brushCenter.x + sim.origin.x, brushCenter.z + sim.origin.z);
+  if (aimWorld && brushValid && painting) workAt(brushCenter.x + sim.origin.x, brushCenter.z + sim.origin.z);
   if(!mapKind.clampBrush && brushValid && !aimWorld && !inWindow(brushCenter))brushValid=false;
   if (brushValid && mapKind.clampBrush) clampToGrid(brushCenter);
-  if (shapeDrag) {
-    if (brushValid) shapeDrag.end.copy(brushCenter);
-    showShapeDrag();
-    return;
-  }
   brush.set({
     visible: brushValid && pointerInside && !uiHover && !eyedropper,
     position: presentationPoint(brushCenter, tmpV).multiplyScalar(scale).add(volume.position),   // (where the view shows it: a presentation effect bends it)
@@ -1216,12 +1221,12 @@ function planePoint(out) {
 }
 
 // ---------------------------------------------------------------- TPT's editing tools (src/editing.js)
-// Line, box and flood fill (TPT's GameView.cpp UpdateDrawMode): Shift-drag draws
-// a line, Ctrl-drag a box, Ctrl+Shift-click fills. ⌘ stands in for Ctrl, as a
-// Mac's Ctrl-click is a right click. As in TPT the mode is fixed when the button
-// goes down, and a line or box is put down when it comes up; one undo step each.
-// TPT's Alt snaps them to 45°; Alt orbits here, so there's no snapping.
-let shapeDrag = null;   // { kind: 'line' | 'box', start, end (grid cells on the paint plane) } while one is dragged
+// TPT's Shift-drag and Ctrl/⌘-drag are shortcuts for the same builder used by
+// explicit point-and-click modes, including at the Tool Gun's crosshair.
+let shapeDrag = null;   // draft stores world cells, never positions tied to a streamed window
+let pendingShape = null; // a whole selection waiting for the streamed window
+let builderMode = 'freehand', builderHollow = false;
+const BUILDER_NAME = { freehand: 'Freehand', line: 'Line (axis snap)', box: 'Box', hollow: 'Hollow Box' };
 const drawModeOf = (e) => {
   const ctrl = e.metaKey || e.ctrlKey;
   return ctrl && e.shiftKey ? 'fill' : ctrl ? 'box' : e.shiftKey ? 'line' : null;
@@ -1229,44 +1234,139 @@ const drawModeOf = (e) => {
 // TPT's tools (heat, cool, pressure: DEFAULT_TOOL_*) and particles don't flood fill: they paint as usual
 const fills = (tool) => tool >= 0 || tool === ERASE_TOOL || tool === PROP_TOOL;
 
-function startShape(kind) {
-  const start = new THREE.Vector3();
-  if (!planePoint(start)) return false;
-  clampToGrid(start);
-  shapeDrag = { kind, start, end: start.clone(), sim, origin: sim.origin.clone() };
+// Structured voxel modes leave decorations and ray particles in their own
+// painting modes, and leave one-click tools and constructions alone.
+const isVoxelBrush = t => isBrush(t) && t !== LIGHTNING_TOOL && !isDecoTool(t) && rayKindOfTool(t) === RAY_KIND.NONE;
+const gridSize = () => [sim.g.nx, sim.g.ny, sim.g.nz];
+function builderBounds() {
+  if (worldAim()) return { lo: [0, 0, 0], hi: win.size };
+  const lo = sim.origin.toArray();
+  return { lo, hi: gridSize().map((n, i) => n + lo[i]) };
+}
+const containsBounds = (lo, hi, bounds) => lo.every((n, i) => n >= bounds.lo[i] && hi[i] <= bounds.hi[i]);
+const cellPoint = cell => cell.map(v => v + 0.5);
+const localPoint = point => new THREE.Vector3().fromArray(point).sub(sim.origin);
+function shapeAim(inPov) {
+  const ray = inPov ? (aimScreenRay() ? povRay : null) : gridRay();
+  if (!ray) return null;
+  const o = ray.origin.clone().add(sim.origin).toArray(), dir = ray.direction.toArray();
+  return { ray: presentation.active ? inverseRay(o, dir, presentation.parameters) : { C: o, B: dir, A: [0, 0, 0] }, dir };
+}
+function startShape(mode, { secondary = false, pointerId = null } = {}) {
+  const tool = secondary ? ERASE_TOOL : settings.tool;
+  const carve = tool === ERASE_TOOL || (tool >= 0 && settings.specificDelete);
+  if (!hover.valid || (carve && hover.id < 0)) return false;
+  const r = builderPress(mode, null, { carve, cell: hover.cell.clone().add(sim.origin).toArray(), face: hover.face });
+  if (r.action !== 'start') return false;
+  const { draft } = r, povShape = !!pov?.active, aim = shapeAim(povShape);
+  if (!aim || !containsBounds(draft.start, draft.start.map(v => v + 1), builderBounds())) return false;
+  const reach = draft.start.reduce((n, v, i) => n + (v + 0.5 - aim.ray.C[i]) * aim.dir[i], 0);
+  parked = null;
+  shapeDrag = { draft, sim, pov: povShape, pointerId, reach: Math.max(1, reach), tool };
+  workAt(draft.start[0] + 0.5, draft.start[2] + 0.5);
+  builds?.update({ hover, active: false, crosshair: povShape });
+  pacer.wake();
   return true;
 }
-// the line or box ghost while dragging (TPT's RenderLine and RenderRect previews)
-const ghostA = new THREE.Vector3(), ghostB = new THREE.Vector3(), ghostHalf = new THREE.Vector3();
-const toScene = (out, v) => presentationPoint(v, out).multiplyScalar(scale).add(volume.position);   // (as the view shows it)
-function showShapeDrag() {
-  const { kind, start, end } = shapeDrag, color = toolById(settings.tool).color;
-  if (kind === 'line') {
-    brush.setLine({ from: toScene(ghostA, start), to: toScene(ghostB, end), radius: settings.radius * scale, shape: settings.shape, color });
+function updateShapeDrag(aim = shapeAim(shapeDrag.pov)) {
+  if (!aim) return;
+  const d = shapeDrag, { ray, dir } = aim, { draft } = d, { lo, hi } = builderBounds();
+  if (!containsBounds(draft.start, draft.start.map(v => v + 1), { lo, hi })) return;
+  let input;
+  if (draft.phase === 'extrude') {
+    input = { depth: builderExtrudeDepth(draft, d.guide, ray, dir) };
+  } else if (draft.phase === 'footprint' || d.pointerId != null) {
+    // A drag stays on the clicked plane. Explicit Line aims in all three axes.
+    const point = builderPlanePoint(ray, draft.axis, draft.plane);
+    if (!point) return;
+    input = { point };
+  } else if (hover.valid) {
+    const p = hover.cell.clone().add(sim.origin);
+    if (!draft.carve) p.add(faceNormal(hover.face));
+    input = { point: cellPoint(p.toArray()) };
   } else {
-    const b = boxFromCorners(start, end, settings.radius, [sim.g.nx, sim.g.ny, sim.g.nz]);
-    brush.setBox({ position: toScene(ghostA, b.center), half: ghostHalf.fromArray(b.half).multiplyScalar(scale), color });
+    // Into open air the same reach follows the aim, allowing an upright line
+    // even without an opposite surface (like a freehand Tool Gun pour).
+    input = { point: rayPoint(ray, d.reach) };
+  }
+  d.draft = previewBuilder(draft, input, lo, hi);
+}
+const ghostA = new THREE.Vector3(), ghostB = new THREE.Vector3(), ghostHalf = new THREE.Vector3();
+const toScene = (out, p) => presentationPoint(localPoint(p), out).multiplyScalar(scale).add(volume.position);
+function showShapeDrag() {
+  const { draft, tool } = shapeDrag, { kind, start, end, hollow } = draft, color = toolById(tool).color;
+  if (kind === 'line') {
+    brush.setLine({ from: toScene(ghostA, cellPoint(start)), to: toScene(ghostB, cellPoint(end)), radius: lineRadius(settings.radius) * scale, shape: settings.shape, color });
+  } else {
+    const b = builderBox(draft, settings.radius);
+    brush.setBox({ position: toScene(ghostA, b.center), half: ghostHalf.fromArray(b.half).multiplyScalar(scale), color, hollow });
   }
 }
-// Put the line or box down (button up).
-function finishShape() {
+function advanceShape(secondary = false) {
   const d = shapeDrag;
-  shapeDrag = null;
-  if (!d) return;
-  if (d.sim !== sim || !d.origin.equals(sim.origin)) { hud.toast('The host area moved; draw the shape again.'); return; }
-  const tool = settings.tool;
-  const stroke = { ...brushStroke(tool), center: d.start, rate: oneShotRate(tool, settings.rate) };
-  if (d.kind === 'line') stroke.end = d.end;
-  else {
-    const b = boxFromCorners(d.start, d.end, settings.radius, [sim.g.nx, sim.g.ny, sim.g.nz]);
-    Object.assign(stroke, { center: new THREE.Vector3().copy(b.center), shape: 1, grow: b.grow });
+  if (!d || d.sim !== sim || d.pov !== !!pov?.active) { shapeDrag = null; return; }
+  const aim = secondary ? null : shapeAim(d.pov);
+  if (aim) updateShapeDrag(aim);
+  if (!aim && !secondary) return;
+  const r = builderPress(builderMode, d.draft, { secondary });
+  if (r.action === 'cancel') shapeDrag = null;
+  else if (r.action === 'extrude') {
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).toArray();
+    d.guide = builderExtrudeGuide(d.draft, aim.ray, aim.dir, up);
+    d.draft = r.draft;
+    d.pointerId = null;
+  } else {
+    shapeDrag = null;
+    finishShape(d);
   }
+  pacer.wake();
+}
+function finishShape({ draft, tool }) {
+  if (mp.replica && !mp.isGuest) { mp.guard(); return; }
+  const radius = settings.radius, line = draft.kind === 'line';
+  const b = line ? boxFromCorners(draft.start, draft.end, radius) : builderBox(draft, radius);
+  const stroke = { ...brushStroke(tool), rate: oneShotRate(tool, settings.rate) };
+  const bounds = builderBounds();
+  if (!containsBounds(b.lo, b.hi, bounds)) { hud.toast('The shape is outside the area you can edit.'); return; }
+  if (line) {
+    stroke.radius = lineRadius(radius);
+    const margin = Math.floor(stroke.radius);
+    b.lo = b.lo.map((v, i) => Math.max(bounds.lo[i], v - margin));
+    b.hi = b.hi.map((v, i) => Math.min(bounds.hi[i], v + margin));
+  } else Object.assign(stroke, { shape: 1, grow: b.grow, shell: draft.hollow ? boxShellThickness(radius) : 0 });
+  if (worldAim()) {
+    const focus = win.focusForBounds(b.lo, b.hi);
+    if (!focus) { hud.toast('This selection won’t fit in one simulation window. Try a smaller shape.'); return; }
+    workAt(...focus);
+  }
+  pendingShape = { sim, draft, stroke, b, at: performance.now() };
+  submitShape();
+}
+function submitShape() {
+  const job = pendingShape;
+  if (!job) return;
+  if (job.sim !== sim) { pendingShape = null; return; }
+  const lo = sim.origin.toArray(), hi = gridSize().map((n, i) => n + lo[i]);
+  if (sim.nativeTransition || !containsBounds(job.b.lo, job.b.hi, { lo, hi })) {
+    if (performance.now() - job.at > WORK_ARRIVAL_MS) { pendingShape = null; hud.toast('The simulation didn’t get to the shape in time. Try again.'); }
+    return;
+  }
+  pendingShape = null;
+  const { draft, stroke, b } = job;
+  stroke.center = localPoint(draft.kind === 'line' ? cellPoint(draft.start) : b.center);
+  if (draft.kind === 'line') stroke.end = localPoint(cellPoint(draft.end));
   if (!mp.isGuest) {
-    sim.snapshot(`${toolById(tool)?.name ?? 'Shape'} ${d.kind}`);   // 'Undone Sand line'
+    sim.snapshot(`${toolById(stroke.tool).name} ${draft.kind}`);
     toolbar.setUndoEnabled(true);
   }
-  paintStroke(stroke);
-  pacer.wake();
+  if (paintStroke(stroke) === false) hud.toast('The simulation couldn’t take the shape. Try again.');
+}
+function shapeReadout(draft = shapeDrag?.draft) {
+  const radius = settings.radius;
+  const size = !draft ? null : draft.kind === 'line'
+    ? draft.start.map((v, i) => Math.abs(v - draft.end[i]) + 2 * radius - 1) : builderBox(draft, radius).size;
+  return { mode: BUILDER_NAME[draft ? (draft.hollow ? 'hollow' : draft.kind) : builderMode], size, radius,
+    phase: draft?.phase, hollow: draft ? draft.hollow : builderHollow, carving: !!draft?.carve };
 }
 
 // Replace mode and specific delete (TPT's REPLACE_MODE and SPECIFIC_DELETE,
@@ -1416,6 +1516,10 @@ function updateGunBrush() {
   const out = toolGunOut;
   toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
   if (!out) painting = false;
+  if (shapeDrag) {
+    if (out && toolGunBuilding) { updateShapeDrag(); showShapeDrag(); return; }
+    shapeDrag = null;
+  }
   const tool = painting ? strokeTool : settings.tool;
   if (out && isBrush(tool)) {
     if (painting && tool >= 0) {
@@ -1487,6 +1591,7 @@ function selectTool(id) {
   if (!isBuild(id)) lastPaintTool = id;
   if (sim && airHeatToolPicked(id) && !settings.ambientHeat) setSimMode('ambientHeat', true, true);
   if (isDecoTool(id) && sim) wire('deco')?.prepare(ctx);   // its passes compile while the colour is picked (src/deco.js)
+  if (id !== settings.tool) shapeDrag = parked = null;
   settings.tool = id;
   const it = toolById(id);
   const accent = accentFor(it.color);
@@ -1582,6 +1687,7 @@ const actions = {
   openSaves: () => { painting = false; launch.openMenu?.({ saves: true }); },
   firstPerson: () => {
     painting = false;
+    shapeDrag = null;
     if (!wire('pov')) { hud.toast(notYet('First person'), { kind: 'error' }); return; }
     pov?.toggle();
   },
@@ -2029,7 +2135,7 @@ function warmThumb(viewId) {
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
 const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
-  && !signs?.editing && !painting && !shapeDrag;
+  && !signs?.editing && !painting && !pendingShape;
 // A grid cell's centre in the scene, where the view shows it.
 const cellInScene = (cell) => presentationPoint(cell.clone().addScalar(0.5)).applyMatrix4(volume.matrixWorld);
 // The wheel with the right button held steps the god view's fly speed (the Camera section's
@@ -2067,6 +2173,11 @@ bindBrushEraseClick(canvasEl, {
 });
 async function eraseClick(e) {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  if (shapeDrag) { advanceShape(true); return; }
+  if (builderMode !== 'freehand' && isVoxelBrush(settings.tool)) {
+    if (!startShape(builderMode, { secondary: true })) hud.toast('Aim at material to start a cut.');
+    return;
+  }
   const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
   const hit = await pickRay(ray.origin, ray.direction, true);
   const cell = hit.valid ? hit.cell.clone() : null;
@@ -2111,17 +2222,29 @@ function press(e) {
     if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     return;
   }
+  if (pendingShape) return;
+  if (shapeDrag) { advanceShape(); return; }
+  const gesture = drawModeOf(e), voxel = isVoxelBrush(settings.tool);
+  const fillMode = gesture === 'fill' && fills(settings.tool);
+  const rayDrag = (gesture === 'box' || gesture === 'line') && rayKindOfTool(settings.tool) !== RAY_KIND.NONE;
+  const mode = gesture === 'box' ? (voxel && builderHollow ? 'hollow' : 'box') : gesture === 'line' ? 'line' : builderMode;
+  if (gesture !== 'fill' && mode !== 'freehand' && (voxel || rayDrag)) {
+    if (settings.tool === PROP_TOOL && !propValue()) { openProp(); return; }
+    const drag = gesture != null;
+    if (!startShape(mode, { pointerId: drag ? e.pointerId : null })) hud.toast('Aim at an editable face to start the shape.');
+    else if (drag && e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);
+    return;
+  }
   if (worldAim()) {
     // a big map: the window comes to the press (workAt); nothing under the cursor (the sky) paints nothing
     if (!hover.valid) return;
     workAt(hover.cell.x + sim.origin.x, hover.cell.z + sim.origin.z);
-    // a click, fill or shape on a spot the window doesn't hold yet waits for it (replayParked); a stroke starts
-    // now and paints once the window is there (the paint gate)
-    const stroke = !drawModeOf(e) && !isOneClick(settings.tool);
+    // One-click tools and fills wait for the window; freehand starts now.
+    const stroke = !fillMode && !isOneClick(settings.tool);
     if (!stroke && !(inWindow(hover.cell) && windowAtRest())) {
       parked = {
         e: { button: 0, shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType, replay: true },
-        hover: { cell: hover.cell.clone().add(sim.origin), face: hover.face, id: hover.id, T: hover.T, P: hover.P }, at: performance.now(), released: false,
+        hover: { cell: hover.cell.clone().add(sim.origin), face: hover.face, id: hover.id, T: hover.T, P: hover.P }, at: performance.now(),
       };
       return;
     }
@@ -2130,15 +2253,14 @@ function press(e) {
   // TPT's PropertyTool does nothing until its window holds a value that reads
   if (settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
   dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
-  const mode = drawModeOf(e);
-  if (mode === 'fill' && fills(settings.tool)) { fillAt(); return; }
-  if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(settings.tool);
+  if (fillMode) { fillAt(); return; }
+  startStroke(settings.tool);
   if (e.pointerType !== 'touch' && !e.replay) canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already; a replayed press's button may be up)
 }
 
 // The tools whose press is one click (clickTool), not a stroke.
 const isOneClick = (t) => t === SIGN_TOOL || t === LIGHTNING_TOOL || isSpawnerTool(t) || isBuild(t);
-// A parked press (press: a big map's click, fill or shape past the window) runs once the window holds its spot
+// A parked press (press: a big map's click or fill past the window) runs once the window holds its spot
 // and has come to rest, as if made there now; past WORK_ARRIVAL_MS it's dropped.
 function replayParked() {
   if (!parked) return;
@@ -2152,7 +2274,6 @@ function replayParked() {
   Object.assign(hover, { valid: true, face: p.hover.face, id: p.hover.id, T: p.hover.T, P: p.hover.P });
   hover.cell.copy(cell);
   press(p.e);
-  if (p.released && shapeDrag) finishShape();
 }
 
 // A click with a one-click tool (a sign, lightning, a spawner, a construction)
@@ -2228,10 +2349,12 @@ const GUN_AIR_DIST = HAND_REACH;   // cells: a stroke started at the sky pours a
 const toolGun = {
   get item() { return toolById(settings.tool); },
   // it's in hand this frame: the brush and the construction ghost follow the crosshair (updateGunBrush)
-  aim() { toolGunOut = true; },
+  aim(canBuild) { toolGunOut = true; toolGunBuilding = canBuild; },
+  get builder() { return isVoxelBrush(settings.tool) ? shapeReadout() : null; },
+  cancel() { if (shapeDrag?.pov) shapeDrag = null; },
   // a button went down: 'stroke' while a stroke runs until release(), 'click' for one-click tools, null if nothing happened
   press({ erase = false } = {}) {
-    if (selectedMode === 'factory' || ctx.industry?.building) return null;
+    if (selectedMode === 'factory' || ctx.industry?.building || pendingShape) return null;
     if (signs?.editing) { document.activeElement?.blur?.(); return null; }   // as in the god view, the click that ends a sign's edit does nothing else
     if (!erase) {
       const done = clickTool();
@@ -2241,7 +2364,14 @@ const toolGun = {
         return done ? 'click' : null;
       }
     }
+    if (shapeDrag) { advanceShape(erase); return 'click'; }
     const tool = erase ? ERASE_TOOL : settings.tool;
+    if (builderMode !== 'freehand' && isVoxelBrush(settings.tool)) {
+      if (tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first in god view.'); return null; }
+      if (startShape(builderMode, { secondary: erase })) return 'click';
+      hud.toast(erase ? 'Aim at material to start a cut.' : 'Aim at an editable face to start the shape.');
+      return null;
+    }
     if (tool >= 0) {
       if (!aimScreenRay()) return null;
       strokeDist = hover.valid ? presentationPoint(hoverBrushCenter(tmpV, tool), tmpV).distanceTo(povRay.origin) : GUN_AIR_DIST;
@@ -2255,13 +2385,18 @@ addEventListener('pointerup', (e) => {
   if (e.button !== 0) return;
   // a click shorter than the GPU's frame (its frames still in flight, B3)
   // has painted nothing yet: it paints once, on the next tick that runs
-  if (parked) parked.released = true;
   if (painting && !strokePainted) {
     releasePending = true;
     // a big map's click past the window: its one paint waits for the window, where it was clicked
     if (worldAim() && brushValid && !inWindow(brushCenter)) { heldCenter = brushCenter.clone().add(sim.origin); heldAt = performance.now(); }
   } else painting = false;
-  if (shapeDrag) finishShape();
+  if (shapeDrag?.pointerId === e.pointerId) {
+    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    advanceShape();
+  }
+});
+canvasEl.addEventListener('pointercancel', (e) => {
+  if (shapeDrag?.pointerId === e.pointerId) shapeDrag = null;
 });
 
 // Touch: one finger paints, two fingers turn and zoom (controls.touches). A finger
@@ -2310,6 +2445,7 @@ function setRadius(r) {
   settings.radius = THREE.MathUtils.clamp(Math.round(r), 1, 24);
   dock.sync();
   save();
+  pacer.wake();
 }
 
 let stepOnce = false;
@@ -2324,6 +2460,12 @@ const wantFrame = () => wantShot || frameWaiters.length > 0;
 addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
   if (isTyping()) return;
+  if ((shapeDrag || pendingShape) && is(e, KEYS.escape)) {
+    e.preventDefault();
+    shapeDrag = pendingShape = null;
+    pacer.wake();
+    return;
+  }
   const mod = e.metaKey || e.ctrlKey;
   if (is(e, KEYS.undo)) { e.preventDefault(); undo(); return; }
   // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
@@ -2345,11 +2487,39 @@ addEventListener('keydown', (e) => {
   }
   // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
   if (is(e, KEYS.chat) && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; }   // POV included
+  // Builder keys are shared with god view while the Tool Gun is in hand;
+  // the rest of POV's keys still belong to the body (H drinks, B edits wands).
+  const gunKeys = !!pov?.active && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN';
+  if (!pov?.active || gunKeys) {
+    if (is(e, KEYS.builderMode)) {
+      e.preventDefault();
+      if (!e.repeat) {
+        builderMode = nextBuilderMode(builderMode);
+        if (builderMode === 'box' || builderMode === 'hollow') builderHollow = builderMode === 'hollow';
+        shapeDrag = parked = null;
+        hud.toast(`Build mode: ${BUILDER_NAME[builderMode]}`);
+        pacer.wake();
+      }
+      return;
+    }
+    if (is(e, KEYS.builderHollow)) {
+      e.preventDefault();
+      if (!e.repeat) {
+        builderHollow = !builderHollow;
+        if (builderMode === 'box' || builderMode === 'hollow') builderMode = builderHollow ? 'hollow' : 'box';
+        const d = shapeDrag?.draft;
+        if (d?.kind === 'box' && !d.carve && isVoxelBrush(shapeDrag.tool)) d.hollow = builderHollow;
+        hud.toast(builderHollow ? 'Hollow boxes on' : 'Hollow boxes off');
+        pacer.wake();
+      }
+      return;
+    }
+    if (is(e, KEYS.brushSmaller)) { setRadius(settings.radius - 1); return; }
+    if (is(e, KEYS.brushBigger)) { setRadius(settings.radius + 1); return; }
+  }
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   // (flying up and down: camera.js)
   if (is(e, KEYS.step)) { stepOnce = true; pacer.wake(); }
-  else if (is(e, KEYS.brushSmaller)) setRadius(settings.radius - 1);
-  else if (is(e, KEYS.brushBigger)) setRadius(settings.radius + 1);
   else if (is(e, KEYS.brushShape)) { settings.shape ^= 1; dock.sync(); save(); }
   else if (is(e, KEYS.replaceMode)) toggleEditMode('replace');
   else if (is(e, KEYS.specificDelete)) toggleEditMode('specificDelete');
@@ -2365,8 +2535,7 @@ addEventListener('keydown', (e) => {
   // holding the screenshot key must not download a stream of images
   else if (is(e, KEYS.screenshot)) { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
   else if (is(e, KEYS.escape)) {
-    const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
-    shapeDrag = null;   // a line or box being dragged is dropped
+    const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
     setEyedropper(false); setShadersOpen(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else pause or resume, every game's Esc
     // (Intentional (user request, 2026-11-01): Esc pauses, not Space; the map menu is the toolbar's button).
@@ -2992,10 +3161,11 @@ function tick(now, renderOnly = false) {
       rig.update(dt);
       controls.update();
     }
-    if (workFocus && (!worldAim() || (!painting && !parked && !shapeDrag
+    if (workFocus && (!worldAim() || (!painting && !parked && !shapeDrag && !pendingShape
       && Math.hypot(eyeColumn()[0] - workEye[0], eyeColumn()[1] - workEye[1]) > WORK_FOCUS_RELEASE * sim.g.nx))) workFocus = null;
     for (const w of live) w.follow?.(ctx, dt);   // the world's window following the focus
     replayParked();
+    submitShape();
     updatePresentation();   // (after the camera and the window: the bend is anchored beneath the eye)
     updateBrush();
 
@@ -3102,7 +3272,7 @@ function tick(now, renderOnly = false) {
   runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}|${vol.packetShadowKey}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(shapeDrag?.tool ?? settings.tool).color)}|${!!shapeDrag?.draft.hollow}|${presentation.key}|${vol.format}`,   // far field, brush (including a shell's edge-only styling), bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
   runView = present && pacer.view(viewV, runDerived || wantFrame() || betweenTicks);
@@ -3188,6 +3358,11 @@ function tick(now, renderOnly = false) {
     // (the canvas's rect as the last resize left it: reading it here forced a layout every frame after the HUD's writes)
     const r = canvasRect();
     hud.showReadout(r.left + r.width / 2, r.top + r.height / 2, povReadout);
+  } else if (!pov?.active && pointerInside && !uiHover && (shapeDrag || pendingShape)) {
+    const info = shapeDrag ?? pendingShape;
+    const item = toolById(info.tool ?? info.stroke.tool);
+    hud.showReadout(pointerClient[0], pointerClient[1], { name: item.name, color: item.color,
+      note: pendingShape ? 'Waiting for simulation window…' : builderNote(shapeReadout(info.draft)) });
   } else if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
     hud.showReadout(pointerClient[0], pointerClient[1], { name: el.name, color: el.color, T: hover.T, P: hover.P });
@@ -3201,7 +3376,7 @@ function tick(now, renderOnly = false) {
   // wire animating: the loop stops. Input, a setting, a write, a landed read
   // or a built pipeline wakes it.
   const wantsSteps = !mp.replica && (!settings.paused || stepOnce) && !simAsleep();
-  const busy = wantsSteps || painting || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
+  const busy = wantsSteps || painting || !!pendingShape || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
   settledSleep = present && !runView && pacer.settled && !busy;
   hud.setStats({ fpsV: fps });   // (null only before the first measured window)
   prof.endFrame(legacyStepped);

@@ -269,7 +269,7 @@ export function createPov(app) {
     locked = document.pointerLockElement === canvas;
     document.body.classList.toggle('pov-locked', locked);
     if (locked) setMenu(false);
-    if (!locked) releaseInput();
+    if (!locked) { releaseInput(); app.toolGun?.cancel(); }
     app.requestRender();
   });
   function releaseInput() {
@@ -982,6 +982,7 @@ export function createPov(app) {
       ctx.nativeDt = sim.compact ? (app.nativeToolSteps ?? 0) / 60 : undefined;
       ctx.stepsPerFrame = app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps);
       const use = !editing && (village.enabled ? village.canAct && !!village.tool && (isLocked() || touch.enabled || villageToolTap) : canUse()) && !app.industryBuilding?.();
+      ctx.toolUse = use;
       if (village.enabled && !use) toolbelt.tool(toolbelt.selectedKey)?.deselect?.();
       // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
       const tapped = touch.enabled || villageToolTap;

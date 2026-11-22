@@ -1,5 +1,11 @@
 // A versioned envelope keeps old clients from treating a moving window as a box.
 export const PROTOCOL = 1;
+// A distinct optional intent: an older host ignores it rather than filling a
+// requested shell's interior. The relay forwards intents transparently.
+export const PAINT_SHELL = 'paintShell';
+export const validPaintShell = (s, maxThickness) => s.t === PAINT_SHELL
+  ? s.shape === 1 && Array.isArray(s.g) && s.e === undefined && Number.isInteger(s.h) && s.h >= 1 && s.h <= maxThickness
+  : s.h === undefined;
 // The session's build version, sent by a guest when the relay welcomes it ({ t: 'hello', v }). Builds
 // before it sent none and know only FRAME_KEY/FRAME_DELTA: a host whose stream they can't read (a V2
 // host's native frames, net/codec.js) sends them codec.outdatedFrame, which ends their session with

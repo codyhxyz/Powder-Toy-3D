@@ -1,12 +1,13 @@
 import { holdNativeRay, nativeRayKind } from '../v2/tools.js';
+import { PAINT_SHELL } from './protocol.js';
 
 // Host-only routing after multiplayer's existing protocol validation. A guest
 // sends an intent; only the host's current engine mutates authoritative state.
 // This seam is CPU-testable without opening sockets, DOM or a GPU browser.
 export function applyGuestStroke(sim, s, { wind = null, edits = {}, minRadius = 1, maxRadius = 24 } = {}) {
   const stroke = {
-    center: { x: s.c[0], y: s.c[1], z: s.c[2] }, radius: Math.min(Math.max(s.r, minRadius), maxRadius),
-    shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace, wind, ...edits,
+    center: { x: s.c[0], y: s.c[1], z: s.c[2] }, radius: Math.min(Math.max(s.r, edits.end ? 0.5 : minRadius), maxRadius),
+    shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace, wind, ...edits, shell: s.t === PAINT_SHELL ? s.h : 0,
   };
   // V2: a guest's particle brush is held and emitted per native tick, as the host's own is
   // (v2/tools.js holdNativeRay); painting it per frame would emit at the frame and network rate.

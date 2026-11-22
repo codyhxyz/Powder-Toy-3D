@@ -28,7 +28,7 @@ export const BrushParams = uniformStruct('BrushParams', {
   model: 'mat4x4f',     // shape units → scene
   normal: 'mat3x3f',    // its normal matrix (inverse transpose)
   eye: 'vec3f',         // the camera, scene units
-  cube: 'f32',          // 1: the box's bright edges (the cube brush)
+  cube: 'f32',          // 1: solid box ghost, 2: hollow (emphasize edges over faces)
   color: 'vec3f',       // linear rgb
   shape: 'u32',         // BRUSH_SHAPES
 });
@@ -95,7 +95,7 @@ fn quadCorner(k: u32) -> vec2u { return vec2u((0x25u >> k) & 1u, (0x34u >> k) & 
     // bright box edges
     let q = abs(i.local);
     let e = max(min(q.x, q.y), max(min(q.y, q.z), min(q.x, q.z)));
-    a = 0.05 + 0.75 * smoothstep(0.9, 0.985, e);
+    a = select(0.05, 0.012, P.cube > 1.5) + 0.75 * smoothstep(0.9, 0.985, e);
   }
   return vec4f(mix(P.color, vec3f(1.0), 0.25) * a, a);
 }`;
@@ -178,11 +178,12 @@ export function createBrushCursor(gpu) {
       paint(shape, c);
     },
     // a box being dragged (TPT's Ctrl-drag preview, RenderRect): its centre and half size (scene units)
-    setBox({ position, half, color: c }) {
+    setBox({ position, half, color: c, hollow = false }) {
       start.visible = body.visible = false;
       show(mesh, 1, position, 1);
       mesh.scale.copy(half);
       paint(1, c);
+      if (hollow) cube = 2;
     },
     /**
      * Draws the visible parts into the scene pass (last: no depth test).

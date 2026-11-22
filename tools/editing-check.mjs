@@ -56,15 +56,14 @@ const cellsIn = (brush, n = 40) => {
   return out;
 };
 {
-  const b = boxFromCorners({ x: 10.3, y: 6, z: 20.7 }, { x: 14.9, y: 6, z: 18.2 }, 3, [40, 40, 40]);
+  const b = boxFromCorners([10, 3, 20], [14, 8, 18], 3);
   check(b.lo.join() === '10,3,18' && b.hi.join() === '15,9,21', `box corners → cells [${b.lo}]..[${b.hi})`);
-  const cells = cellsIn({ center: b.center, grow: b.grow, radius: 3, shape: 1 });
+  const center = ([x, y, z]) => ({ x, y, z });
+  const cells = cellsIn({ center: center(b.center), grow: b.grow, radius: 3, shape: 1 });
   const inside = (c) => c.every((v, k) => v >= b.lo[k] && v < b.hi[k]);
   check(cells.length === 5 * 6 * 3 && cells.every(inside), `box fills exactly its cells (${cells.length})`);
-  const thin = boxFromCorners({ x: 5.5, y: 2, z: 5.5 }, { x: 5.5, y: 2, z: 5.5 }, 2, [40, 40, 40]);
-  check(cellsIn({ center: thin.center, grow: thin.grow, radius: 2, shape: 1 }).length === 1 * 4 * 1, 'a click-sized box: one column, brush-tall');
-  const clipped = boxFromCorners({ x: 1, y: 1, z: 1 }, { x: 50, y: 1, z: 3 }, 4, [40, 40, 40]);
-  check(clipped.lo.join() === '1,0,1' && clipped.hi.join() === '40,5,4', 'a box is clipped to the grid');
+  const thin = boxFromCorners([5, 2, 5], [5, 2, 5], 2);
+  check(cellsIn({ center: center(thin.center), grow: thin.grow, radius: 2, shape: 1 }).length === 1, 'a click-sized box: one voxel regardless of brush size');
 }
 {
   const dab = { center: { x: 20, y: 20, z: 20 }, radius: 4, shape: 0 };

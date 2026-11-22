@@ -732,19 +732,19 @@ export class Simulation {
 
   // TPT's editing tools (src/editing.js) ride along: end, a line's far end (the
   // brush swept from center to it); grow, a box's reach past the brush per axis
-  // ([x, y, z]); mask, a flood fill's region ({ data, lo, hi }: editing.js
+  // ([x, y, z]); shell, a box's wall thickness (0 fills it); mask, a flood fill's region ({ data, lo, hi }: editing.js
   // runFill, a byte per atlas texel) instead of the brush; filter, the only
   // element touched (-1: any); erase, specific delete; prop, the PROP tool's
   // { field, value }. wind: [x, y, z] cells the brush moved since the stroke's
   // last paint (the Wind tool's drag). One edit (docs/webgpu.md D6): Mix, whose
   // cells read their partners, a two-phase one.
-  paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+  paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, shell = 0, mask = null, filter = -1, erase = false, prop = null }) {
     if (this.nativeTransition || this.nativeTransitionError) return false;
     // Under V2 every tool runs natively (v2/interactions.js routeNativePaint): V1's rule on V2's own
     // cells, air and particles, never V1's cells for V2 to import; photons and neutrons and the
     // decoration below have their own native owners. Not a deviation: the same stroke either way.
     if (this.compact) {
-      const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
+      const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, shell, mask, filter, erase, prop });
       if (routed !== null) return routed;
     }
     // a line or box of particles: V1's dabs, each painted once (v2/tools.js)
@@ -763,13 +763,13 @@ export class Simulation {
     if (mask) box = { lo: mask.lo, hi: mask.hi };
     else {
       // it changes cells within radius of its centre (either shape), its line or its box
-      const a = [center.x, center.y, center.z], b = [end.x, end.y, end.z], reach = [0, 1, 2].map((k) => radius + Math.max(grow?.[k] ?? 0, 0));
+      const a = [center.x, center.y, center.z], b = [end.x, end.y, end.z], reach = [0, 1, 2].map((k) => Math.max(0, radius + (grow?.[k] ?? 0)));
       box = this.touchCentres(a.map((x, k) => Math.min(x, b[k]) - reach[k]), a.map((x, k) => Math.max(x, b[k]) + reach[k]));
     }
     this.edit(tool === MIX_TOOL ? this.passOf('paintMix') : this.passes.paint, box, {
       center: [center.x, center.y, center.z], radius, shape, tool, rate, replace: Boolean(replace), frame: this.paints,
       wind: wind ? [wind[0], wind[1], wind[2]] : [0, 0, 0], end: [end.x, end.y, end.z], grow: grow ?? [0, 0, 0],
-      masked: Boolean(mask), filter_: filter, del: Boolean(erase), prop: prop?.field ?? 0, propValue: prop?.value ?? 0,
+      shell, masked: Boolean(mask), filter_: filter, del: Boolean(erase), prop: prop?.field ?? 0, propValue: prop?.value ?? 0,
     }, { bind: [{ buffer: mask ? this._paintMask(mask.data) : this.noMask }], scrub: true });
   }
 

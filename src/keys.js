@@ -37,6 +37,8 @@ export const KEYS = {
   brushSmaller: ['['],
   brushBigger: [']'],
   brushShape: ['b'],
+  builderMode: ['j'],
+  builderHollow: ['n'],       // H already drinks from the body's flask
   replaceMode: ['x', ';', 'Insert'],              // TPT's ; and Insert
   specificDelete: ['Delete', 'Backspace', 'Mod+;'],   // TPT's Delete and Ctrl+; (a Mac's delete key is Backspace)
   target: ['Alt+KeyI'],   // (⌥I types a dead key on a Mac: by its code)

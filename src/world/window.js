@@ -343,6 +343,21 @@ export class WorldWindow {
     }
     return goal;
   }
+  // The editor commits one edit/undo, so choose a reachable window that
+  // contains the entire selection, rather than centering near B and clipping A.
+  // Offset the requested focus through the same hysteresis used by goalFor.
+  focusForBounds(lo, hi) {
+    const { g, origin } = this.sim;
+    const focus = [];
+    for (const [i, at, span] of [[0, origin.x, g.nx], [2, origin.z, g.nz]]) {
+      const first = Math.ceil(Math.max(-at, hi[i] - span - at) / WIN_STEP);
+      const last = Math.floor(Math.min(this.size[i] - span - at, lo[i] - at) / WIN_STEP);
+      if (first > last) return null;
+      const step = Math.max(first, Math.min(last, 0));
+      focus.push(at + step * WIN_STEP + span / 2 + Math.sign(step) * (WIN_STEP / 2 + WIN_HYSTERESIS));
+    }
+    return focus;
+  }
   /** The window's box the picture draws at full detail (world cells, its low corner): where it comes to rest (goalFor), else where it is. */
   get drawOrigin() { const o = this.sim.origin; return this.goal ?? [o.x, o.y, o.z]; }
   /**
