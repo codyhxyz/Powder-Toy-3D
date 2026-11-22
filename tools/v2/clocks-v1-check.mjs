@@ -226,7 +226,7 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
     for (let i = 0; i < 16; i++) {
       ticks += nativeHostSteps(o, 1 / 60, { speed: 0.25 });
       const pos = ticks * v / HOST_HZ / CELL_M;   // cells: the record after its ticks
-      const view = nativeParticleView(new PerspectiveCamera(), 720, new Matrix4(), [0, 0, 0], 0, particleLagSeconds(s));
+      const view = nativeParticleView(new PerspectiveCamera(), 720, new Matrix4(), [0, 0, 0], particleLagSeconds(s));
       drawn.push(pos - v * view.lag); raw.push(pos);
     }
     const perFrame = v / HOST_HZ / CELL_M * 0.25;   // cells: a quarter tick's flight
@@ -235,7 +235,7 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
     assert.equal(particleLagSeconds(s, false), 0, 'a replica draws its records as they come');
     assert.equal(particleLagSeconds({ compact: null }), 0, 'V1: no V2 records');
     const shaders = Object.fromEntries(PARTICLE_WGSL.map((c) => [c.name, c.code()]));
-    for (const name of ['nativeParticleMatter', 'nativeParticleRays']) {
+    for (const name of ['nativeParticleMatter', 'nativeParticleSoft', 'nativeParticleRays']) {
       assert(shaders[name].includes('o.center = bitcast<vec3f>(p.positionId.xyz) - P.origin - bitcast<vec3f>(p.velocityCore.xyz) * P.lag;'), `${name} draws on the partial tick`);
     }
     assert((shaders.nativeParticlePick.match(/particleDrawn\(p\)/g) ?? []).length === 2, 'the pick picks where the particle is drawn');

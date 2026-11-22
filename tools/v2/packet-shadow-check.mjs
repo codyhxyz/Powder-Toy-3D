@@ -68,11 +68,12 @@ test('a packet\'s splat shadows the floor along the sun\'s ray through it, as it
 
 const camera = () => { const c = new PerspectiveCamera(55, 16 / 9, 0.1, 1000); c.coordinateSystem = WebGPUCoordinateSystem; c.position.set(0, 0, 10); c.updateProjectionMatrix(); c.updateMatrixWorld(); return c; };
 const buffer = size => ({ size, words: new Uint32Array(size / 4), destroy() {} });
-test('the matter draw lights its sphere with the Box volume\'s map and GI where bound, the open sky\'s where not', () => {
+test('the matter draw lights its pieces with the Box volume\'s map and GI where bound, the open sky\'s where not', () => {
   const wgsl = nativeParticleWGSL(false);
   // lighting.js hitLight: the sun through the map (and the clouds), the GI probe GI_OFFSET out along the normal
   assert.match(wgsl, /let light = FU\.sunCol \* FU\.sunExt \* max\(dot\(normal,sun\),0\.0\) \* particleSun\(hit, gridNormal\);/);
-  assert.match(wgsl, /if \(P\.light != 0u\) \{ ambient = particleGI\(hit, gridNormal\); \}/);
+  assert.match(wgsl, /let ambient = particleEnv\(hit, gridNormal, normal\);/);
+  assert.match(wgsl, /if \(P\.light != 0u\) \{ return particleGI\(p, dGrid\); \}\s+return mix\(FU\.ground, FU\.skyUp, dWorld\.y \* 0\.5 \+ 0\.5\) \+ FU\.caveAmbient;/);
   assert.match(wgsl, /let cloud = cloudShadow\(hp \+ P\.origin\);/);
   assert.doesNotMatch(nativeParticleWGSL(true), /particleSun|particleGI/, 'rays glow, unlit, as V1\'s sprites');
   assertNaga(wgsl, 'nativeParticleMatter');

@@ -51,7 +51,7 @@ test('every data-view, Noita and pick constant is the volume module\'s own', () 
   for (const name of ['heat', 'pressure', 'flowDir', 'flowSpeed']) assert(matter.includes(colormapWGSL(name, COLORMAPS[name])), `the ${name} colormap`);
 });
 
-test('the per-view look: data views and Plain draw a cube, Noita its look, Realistic/Cozy/Test the sphere', () => {
+test('the per-view look: data views and Plain draw a cube, Noita its look, Realistic/Cozy/Test its pieces', () => {
   for (const v of VIEWS) {
     const blocky = ['heat', 'pressure', 'flow', 'xray', 'plain'].includes(v.key);
     assert.equal(blocky, !isMaterialView(v.key), `${v.key}: cube iff not a material view`);
@@ -65,10 +65,10 @@ test('the per-view look: data views and Plain draw a cube, Noita its look, Reali
   assert.match(matter, /o\.color = heatColor\(T\) \* mix\(1\.0, viewClay\(n\), HEAT_CLAY\);/, 'Heat: render.js marchHeat\'s solid');
   assert.match(matter, /o\.color = mix\(viewNeutral\(id\), pressureColor\(P\), smoothstep\(PRESSURE_PAINT_LO, PRESSURE_PAINT_HI, sm\)\) \* viewClay\(n\);/);
   assert.match(matter, /o\.color = flowTint\(still, v, flowSpeedPos\(length\(v\)\)\) \* viewClay\(n\);/);
-  assert.match(matter, /o\.vel = bitcast<vec3f>\(p\.velocityCore\.xyz\) \/ V1_CELLS_PER_STEP_MS;/, 'velocity in V1 cells per step');
+  assert.match(matter, /let velocity = bitcast<vec3f>\(p\.velocityCore\.xyz\);\s+o\.vel = velocity \/ V1_CELLS_PER_STEP_MS;/, 'velocity in V1 cells per step');
   assert.equal(V1_CELLS_PER_STEP_MS, 0.3 * 240);
-  assert.match(matter, /if \(FU\.materialStyle == NOITA_STYLE && LOOK_CLASS\[id\]\.y == 1u && VIEW_NOITA\[id\]\.w > 0\.0\)/);
-  // the realistic look is untouched: its paint and sphere stay
+  assert.match(matter, /if \(FU\.materialStyle == NOITA_STYLE && rclass == 1u && VIEW_NOITA\[id\]\.w > 0\.0\)/);
+  // the realistic look keeps its paint
   assert.match(matter, /diffuse = mix\(diffuse, decoLinear\(paint\.rgb\), paint\.a\)/);
   assert(!rays.includes('dataLook'), 'photons and neutrons keep the ray layer\'s sprites');
   for (const [code, name] of [[matter, 'matter'], [rays, 'rays'], [particlePickWGSL(), 'pick']]) assertNaga(code, name);
@@ -78,7 +78,8 @@ test('the particle\'s air is its brick\'s, numbered as shaders/common.js brickId
   const ro = prelude(g, STATE_OPTS.STATE_RO);
   assert(ro.includes('let st = s.x + STX * (s.z + STZ * s.y);') && ro.includes('return u32(st * 16 + k.x + 4 * (k.z + 2 * k.y));'));
   assert(particleAirWGSL.includes('let st = s.x + i32(P.supers.x) * (s.z + i32(P.supers.y) * s.y);'));
-  assert(particleAirWGSL.includes('particleAir[u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) * 2u]'));
+  // (through the window's ring: shaders/common.js ringOf)
+  assert(particleAirWGSL.includes('var id = u32(st * 16 + k.x + 4 * (k.z + 2 * k.y));') && particleAirWGSL.includes('particleAir[id * 2u]'));
   assert(particleAirWGSL.includes('return vec4f(air.xyz / V1_CELLS_PER_STEP_MS, air.w / LEGACY_PRESSURE_PA);'), 'shaders/common.js fetchBs format 3\'s units');
   for (const s of [NativeParticleParams, ParticlePickParams]) assert(['grid', 'supers'].every((k) => s.wgsl.includes(`${k}: vec4u`)));
   assert.match(readFileSync(new URL('../../src/shaders/common.js', import.meta.url), 'utf8'), /air\.xyz \/ \$\{240 \* CELL_M\}, air\.w \/ \$\{LEGACY_PRESSURE_PA\}/);

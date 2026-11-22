@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Matrix4, PerspectiveCamera, Vector3, WebGPUCoordinateSystem } from 'three';
 import { NativeParticles, nativeParticleView, validateNativeParticleSource } from '../../src/gfx/nativeParticles.js';
-import { PARTICLE_BYTES, PARTICLE_WORDS, NativeParticleParams, nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL } from '../../src/shaders/v2/particleRender.js';
+import { PARTICLE_BYTES, PARTICLE_WORDS, NativeParticleParams, nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL, MATTER_LOOK } from '../../src/shaders/v2/particleRender.js';
 import { E } from '../../src/elements.js';
 import { PHASE_HOT_BASE, PHASE_COLD_BASE, phaseTemperatureQ, PHASE_ROWS } from '../../src/v2/phase.js';
 
@@ -67,7 +67,7 @@ test('equal-volume liquid amount, phase tags never become huge heat',()=>{
   const wgsl=nativeParticleWGSL();assert.match(wgsl,/PHASE_TQ\[id\]/);assert.match(wgsl,/amount \* \(3.0 \/ \(4.0 \* 3.141592653589793\)\)/);
 });
 
-test('sphere surface depth moves continuously, occludes by hit not billboard center',()=>{
+test('a piece\'s surface depth moves continuously, occludes by hit not billboard center',()=>{
   const c=camera(),depth=z=>new Vector3(0,0,z).project(c).z;
   const surface=(center,r)=>{const b=center-10;const d=b*b-(center-10)**2+r*r;return center+Math.sqrt(d);};
   const depths=[-2,-1,0,1,2].map(z=>depth(surface(z,0.62)));
@@ -75,36 +75,75 @@ test('sphere surface depth moves continuously, occludes by hit not billboard cen
   assert.ok(depth(surface(0,0.62))<depth(0.3)); // front passes a mesh that center would fail
   assert.ok(depth(surface(0,0.62))>depth(0.8)); // mesh in front still wins
   assert.match(nativeParticleWGSL(),/@builtin\(frag_depth\)/);
-  assert.match(nativeParticleWGSL(),/if \(hitClip.z < 0.0\)/);
+  assert.match(nativeParticleWGSL(),/let hit = eye \+ direction \* bit\.t;/);
+  assert.match(nativeParticleWGSL(true),/if \(hitClip.z < 0.0\)/);
   assert.equal(nativeParticlePipeline().depthStencil.depthWriteEnabled,true);
+  assert.equal(nativeParticlePipeline('soft').depthStencil.depthWriteEnabled,false);
   assert.equal(nativeParticlePipeline(true).depthStencil.depthWriteEnabled,false);
 });
 
-const hash = input=>{let x=input>>>0;x^=x>>>16;x=Math.imul(x,0x7feb352d);x^=x>>>15;x=Math.imul(x,0x846ca68b);return (x^(x>>>16))>>>0;};
-const sample=(id,x,y,s=0)=>(hash(id^hash(x)^hash((y+0x9e3779b9)>>>0)^hash(s))>>>8)/16777216;
-test('independent stochastic layers match premultiplied expectation, stable TAA-off',()=>{
-  let sum=0,both=0;const n=256*256,alphaA=0.3,alphaB=0.6,front=0.8,back=0.4,bg=0.1;
-  for(let y=0;y<256;y++)for(let x=0;x<256;x++){
-    const a=sample(719,x,y)<alphaA,b=sample(720,x,y)<alphaB;
-    sum+=a?front:b?back:bg;both+=a&&b;
-    assert.equal(sample(719,x,y),sample(719,x,y,0));
-  }
-  near(sum/n,alphaA*front+(1-alphaA)*(alphaB*back+(1-alphaB)*bg),0.005);
-  near(both/n,alphaA*alphaB,0.005);
-  assert.notEqual(sample(719,1,2),sample(720,1,2));assert.notEqual(sample(719,1,2,0),sample(719,1,2,1));
-  assert.match(nativeParticleWGSL(),/o.stableId \^ coverageHash\(pixel.x\)/);
-  assert.match(nativeParticleWGSL(),/coverageHash\(P.sample\)/);
+// The speckled balls (2026-11-21): a packet was one ball of its volume and a see-through look a hashed
+// coverage nothing resolved, so clear liquids flew as black dotted spheres. Neither may come back.
+test('nothing is dithered: see-through looks blend in their own pass, the rest cover',()=>{
+  const matter=nativeParticleWGSL(),rays=nativeParticleWGSL(true);
+  for(const code of [matter,rays]) assert.doesNotMatch(code,/coverageHash|P\.sample|vec2u\(o\.position\.xy\)/);
+  assert.equal('sample' in NativeParticleParams.fields || /sample: u32/.test(NativeParticleParams.wgsl),false);
+  assert.match(NativeParticleParams.wgsl,/soft: u32/);
+  // each look is drawn by one pass only (the vertex stage drops it from the other)
+  assert.match(matter,/if \(softLook\(FU\.view, id\) != \(P\.soft != 0u\)\) \{ return o; \}/);
+  assert.match(matter,/return rclass == 4u \|\| rclass == 5u;/,'material views: gas and fire blend');
+  assert.match(matter,/if \(P\.soft != 0u\) \{ return puffFragment\(o, eye, direction\); \}/);
+  assert.match(matter,/out\.color = vec4f\(max\(vec3f\(0\.0\), look\.color\) \* cover, cover\);/,'blocky views: premultiplied, never discarded by alpha');
   assert.equal(nativeParticlePipeline().fragment.targets[0].blend,undefined);
+  assert.deepEqual(nativeParticlePipeline('soft').fragment.targets[0].blend,
+    {color:{srcFactor:'one',dstFactor:'one-minus-src-alpha'},alpha:{srcFactor:'zero',dstFactor:'one'}});
   assert.deepEqual(nativeParticlePipeline(true).fragment.targets[0].blend.alpha,{srcFactor:'zero',dstFactor:'one'});
+  assert.deepEqual(nativeParticlePipeline('rays'),nativeParticlePipeline(true));
+});
+
+// particleRender.js matterShapeWGSL, in JS: every piece lies inside the ball the quad is sized for.
+test('a packet is pieces, not one ball: clods, shards and drops, each inside the quad\'s bound',()=>{
+  const L=MATTER_LOOK,GRIT=0,DROP=1,SHARD=2;
+  const bitSize=(shape,n)=>Math.cbrt((shape===GRIT?L.GRIT_FILL:1)/n);
+  const bitAxes=(shape,s)=>shape===DROP?[1/Math.sqrt(s),1/Math.sqrt(s),s]:shape===SHARD?L.SHARD_AXES:L.GRIT_AXES;
+  const bitSpread=(shape,s)=>shape===DROP?[L.DROP_SPREAD,L.DROP_SPREAD,L.DROP_SPREAD*s]:Array(3).fill(L.GRIT_SPREAD);
+  const clumpBound=(shape,n,s)=>(n>1?Math.max(bitSpread(shape,s)[0],bitSpread(shape,s)[2]):0)+L.SIZE_MAX*bitSize(shape,n)*Math.max(...bitAxes(shape,s));
+  let seed=12345;const rnd=()=>(seed=(Math.imul(seed,1664525)+1013904223)>>>0)/4294967296;
+  for(const shape of [GRIT,DROP,SHARD]) for(const s of shape===DROP?[1,1.4,L.DROP_STRETCH_MAX]:[1]) for(let n=1;n<=L.BITS;n++){
+    const bound=clumpBound(shape,n,s),axes=bitAxes(shape,s),spread=bitSpread(shape,s);
+    near(axes[0]*axes[1]*axes[2],1,1e-9); // unit volume: a piece keeps its share whatever its shape
+    for(let i=0;i<n;i++) for(let k=0;k<64;k++){
+      const u=[rnd()*2-1,rnd()*2-1,rnd()*2-1],l=Math.max(Math.hypot(...u),1);
+      const c=i?u.map((x,j)=>x/l*spread[j]):[0,0,0];
+      const reach=Math.hypot(...c)+L.SIZE_MAX*bitSize(shape,n)*Math.max(...axes);
+      assert.ok(reach<=bound+1e-9,`shape ${shape} n ${n} stretch ${s}: ${reach} > ${bound}`);
+    }
+  }
+  // drops and shards show the packet's whole volume; loose grit GRIT_FILL of it
+  for(let n=1;n<=L.BITS;n++){near(n*bitSize(DROP,n)**3,1,1e-9);near(n*bitSize(GRIT,n)**3,L.GRIT_FILL,1e-9);}
+  assert.ok(L.BITS>=2&&L.SIZE_MIN<1&&L.SIZE_MAX>1&&L.DROP_TINT>0&&L.DROP_TINT<1&&L.DROP_LENS>0&&L.DROP_LENS<=1);
+  const matter=nativeParticleWGSL();
+  assert.match(matter,/for \(var i = 0; i < n; i\+\+\)/);
+  assert.match(matter,/n = clamp\(i32\(r0 \* P\.scale \* focal \* P\.viewport\.y \* 0\.5 \/ \(clip\.w \* BIT_LOD_PX\)\), 1, BITS\);/,'far packets show fewer pieces');
+  assert.match(matter,/o\.radius = r0 \* clumpBound\(shape, n, stretch\);/);
+  // a drop is never black: its own lit colour by at least DROP_TINT, under what it mirrors
+  assert.match(matter,/let own = max\(vec3f\(DROP_TINT\), vec3f\(1\.0\) - transmission\);/);
+  assert.match(matter,/color = mix\(mix\(through, diffuse\*\(ambient\+light\), own\), mirror, fresnel\) \+ specular\*light;/);
 });
 
 test('zero GPU count produces zero instances, without CPU readback; idle records nothing',async()=>{
   const {g,s,a}=setup();await a.ready;
   assert.equal(a.prepareDraw(),true);assert.equal(a.draw({frame:g.frame},{width:1280,height:720}),true);
-  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.instances),[0,0]);
+  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.name),['nativeParticleMatter','nativeParticleSoft','nativeParticleRays']);
+  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.options.params.soft),[0,1,0]);
+  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.instances),[0,0,0]);
   assert.match(nativeParticleArgsWGSL(),/select\(0u, P.capacity, control\[0\] > 0u\)/);
   s.control.words[0]=1;g.calls=[];a.prepareDraw();a.draw({frame:g.frame},{width:1280,height:720});
-  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.instances),[65536,65536]);
+  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.instances),[65536,65536,65536]);
+  // the soft pass still building: the rest draw without it
+  a.softPipe.state='pending';g.calls=[];a.prepareDraw();assert.equal(a.draw({frame:g.frame},{width:1280,height:720}),true);
+  assert.deepEqual(g.calls.filter(c=>c.kind==='draw').map(c=>c.name),['nativeParticleMatter','nativeParticleRays']);
+  assert.equal(a.isReady,true);a.softPipe.state='ready';
   s.isIdle=true;g.calls=[];assert.equal(a.prepareDraw(),false);assert.equal(a.draw({frame:g.frame},{width:1,height:1}),false);assert.equal(g.calls.length,0);
   a.dispose();
 });
@@ -137,6 +176,6 @@ test('ABI/viewport guards and params fit one256B ring slot',()=>{
   assert.throws(()=>nativeParticleView(camera(),0,null),/height/);
   assert.throws(()=>nativeParticleView(camera(),1,new Matrix4().makeScale(0,0,0)),/matrix/);
   assert.throws(()=>nativeParticleView(camera(),1,null,[NaN,0,0]),/coordinates/);
-  assert.throws(()=>nativeParticleView(camera(),1,null,[0,0,0],-1),/sample/);
+  assert.throws(()=>nativeParticleView(camera(),1,null,[0,0,0],-1),/lag/);
   assert.ok(NativeParticleParams.size<=256);
 });

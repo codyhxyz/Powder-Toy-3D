@@ -45,49 +45,55 @@ buffer is owned; disposal flushes pending commands before destroying it.
   core1/core2/core3/bank. No64B legacy list or bridge. IDs254/255 select the
   dedicated additive photon/neutron pass. Photon RGB floats are words8–10;
   neutron energy MeV is word9. Existing ray palette/glow constants are reused.
-- Matter uses smooth, analytically depth-correct sphere impostors; radius is
-  `(3*amount/(4*pi))^(1/3)` cells, where liquid amount is core1.low24/65536,
-  otherwise one cell. There is no matter minimum-pixel inflation. Rays use
-  the existing0.7-cell marker diameter (without the legacy pixel-size clamps).
+- Matter is drawn as pieces, never one ball (`MATTER_LOOK` in
+  `shaders/v2/particleRender.js`; 2026-11-21, after clear liquids flew as black
+  dotted spheres up to a metre across). The ball of a packet's volume, radius
+  `(3*amount/(4*pi))^(1/3)` cells (liquid amount is core1.low24/65536, otherwise
+  one cell), only sizes it. Grit and debris are a clump of up to 8 tumbling clods,
+  glass and ice are shards, a liquid is a burst of drops stretched along its
+  flight, each an ellipsoid hit analytically (depth-correct). A packet small on
+  screen shows fewer pieces, one at the least. Rays use the existing 0.7-cell
+  marker diameter (without the legacy pixel-size clamps).
 - Material albedo, roughness, metalness, IOR, extinction/scattering and emission
   come from existing LOOK/ELEMENTS/MEDIA tables; sky, sun and ambient come from
   existing FrameUniforms. Existing Planck-table incandescence uses actual
   phase thresholds from PHASE_ROWS, never raw latent tags as temperatures.
   This small-particle lighting is not the world renderer's full shadow/GI or
   refraction solver; it does not modify that solver or graphics settings.
-- Opaque matter writes surface depth and opaque color. Translucent matter uses
-  Beer-Lambert plus Fresnel binary stochastic coverage, depth-writing accepted
-  samples. Stable ID, pixel and explicit sample seed decorrelate overlapping
-  layers. This is premultiplied0/1 coverage: scalar-alpha over is recovered in
-  expectation, not exact sorted-alpha per frame. RGB absorption is reduced to
-  luminance for background coverage, so colored transmission/refraction is an
-  approximation. Small droplets and gases may look grainy with TAA disabled.
-- Rays draw second with premultiplied radiance, ONE/ONE RGB, unchanged target
-  alpha and no depth writes. Both passes test depth32float LESS_EQUAL against
-  the existing scene, including opaque volume/meshes.
-- Default sample0 is stable and introduces no time animation, idle wake,
-  convergence frames, or TAA setting changes. A parent may pass an existing TAA
-  sample index only while that lifecycle already advances; do not increment it
-  on idle redraws/TAA-off. Shared camera jitter remains the renderer's owner.
+- Nothing is dithered. Every look that covers (clods, shards, drops; the opaque
+  cubes of Plain and the data views) writes depth and an opaque colour in the
+  matter pass. A drop or shard shows the light bent through it, dyed along the
+  ray's path inside (Beer-Lambert), mixed with its own lit colour (never under
+  `DROP_TINT`), under its Fresnel mirror of the surroundings and the sun's
+  glint; the surroundings are the bound light's probes or the open sky, and
+  nothing behind it is read.
+- Every see-through look (gas and fire; the translucent cubes of Plain and the
+  data views: `softLook`) is drawn by the soft pass: the matter pass's own
+  shader module with premultiplied blending (ONE, ONE_MINUS_SRC_ALPHA) and no
+  depth writes, after the matter pass. A gas or flame packet is a puff, densest
+  through its middle and gone at its rim. Puffs are not sorted.
+- Rays draw last with premultiplied radiance, ONE/ONE RGB, unchanged target
+  alpha and no depth writes. All three passes test depth32float LESS_EQUAL
+  against the existing scene, including opaque volume/meshes.
 
 ## Cost and optimization seam
 
-Nonzero count currently costs two draws of6*capacity vertices (65536 slots,
-786432 total vertex invocations before implementation-dependent optimization).
+Nonzero count currently costs three draws of 6*capacity vertices (65536 slots,
+1179648 total vertex invocations before implementation-dependent optimization).
 Each pass rejects dead or wrong-family slots in the vertex stage. Zero count
-costs the tiny count dispatch and two zero-instance indirect draw commands;
+costs the tiny count dispatch and three zero-instance indirect draw commands;
 there is no particle readback or per-frame full-buffer CPU copy. This is a
 bounded correctness baseline, **not measured GPU performance**. A later
 render-only compact index + per-family indirect arguments can remove sparse
-slot overhead without modifying authoritative slot order. Stochastic coverage
-needs no depth sort. Neither compaction nor a performance improvement is
+slot overhead without modifying authoritative slot order. The soft pass is
+not depth-sorted. Neither compaction nor a performance improvement is
 claimed here.
 
 ## Evidence / outstanding gate
 
 - `node --test tools/v2/particle-render-check.mjs`:9 CPU tests for record/payload
   ABI, origin/projection, phase temperatures, amount/radius, moving surface
-  depth, stochastic overlap expectation/independence/stability, GPU-zero-count
+  depth, no dithering and the three passes' blend state, the pieces' bound, GPU-zero-count
   command oracle, readiness/stale bindings, ABI guards and resource lifetime.
 - `node tools/v2/particle-render-wgsl-check.mjs`: Naga validates count, matter,
   ray modules. All three export normal `WGSL_CHECK` discovery entries.

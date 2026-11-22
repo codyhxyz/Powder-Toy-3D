@@ -94,7 +94,7 @@ ${castWGSL}
   var amount = 1.0;
   if (LIQUIDS[id] != 0u) { amount = f32(p.payloadBank.x & 0xffffffu) / 65536.0; }
   if (amount <= 0.0) { return; }
-  // its equal-volume sphere, as drawn (shaders/v2/particleRender.js)
+  // the ball of its volume (shaders/v2/particleRender.js draws its pieces about it)
   let r = pow(amount * (3.0 / (4.0 * 3.141592653589793)), 1.0 / 3.0);
   let q0 = bitcast<vec3f>(p.positionId.xyz) - P.origin;
   if (any(q0 < vec3f(-1.0)) || any(q0 > vec3f(P.grid.xyz) + 1.0)) { return; }

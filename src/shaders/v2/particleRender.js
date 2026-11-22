@@ -20,6 +20,35 @@ export const RAY_LOOK = {
   NEUT_THERMAL_GLOW: 0.4,
   NEUT_COLOR: [0.015, 0.75, 1.0],   // TPT NEUT's #20E0FF, linear
 };
+// How flying matter is drawn (the matter and soft passes). A packet used to be one ball of its volume, its
+// see-through looks a fixed speckle (hashed coverage that nothing resolved): clear liquids flew as black dotted
+// spheres up to a metre across. Now, as Noita flies matter as loose pixels of it: grit and debris a clump of
+// tumbling clods, glass and ice shards, a liquid a burst of drops stretched along its flight, gas and fire a
+// soft blended puff. Nothing is dithered, in any view.
+export const MATTER_LOOK = Object.freeze({
+  BITS: 8,                    // the pieces a packet shows close up
+  BIT_LOD_PX: 2,              // ...one a this many px of its equal-volume radius on screen (1..BITS)
+  SIZE_MIN: 0.75,             // a piece's size over its even share, least and most
+  SIZE_MAX: 1.25,
+  GRIT_FILL: 0.5,             // share of a thrown cell's volume its clods show (loose matter is mostly air)
+  GRIT_SPREAD: 1.1,           // a clump's radius over the packet's equal-volume radius
+  GRIT_AXES: [1.25, 1.0, 0.8],      // a clod's half-axes (unit volume)
+  SHARD_AXES: [1.6, 1.0, 0.625],    // a glass or ice shard's
+  GRIT_TONE: 0.12,            // clod to clod albedo spread
+  TUMBLE: 1.3,                // a clump's turn, rad a cell flown
+  TUMBLE_AXIS: [0.83, 0.61, 0.71],
+  BUMP: 0.3,                  // a clod's facets: its normal's tilt
+  BUMP_CELLS: 2.5,            // ...and facets across a piece
+  DROP_SPREAD: 0.9,           // a burst's radius over the equal-volume radius (times its stretch along the flight)
+  DROP_STRETCH_PER_MS: 0.08,  // a drop's stretch along its flight per m/s
+  DROP_STRETCH_MAX: 1.8,
+  DROP_TINT: 0.35,            // the least share of its own colour a drop shows (water reads blue, as TPT's and Noita's)
+  DROP_LENS: 0.5,             // share of what a drop shows through it that is the light all round it (a bead is a wide lens)
+  PUFF_RADIUS: 1.7,           // a gas puff's radius over its equal-volume radius (gas spreads)
+  PUFF_DENSITY: 1.0,          // its optical depth over the medium's own
+  FIRE_DENSITY: 6.0,          // ...a flame's (its medium barely absorbs)
+  PUFF_SUN_WRAP: 0.4,         // the sun's share reaching a puff's far side
+});
 import { SUPER, BRICK } from '../common.js';
 import { particleViewsWGSL } from './particleViews.js';
 import { cloudDeckGLSL } from '../gfx/clouds.js';
@@ -36,7 +65,9 @@ export const PARTICLE_WORDS = 12;
 // lag: how far behind its record a particle is drawn, cells per m/s of its velocity (the seconds
 // behind over CELL_M: gfx/nativeParticles.js nativeParticleView, v2/host.js particleLagSeconds)
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
-  inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f', sample: 'u32',
+  inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f',
+  // soft: 1 in the blended pass (the see-through looks: softLook), 0 in the one that writes depth
+  soft: 'u32',
   viewport: 'vec2f', capacity: 'u32', deco: 'u32', grid: 'vec4u', supers: 'vec4u', lag: 'f32',
   // light: 1 when the volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT),
   // PARTICLE_WORLD_LIGHT when L's world light is (its probe bands at 2-5, LC at 9, lcBuf at 10)
@@ -118,7 +149,7 @@ fn particleLife(id: u32, core: vec4u) -> f32 {
   return f32(core.y & 65535u) / VIEW_LIFE_SCALE[id];
 }
 fn particleSeed(id: u32, core: vec4u, stableId: u32) -> f32 {
-  if (LOOK_CLASS[id].x == ${K.LIQUID}u) { return f32(coverageHash(stableId) >> 16u) / 65536.0; }
+  if (LOOK_CLASS[id].x == ${K.LIQUID}u) { return f32(particleHash(stableId) >> 16u) / 65536.0; }
   return f32(core.w >> 16u) / 65536.0;
 }`;
 
@@ -216,6 +247,11 @@ fn particleGI(p: vec3f, n: vec3f) -> vec3f {
   let c0 = particleProbe(particleGI0, at).rgb; let cx = particleProbe(particleGI1, at).rgb;
   let cy = particleProbe(particleGI2, at).rgb; let cz = particleProbe(particleGI3, at).rgb;
   return max(SH_Y0 * c0 + SH_COS1 * SH_Y1 * (cx * n.x + cy * n.y + cz * n.z), vec3f(0.0)) + FU.caveAmbient;
+}
+// The light arriving at p from around direction d (grid and world): the bound light's probes, else the open sky's
+fn particleEnv(p: vec3f, dGrid: vec3f, dWorld: vec3f) -> vec3f {
+  if (P.light != 0u) { return particleGI(p, dGrid); }
+  return mix(FU.ground, FU.skyUp, dWorld.y * 0.5 + 0.5) + FU.caveAmbient;
 }`;
 
 // A data view's or Plain's particle (particleViews.js): the cube of its volume, as those
@@ -264,17 +300,196 @@ fn blockyFragment(o: Out, eye: vec3f, direction: vec3f) -> Surface {
     let blob = viewBlob(eye, direction, o.center, max(tn, 0.0), tf);
     look = dataLook(FU.view, id, o.core, n, seg, blob, T, particleAirAt(o.center).w, o.vel, cue);
   }
-  if (look.alpha < 1.0) {
-    let pixel = vec2u(o.position.xy);
-    let hash = coverageHash(o.stableId ^ coverageHash(pixel.x) ^ coverageHash(pixel.y+0x9e3779b9u) ^ coverageHash(P.sample));
-    if (f32(hash >> 8u) / 16777216.0 >= look.alpha) { discard; }
-  }
   var out: Surface; out.depth = depth;
-  out.color = vec4f(max(vec3f(0.0), look.color), 1.0);
+  // a see-through look is in the blended pass (softLook), premultiplied; the rest cover
+  let cover = select(1.0, clamp(look.alpha, 0.0, 1.0), P.soft != 0u);
+  out.color = vec4f(max(vec3f(0.0), look.color) * cover, cover);
   return out;
 }`;
 
-// The particle's tables, temperature and coverage hash (the draw's and the pick's).
+// What a packet is drawn as (MATTER_LOOK): which pass, its pieces, and the ray's nearest hit among them.
+const matterShapeWGSL = /* wgsl */ `
+const BITS: i32 = ${MATTER_LOOK.BITS};
+const BIT_LOD_PX: f32 = ${f(MATTER_LOOK.BIT_LOD_PX)};
+const SIZE_MIN: f32 = ${f(MATTER_LOOK.SIZE_MIN)};
+const SIZE_MAX: f32 = ${f(MATTER_LOOK.SIZE_MAX)};
+const GRIT_FILL: f32 = ${f(MATTER_LOOK.GRIT_FILL)};
+const GRIT_SPREAD: f32 = ${f(MATTER_LOOK.GRIT_SPREAD)};
+const GRIT_AXES: vec3f = ${v(MATTER_LOOK.GRIT_AXES)};
+const SHARD_AXES: vec3f = ${v(MATTER_LOOK.SHARD_AXES)};
+const GRIT_TONE: f32 = ${f(MATTER_LOOK.GRIT_TONE)};
+const TUMBLE: f32 = ${f(MATTER_LOOK.TUMBLE)};
+const TUMBLE_AXIS: vec3f = ${v(MATTER_LOOK.TUMBLE_AXIS)};
+const BUMP: f32 = ${f(MATTER_LOOK.BUMP)};
+const BUMP_CELLS: f32 = ${f(MATTER_LOOK.BUMP_CELLS)};
+const DROP_SPREAD: f32 = ${f(MATTER_LOOK.DROP_SPREAD)};
+const DROP_STRETCH_PER_MS: f32 = ${f(MATTER_LOOK.DROP_STRETCH_PER_MS)};
+const DROP_STRETCH_MAX: f32 = ${f(MATTER_LOOK.DROP_STRETCH_MAX)};
+const DROP_TINT: f32 = ${f(MATTER_LOOK.DROP_TINT)};
+const DROP_LENS: f32 = ${f(MATTER_LOOK.DROP_LENS)};
+const PUFF_RADIUS: f32 = ${f(MATTER_LOOK.PUFF_RADIUS)};
+const PUFF_DENSITY: f32 = ${f(MATTER_LOOK.PUFF_DENSITY)};
+const FIRE_DENSITY: f32 = ${f(MATTER_LOOK.FIRE_DENSITY)};
+const PUFF_SUN_WRAP: f32 = ${f(MATTER_LOOK.PUFF_SUN_WRAP)};
+const SHAPE_GRIT: u32 = 0u;
+const SHAPE_DROP: u32 = 1u;
+const SHAPE_SHARD: u32 = 2u;
+// The looks that let what is behind show (particleViews.js dataLook and plainLook's alpha under 1; the
+// material views' gas and fire): drawn blended, after everything that writes depth. The rest cover.
+fn softLook(view: i32, id: u32) -> bool {
+  let rclass = LOOK_CLASS[id].y;
+  let gas = LOOK_CLASS[id].x == ${K.GAS}u;
+  if (view == VIEW_PLAIN) { return rclass != ${R.OPAQUE}u; }
+  if (view == VIEW_XRAY) { return true; }
+  if (view == VIEW_PRESSURE) { return gas || rclass == ${R.LIQUID}u || rclass == ${R.GLASS}u; }
+  if (view == VIEW_HEAT || view == VIEW_FLOW) { return gas || i32(id) == E_GLASS_ID; }
+  return rclass == ${R.GAS}u || rclass == ${R.FIRE}u;
+}
+fn shapeOf(id: u32) -> u32 {
+  let rclass = LOOK_CLASS[id].y;
+  if (rclass == ${R.LIQUID}u) { return SHAPE_DROP; }
+  if (rclass == ${R.GLASS}u) { return SHAPE_SHARD; }
+  return SHAPE_GRIT;
+}
+// Three values in [0, 1) of a word.
+fn hash3(word: u32) -> vec3f {
+  let a = particleHash(word); let b = particleHash(a ^ 0x9e3779b9u); let c = particleHash(b ^ 0x85ebca6bu);
+  return vec3f(f32(a >> 8u), f32(b >> 8u), f32(c >> 8u)) / 16777216.0;
+}
+// A piece's even share: its radius over the packet's equal-volume radius, with n pieces shown.
+fn bitSize(shape: u32, n: i32) -> f32 { return pow(select(1.0, GRIT_FILL, shape == SHAPE_GRIT) / f32(n), 1.0 / 3.0); }
+// Its half-axes (unit volume): a drop's long one along the flight (local z).
+fn bitAxes(shape: u32, stretch: f32) -> vec3f {
+  if (shape == SHAPE_DROP) { let w = inverseSqrt(stretch); return vec3f(w, w, stretch); }
+  if (shape == SHAPE_SHARD) { return SHARD_AXES; }
+  return GRIT_AXES;
+}
+// How far the pieces' centres lie from the packet's (local axes), over its equal-volume radius.
+fn bitSpread(shape: u32, stretch: f32) -> vec3f {
+  if (shape == SHAPE_DROP) { return DROP_SPREAD * vec3f(1.0, 1.0, stretch); }
+  return vec3f(GRIT_SPREAD);
+}
+// The ball that holds every piece (the quad's), over the equal-volume radius.
+fn clumpBound(shape: u32, n: i32, stretch: f32) -> f32 {
+  let axes = bitAxes(shape, stretch);
+  let spread = bitSpread(shape, stretch);
+  return select(0.0, max(spread.x, spread.z), n > 1) + SIZE_MAX * bitSize(shape, n) * max(axes.x, max(axes.y, axes.z));
+}`;
+// The fragment's side: the packet's frame, the nearest piece along the ray, a gas puff.
+const matterFragmentWGSL = /* wgsl */ `
+// The clump's axes in the grid (columns): a burst of drops along its flight; clods and shards about an axis
+// of their own, turning as they fly (by the distance flown: still when the simulation is).
+fn clumpFrame(o: Out, shape: u32) -> mat3x3f {
+  var ez = vec3f(0.0, 1.0, 0.0);
+  var spin = 0.0;
+  if (shape == SHAPE_DROP) {
+    let speed = length(o.vel);
+    if (speed > 1e-4) { ez = o.vel / speed; }
+  } else {
+    let h = hash3(o.stableId ^ 0x68bc21ebu) * 2.0 - 1.0;
+    let l = length(h);
+    if (l > 1e-3) { ez = h / l; }
+    spin = TUMBLE * dot(o.center + P.origin, TUMBLE_AXIS) + h.x * 6.2831853;
+  }
+  let pick = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(ez.y) > 0.9);
+  let ex0 = normalize(cross(pick, ez));
+  let ey0 = cross(ez, ex0);
+  let ex = ex0 * cos(spin) + ey0 * sin(spin);
+  return mat3x3f(ex, cross(ez, ex), ez);
+}
+// t: along the ray (cells), under 0 for a miss; normal: outward, grid; chord: the ray's length inside the
+// piece; tone: the piece's own value in [0, 1)
+struct Bit { t: f32, normal: vec3f, chord: f32, tone: f32 }
+fn clumpHit(o: Out, eye: vec3f, direction: vec3f) -> Bit {
+  let shape = shapeOf(o.id);
+  let frame = clumpFrame(o, shape);
+  let n = i32(o.bits);
+  let stretch = o.shape.x;
+  let r0 = o.shape.y;
+  let ro = (eye - o.center) * frame;
+  let rd = direction * frame;
+  let size = r0 * bitSize(shape, n);
+  let axes = bitAxes(shape, stretch);
+  let spread = r0 * bitSpread(shape, stretch);
+  var best = -1.0;
+  var bestUnit = vec3f(0.0);
+  var bestRadii = vec3f(1.0);
+  var bestChord = 0.0;
+  var bestTone = 0.5;
+  for (var i = 0; i < n; i++) {
+    let h = hash3(o.stableId * 8u + u32(i));
+    // the first piece at the packet's own place: the one a far packet keeps
+    var c = vec3f(0.0);
+    if (i > 0) { let u = h * 2.0 - 1.0; c = u / max(length(u), 1.0) * spread; }
+    let tone = fract(h.x * 7.31 + h.y * 3.17);
+    var radii = axes;
+    if (shape != SHAPE_DROP) {
+      if (i % 3 == 1) { radii = axes.yzx; } else if (i % 3 == 2) { radii = axes.zxy; }
+    }
+    radii *= size * mix(SIZE_MIN, SIZE_MAX, tone);
+    let q = (ro - c) / radii;
+    let d = rd / radii;
+    let a = dot(d, d);
+    let b = dot(q, d);
+    let disc = b * b - a * (dot(q, q) - 1.0);
+    if (disc <= 0.0) { continue; }
+    let root = sqrt(disc);
+    let t = (-b - root) / a;
+    if (t <= 0.0 || (best >= 0.0 && t >= best)) { continue; }
+    best = t; bestUnit = q + d * t; bestRadii = radii; bestChord = 2.0 * root / a; bestTone = tone;
+  }
+  var hit = Bit(best, vec3f(0.0, 1.0, 0.0), bestChord, bestTone);
+  if (best < 0.0) { return hit; }
+  let smoothNormal = normalize(bestUnit / bestRadii);
+  var local = smoothNormal;
+  if (shape != SHAPE_DROP) {
+    // facets: a tilt per patch of the piece's surface, fixed to it
+    let g = vec3i(floor(bestUnit * BUMP_CELLS));
+    let word = particleHash(u32(g.x) ^ particleHash(u32(g.y) + 0x9e3779b9u) ^ particleHash(u32(g.z) + 0x85ebca6bu) ^ o.stableId);
+    local = normalize(smoothNormal + BUMP * (hash3(word) * 2.0 - 1.0));
+    // (a facet turned from the eye would light as a back face)
+    if (dot(local, rd) >= 0.0) { local = smoothNormal; }
+  }
+  hit.normal = frame * local;
+  return hit;
+}
+// A gas or flame packet: a puff of its medium, densest through its middle and gone at its rim (no outline),
+// blended over what is behind it (the soft pass). Its depth is its middle's: what stands in front of that hides it.
+fn puffFragment(o: Out, eye: vec3f, direction: vec3f) -> Surface {
+  let oc = eye - o.center;
+  let b = dot(oc, direction);
+  let d = b * b - dot(oc, oc) + o.radius * o.radius;
+  if (d <= 0.0) { discard; }
+  let root = sqrt(d);
+  let t0 = max(-b - root, 0.0);
+  let t1 = -b + root;
+  if (t1 <= t0) { discard; }
+  let mid = eye + direction * (0.5 * (t0 + t1));
+  let midClip = FU.viewProj * FU.model * vec4f(mid, 1.0);
+  let depth = midClip.z / midClip.w;
+  if (depth < 0.0 || depth > 1.0 || midClip.w <= 0.0) { discard; }
+  if (!cutawayKeepsPoint(mid, FU.cutaway)) { discard; }
+  let id = o.id;
+  // (1 through the middle, 0 at the rim)
+  let core = d / (o.radius * o.radius);
+  let density = select(PUFF_DENSITY, FIRE_DENSITY, LOOK_CLASS[id].y == ${R.FIRE}u) * viewGasLife(id, o.core);
+  let alpha = 1.0 - exp(-LOOK_OPTICS[id].x * (t1 - t0) * core * density);
+  let front = eye + direction * t0 - o.center;
+  let frontLength = length(front);
+  var gridNormal = -direction;
+  if (frontLength > 1e-4) { gridNormal = front / frontLength; }
+  let normal = normalize((transpose(P.inverseModel) * vec4f(gridNormal, 0.0)).xyz);
+  let sun = normalize((FU.model * vec4f(FU.sun, 0.0)).xyz);
+  let lit = FU.sunCol * FU.sunExt * mix(PUFF_SUN_WRAP, 1.0, max(dot(normal, sun), 0.0)) * particleSun(mid, FU.sun);
+  let ambient = particleEnv(mid, vec3f(0.0, 1.0, 0.0), vec3f(0.0, 1.0, 0.0));
+  let scatter = mix(LOOK_SCATTER[id], decoLinear(o.paint.rgb), o.paint.a);
+  var out: Surface; out.depth = depth;
+  // premultiplied: ONE, ONE_MINUS_SRC_ALPHA
+  out.color = vec4f(max(vec3f(0.0), scatter * (ambient + lit) * FU.lightGain + o.glow) * alpha, alpha);
+  return out;
+}`;
+
+// The particle's tables, temperature and hash (the draw's and the pick's).
 const particleCommonWGSL = () => `
 ${tables}
 ${incandescenceGLSL().replace('TB.incand[i]', 'PARTICLE_INCAND[i]')}
@@ -284,7 +499,7 @@ fn temperature(id: u32, word: u32) -> f32 {
   if (raw > ${PHASE_NORMAL_MAX}u) { tq = select(PHASE_TQ[id].x, PHASE_TQ[id].y, raw >= ${PHASE_COLD_BASE}u); }
   return f32(tq) * 0.25 - 273.25;
 }
-fn coverageHash(input: u32) -> u32 {
+fn particleHash(input: u32) -> u32 {
   var x = input; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; return x ^ (x >> 16u);
 }`;
 
@@ -299,10 +514,11 @@ struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
 @group(1) @binding(1) var<storage, read> particleDeco: array<u32>;
 // TPT's decoration over the element's colour by its alpha (src/graphics/Renderer.cpp; the volume's
-// shaders/gfx/deco.js decoTint and absorbDeco, for a sphere of one albedo: no texture detail to keep)
+// shaders/gfx/deco.js decoTint and absorbDeco, for pieces of one albedo: no texture detail to keep)
 fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
 ${particleCommonWGSL()}${rays ? '' : `
 ${particleViewsWGSL()}
+${matterShapeWGSL}
 ${particleAirWGSL}
 ${particleLightWGSL}`}
 struct Out {
@@ -315,7 +531,9 @@ struct Out {
   @location(5) @interpolate(flat) paint: vec4f,${rays ? '' : `
   @location(6) @interpolate(flat) core: vec4u,     // the particle's core (v2 cell words x..w)
   @location(7) @interpolate(flat) vel: vec3f,      // velocity, cells per V1 step (the data views' B)
-  @location(8) @interpolate(flat) half: f32,       // half the side of its equal-volume cube (blocky views)`}
+  @location(8) @interpolate(flat) half: f32,       // half the side of its equal-volume cube (blocky views)
+  @location(9) @interpolate(flat) bits: u32,       // the pieces it shows (matterShapeWGSL)
+  @location(10) @interpolate(flat) shape: vec2f,   // a drop's stretch along its flight; its equal-volume radius, cells`}
 }
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Out {
   var o: Out; o.position = vec4f(2.0,2.0,2.0,1.0);
@@ -339,25 +557,44 @@ struct Out {
   var amount = 1.0;
   if (LOOK_CLASS[id].x == ${K.LIQUID}u) { amount = f32(p.payloadBank.x & 0xffffffu) / 65536.0; }
   if (amount <= 0.0) { return o; }
-  // Equal-volume sphere: 4*pi*r^3/3 = amount, not a photon-sized marker.
-  o.radius = pow(amount * (3.0 / (4.0 * 3.141592653589793)), 1.0 / 3.0);
+  // each look in its own pass: the see-through ones blended, the rest writing depth (softLook)
+  if (softLook(FU.view, id) != (P.soft != 0u)) { return o; }
+  // the radius of a ball of its volume: 4*pi*r^3/3 = amount
+  let r0 = pow(amount * (3.0 / (4.0 * 3.141592653589793)), 1.0 / 3.0);
   let alb = LOOK_ALBEDO[id].rgb;
   let emissivity = 1.0 - clamp(dot(alb * LOOK_EMIT[id].w, vec3f(0.2126,0.7152,0.0722)),0.0,1.0);
   o.glow = LOOK_EMIT[id].rgb + emissivity * incandescence(temperature(id,p.velocityCore.w));
   o.core = vec4u(p.velocityCore.w, p.payloadBank.xyz);
-  o.vel = bitcast<vec3f>(p.velocityCore.xyz) / V1_CELLS_PER_STEP_MS;
+  let velocity = bitcast<vec3f>(p.velocityCore.xyz);
+  o.vel = velocity / V1_CELLS_PER_STEP_MS;
   // The data views and Plain draw a cell as a cube (a voxel, a block): a flying one too,
   // of equal volume; its bounding sphere sizes the quad.
   o.half = 0.5 * pow(amount, 1.0 / 3.0);
-  if (blockyView(FU.view)) { o.radius = o.half * sqrt(3.0); }`}
+  o.bits = 1u; o.shape = vec2f(1.0, r0);
+  o.radius = r0;`}
   var k = vi; if (vi == 3u) { k = 2u; } else if (vi == 4u) { k = 1u; } else if (vi == 5u) { k = 3u; }
   let uv = vec2f(f32(k & 1u),f32(k >> 1u)) * 2.0 - 1.0;
   let centerWorld = (FU.model * vec4f(o.center,1.0)).xyz;
   let clip = FU.viewProj * vec4f(centerWorld,1.0);
-  let towardEye = P.eye - centerWorld; let distance = length(towardEye);
+  let towardEye = P.eye - centerWorld; let distance = length(towardEye);${rays ? '' : `
+  if (blockyView(FU.view)) { o.radius = o.half * sqrt(3.0); }
+  else if (P.soft != 0u) { o.radius = r0 * PUFF_RADIUS; }
+  else {
+    let shape = shapeOf(id);
+    var stretch = 1.0;
+    if (shape == SHAPE_DROP) { stretch = min(1.0 + length(velocity) * DROP_STRETCH_PER_MS, DROP_STRETCH_MAX); }
+    // its pieces by its size on screen (the projection's y row: the focal length over the height's half)
+    var n = BITS;
+    if (clip.w > 0.0) {
+      let focal = length(vec3f(FU.viewProj[0][1], FU.viewProj[1][1], FU.viewProj[2][1]));
+      n = clamp(i32(r0 * P.scale * focal * P.viewport.y * 0.5 / (clip.w * BIT_LOD_PX)), 1, BITS);
+    }
+    o.bits = u32(n); o.shape = vec2f(stretch, r0);
+    o.radius = r0 * clumpBound(shape, n, stretch);
+  }`}
   let bound = o.radius * P.scale;
-  // Conservative screen rectangle when touching the eye/near plane. Fragment
-  // ray/sphere intersection handles the inside and clips actual surface depth.
+  // Conservative screen rectangle when touching the eye/near plane. The fragment's
+  // ray intersection handles the inside and clips actual surface depth.
   if (clip.w <= 2.0 * bound || distance <= bound) {
     o.position = vec4f(uv,0.0,1.0); return o;
   }
@@ -368,14 +605,14 @@ struct Out {
   o.position = FU.viewProj * vec4f(centerWorld + (right * uv.x + up * uv.y) * extent,1.0);
   return o;
 }
-struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${rays ? '' : blockyFragmentWGSL}
+struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${rays ? '' : blockyFragmentWGSL + matterFragmentWGSL}
 @fragment fn fs(o: Out) -> Surface {
   let ndc = vec2f(o.position.x / P.viewport.x * 2.0 - 1.0, 1.0 - o.position.y / P.viewport.y * 2.0);
   let farH = FU.invViewProj * vec4f(ndc,1.0,1.0);
   let eye = (P.inverseModel * vec4f(P.eye,1.0)).xyz;
   let farPoint = (P.inverseModel * vec4f(farH.xyz / farH.w,1.0)).xyz;
-  let direction = normalize(farPoint - eye);${rays ? '' : `
-  if (blockyView(FU.view)) { return blockyFragment(o, eye, direction); }`}
+  let direction = normalize(farPoint - eye);
+  ${rays ? `
   let oc = eye - o.center; let b = dot(oc,direction);
   let d = b*b - dot(oc,oc) + o.radius*o.radius;
   if (d <= 0.0) { discard; }
@@ -392,12 +629,23 @@ struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${r
   if (depth < 0.0 || depth > 1.0 || hitClip.w <= 0.0) { discard; }
   if (!cutawayKeepsPoint(hit, FU.cutaway)) { discard; }
   var out: Surface; out.depth = depth;
-  ${rays ? `
   let falloff = d / (o.radius*o.radius);
   // Already weighted (premultiplied) radiance; additive ONE,ONE, preserve alpha.
   out.color = vec4f(o.glow * falloff * falloff,0.0);` : `
+  if (blockyView(FU.view)) { return blockyFragment(o, eye, direction); }
+  if (P.soft != 0u) { return puffFragment(o, eye, direction); }
+  let bit = clumpHit(o, eye, direction);
+  if (bit.t < 0.0) { discard; }
+  let hit = eye + direction * bit.t;
+  let hitClip = FU.viewProj * FU.model * vec4f(hit,1.0);
+  let depth = hitClip.z / hitClip.w;
+  if (depth < 0.0 || depth > 1.0 || hitClip.w <= 0.0) { discard; }
+  if (!cutawayKeepsPoint(hit, FU.cutaway)) { discard; }
+  var out: Surface; out.depth = depth;
   let id = o.id; let optics = LOOK_OPTICS[id]; var alb = LOOK_ALBEDO[id];
-  let normal = normalize((transpose(P.inverseModel) * vec4f((hit-o.center)/o.radius,0.0)).xyz);
+  let rclass = LOOK_CLASS[id].y;
+  let gridNormal = bit.normal;
+  let normal = normalize((transpose(P.inverseModel) * vec4f(gridNormal,0.0)).xyz);
   let view = normalize(P.eye-(FU.model*vec4f(hit,1.0)).xyz);
   let sun = normalize((FU.model * vec4f(FU.sun,0.0)).xyz);
   let halfVector = normalize(sun+view);
@@ -408,46 +656,50 @@ struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${r
   // on screen), matte, its lit top and darker underside. Cozy's patterns are the realistic
   // albedo times metre-scale strokes (gfx/cozy.js): on a one-cell particle they average to
   // the realistic look, which is what it keeps (same look, not a deviation).
-  if (FU.materialStyle == NOITA_STYLE && LOOK_CLASS[id].y == ${R.OPAQUE}u && VIEW_NOITA[id].w > 0.0) {
-    let ny = (hit.y - o.center.y) / o.radius;
+  if (FU.materialStyle == NOITA_STYLE && rclass == ${R.OPAQUE}u && VIEW_NOITA[id].w > 0.0) {
+    let ny = gridNormal.y;
     alb = vec4f(VIEW_NOITA[id].rgb * select(select(1.0, NOITA_UNDER, ny < -NOITA_RIM_N), NOITA_RIM, ny > NOITA_RIM_N), NOITA_ROUGH);
     metal = 0.0; f0 = NOITA_F0;
   }
-  var fresnel = mix(vec3f(f0),alb.rgb,metal) + (vec3f(1.0)-mix(vec3f(f0),alb.rgb,metal))*pow(1.0-max(dot(normal,view),0.0),5.0);
-  if (LOOK_CLASS[id].x == ${K.GAS}u) { fresnel = vec3f(0.0); }
+  let facing = max(dot(normal,view),0.0);
+  let fresnel = mix(vec3f(f0),alb.rgb,metal) + (vec3f(1.0)-mix(vec3f(f0),alb.rgb,metal))*pow(1.0-facing,5.0);
   let specPower = max(2.0,2.0 / max(alb.w*alb.w,0.002)-2.0);
   var specular = fresnel * pow(max(dot(normal,halfVector),0.0),specPower) * (specPower+2.0)/8.0;
   // the volume's light where it is bound (particleLightWGSL: the sun's map and the clouds, the GI probes), in grid space
-  let gridNormal = (hit-o.center)/o.radius;
   let light = FU.sunCol * FU.sunExt * max(dot(normal,sun),0.0) * particleSun(hit, gridNormal);
-  var ambient = mix(FU.ground,FU.skyUp,normal.y*0.5+0.5) + FU.caveAmbient;
-  if (P.light != 0u) { ambient = particleGI(hit, gridNormal); }
+  let ambient = particleEnv(hit, gridNormal, normal);
   var diffuse = alb.rgb * (1.0-metal);
+  // clod to clod, a little lighter or darker (the grain of loose matter)
+  if (rclass == ${R.OPAQUE}u) { diffuse *= mix(1.0 - GRIT_TONE, 1.0 + GRIT_TONE, bit.tone); }
   let paint = o.paint;
   // a painted metal is a painted (dielectric) coat, as the volume's decoSurf
   if (paint.a > 0.0) { diffuse = mix(diffuse, decoLinear(paint.rgb), paint.a); specular *= 1.0 - paint.a * metal; }
-  if (LOOK_CLASS[id].y != ${R.OPAQUE}u) {
-    let chord = 2.0*root;
-    // painted liquid or glass reads as paint, not dye (shaders/gfx/deco.js DECO_SIGMA)
-    let transmission = exp(-mix(optics.rgb, vec3f(${f(DECO_SIGMA)}), paint.a) * chord);
-    let alpha = clamp(1.0-dot(transmission*(vec3f(1.0)-fresnel),vec3f(0.2126,0.7152,0.0722)),0.0,1.0);
-    // ID + pixel + explicit TAA sample: independent stacked layers; default
-    // sample=0 stays stable when TAA is disabled and never wakes an idle scene.
-    let pixel = vec2u(o.position.xy);
-    let hash = coverageHash(o.stableId ^ coverageHash(pixel.x) ^ coverageHash(pixel.y+0x9e3779b9u) ^ coverageHash(P.sample));
-    if (f32(hash >> 8u) / 16777216.0 >= alpha) { discard; }
-    diffuse = mix(LOOK_SCATTER[id], decoLinear(paint.rgb), paint.a) * (vec3f(1.0)-transmission) / max(alpha,0.00001);
-    specular /= max(alpha,0.00001);
+  var color = diffuse*(ambient+light)+specular*light;
+  if (rclass == ${R.LIQUID}u || rclass == ${R.GLASS}u) {
+    // A drop or a shard covers what is behind it and shows, as a bead of the stuff does: the light bent
+    // through it, dyed over the ray's path inside (Beer-Lambert; painted: DECO_SIGMA, shaders/gfx/deco.js),
+    // mixed with its own lit colour by how much it dyes and never under DROP_TINT, under its mirror of the
+    // surroundings (Fresnel) and the sun's glint. The surroundings are the bound light's (particleEnv):
+    // no second trace, and nothing behind is read. A bead is a wide lens: DROP_LENS of what comes through
+    // is the light all round it, so a drop over ground the probes hold dark is still lit water.
+    let transmission = exp(-mix(optics.rgb, vec3f(${f(DECO_SIGMA)}), paint.a) * bit.chord);
+    let mirrored = reflect(-view, normal);
+    var bent = refract(-view, normal, 1.0 / optics.w);
+    if (dot(bent, bent) < 1e-6) { bent = -view; }
+    let toGrid = P.inverseModel;
+    let mirror = particleEnv(hit, normalize((toGrid * vec4f(mirrored,0.0)).xyz), mirrored);
+    let through = mix(particleEnv(hit, normalize((toGrid * vec4f(bent,0.0)).xyz), bent), ambient, DROP_LENS) * transmission;
+    let own = max(vec3f(DROP_TINT), vec3f(1.0) - transmission);
+    color = mix(mix(through, diffuse*(ambient+light), own), mirror, fresnel) + specular*light;
   }
-  // Binary coverage is premultiplied alpha 0 or 1, NOT additive matter.
-  out.color = vec4f(max(vec3f(0.0),(diffuse*(ambient+light)+specular*light)*FU.lightGain+o.glow),1.0);`}
+  out.color = vec4f(max(vec3f(0.0),color*FU.lightGain+o.glow),1.0);`}
   return out;
 }`;
 
 // The pick (gfx/volume.js recordPicks, render.js pickFrag's rays and ring): a V1 flying cell
 // is a cell, so the box pick finds it; a V2 one flies in the pool. After the grid's pick has
 // written each ray's slot, this kernel finds the nearest matter particle along the ray (the
-// shape its view draws: particleViews.js blockyView's cube, else the equal-volume sphere)
+// shape its view draws: particleViews.js blockyView's cube, else the ball of its volume its pieces fly about)
 // and, where it is nearer than the grid's hit, writes its cell, face and (id, T, P, life) as
 // pickFrag does. A workgroup per ray, its threads striding the pool. Curved rays (the
 // rolling log) skip it: particles are not bent by the presentation (wire/rays.js).
@@ -572,18 +824,26 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
   picks[s + 1u] = vec4f(f32(id), temperature(id, core.x), particleAirAt(c).w, particleLife(id, core));
 }`;
 
-export const nativeParticlePipeline = (rays = false) => ({
-  vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets: [{ format: 'rgba16float',
-    ...(rays ? { blend: { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'zero', dstFactor: 'one' } } } : {}),
-  }] }, primitive: { topology: 'triangle-list' },
-  depthStencil: { format: 'depth32float', depthWriteEnabled: !rays, depthCompare: 'less-equal' },
-});
+const KEEP_ALPHA = { srcFactor: 'zero', dstFactor: 'one' };
+const PARTICLE_BLEND = {
+  rays: { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: KEEP_ALPHA },
+  soft: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: KEEP_ALPHA },
+};
+/** kind: 'matter' (covers, writes depth), 'soft' (the see-through looks, blended) or 'rays' (additive); true: 'rays'. */
+export const nativeParticlePipeline = (kind = 'matter') => {
+  const pass = kind === true ? 'rays' : kind || 'matter', blend = PARTICLE_BLEND[pass];
+  return {
+    vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets: [{ format: 'rgba16float', ...(blend ? { blend } : {}) }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: !blend, depthCompare: 'less-equal' },
+  };
+};
 export const WGSL_CHECK = [
   { name: 'nativeParticleArgs', kind: 'compute', grids: false, warm: false, code: nativeParticleArgsWGSL,
     params: NativeParticleParams, layouts: () => [NATIVE_PARTICLE_ARGS_LAYOUT], dispatch: () => [1,1,1] },
   { name: 'nativeParticlePick', kind: 'compute', grids: false, warm: false, code: particlePickWGSL,
     params: ParticlePickParams, layouts: () => [RENDER_LAYOUT.FRAME,PARTICLE_PICK_LAYOUT,NATIVE_PARTICLE_AIR_LAYOUT], layoutNames: ['FRAME'], dispatch: () => [PICK_RAYS,1,1] },
-  ...[false,true].map(rays => ({ name: rays ? 'nativeParticleRays' : 'nativeParticleMatter', kind: 'render', grids: false,
-    warm: false, code: () => nativeParticleWGSL(rays), params: NativeParticleParams,
-    layouts: () => [RENDER_LAYOUT.FRAME,NATIVE_PARTICLE_LAYOUT,rays ? NATIVE_PARTICLE_AIR_LAYOUT : NATIVE_PARTICLE_LIGHT_LAYOUT], layoutNames: ['FRAME'], ...nativeParticlePipeline(rays) })),
+  ...['matter','soft','rays'].map(pass => ({ name: `nativeParticle${pass[0].toUpperCase()}${pass.slice(1)}`, kind: 'render', grids: false,
+    warm: false, code: () => nativeParticleWGSL(pass === 'rays'), params: NativeParticleParams,
+    layouts: () => [RENDER_LAYOUT.FRAME,NATIVE_PARTICLE_LAYOUT,pass === 'rays' ? NATIVE_PARTICLE_AIR_LAYOUT : NATIVE_PARTICLE_LIGHT_LAYOUT], layoutNames: ['FRAME'], ...nativeParticlePipeline(pass) })),
 ];

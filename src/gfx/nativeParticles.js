@@ -38,7 +38,7 @@ export function worldParticleLight(light, volume, gpu) {
 
 /** CPU view data only: physics world coordinates are never rebased or copied.
  * lagSeconds: how far behind its record each particle is drawn (v2/host.js particleLagSeconds). */
-export function nativeParticleView(camera, targetHeight, volumeMatrix, origin = [0,0,0], sample = 0, lagSeconds = 0) {
+export function nativeParticleView(camera, targetHeight, volumeMatrix, origin = [0,0,0], lagSeconds = 0) {
   if (!(targetHeight > 0) || !Number.isFinite(targetHeight)) throw new RangeError('invalid target height');
   const matrix = new Matrix4();
   if (volumeMatrix) matrix.fromArray(volumeMatrix.elements ?? volumeMatrix);
@@ -51,10 +51,9 @@ export function nativeParticleView(camera, targetHeight, volumeMatrix, origin = 
   const eye = camera.matrixWorld ? new Vector3().setFromMatrixPosition(camera.matrixWorld).toArray() : vector(camera.position);
   const o = vector(origin);
   if (o.length !== 3 || !o.every(Number.isFinite) || !eye.every(Number.isFinite)) throw new Error('invalid particle view coordinates');
-  if (!Number.isInteger(sample) || sample < 0 || sample > 0xffffffff) throw new RangeError('invalid TAA sample');
   if (!(lagSeconds >= 0) || !Number.isFinite(lagSeconds)) throw new RangeError('invalid particle lag');
   // (velocity m/s × lag cells per m/s: cells; the records' velocity, renderState.velocity)
-  return { inverseModel: matrix.invert().elements, origin: o, scale: Math.sqrt(norm1*normInf), eye, sample, lag: lagSeconds / CELL_M };
+  return { inverseModel: matrix.invert().elements, origin: o, scale: Math.sqrt(norm1*normInf), eye, lag: lagSeconds / CELL_M };
 }
 
 export function validateNativeParticleSource(state) {
@@ -87,10 +86,17 @@ export class NativeParticles {
     this.airGroups = new Map(); this.lightGroups = new Map();
     this.args = gpu.createBuffer({ label: 'native particles draw args', size: 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT });
-    this.pipes = [false,true].map(rays => gpu.renderPipeline({
-      name: rays ? 'nativeParticleRays' : 'nativeParticleMatter', code: nativeParticleWGSL(rays),
-      layouts: [this.fu.layout,this.layout,rays ? this.airLayout : this.lightLayout], params: NativeParticleParams, ...nativeParticlePipeline(rays),
-    }));
+    const pipe = (pass, extra = {}) => gpu.renderPipeline({
+      name: `nativeParticle${pass[0].toUpperCase()}${pass.slice(1)}`, code: nativeParticleWGSL(pass === 'rays'),
+      layouts: [this.fu.layout,this.layout,pass === 'rays' ? this.airLayout : this.lightLayout], params: NativeParticleParams,
+      ...nativeParticlePipeline(pass), ...extra,
+    });
+    // matter: everything that covers (clods, shards, drops), writing depth; rays: photons and neutrons, additive
+    this.pipes = [pipe('matter'),pipe('rays')];
+    // soft: the see-through looks (gas and fire puffs; the data views' and Plain's translucent cubes), blended
+    // over the rest. The matter pass's own module with other blend state, built behind what a frame waits for:
+    // smoke shows a moment after the first grit, never a blocked first frame.
+    this.softPipe = pipe('soft',{ build: 'later' });
     this.countPipe = gpu.kernel({ name: 'nativeParticleArgs', code: nativeParticleArgsWGSL(),
       layouts: [this.argsLayout], params: NativeParticleParams });
     // the pick's particle pass (particleRender.js particlePickWGSL): built in idle time, as the
@@ -167,8 +173,8 @@ export class NativeParticles {
     byAir.set(k, { key: key ?? [], group });
     return group;
   }
-  updateView(camera, targetHeight, volumeMatrix = null, origin = [0,0,0], { sample = 0, lagSeconds = 0 } = {}) {
-    this.view = nativeParticleView(camera,targetHeight,volumeMatrix,origin,sample,lagSeconds);
+  updateView(camera, targetHeight, volumeMatrix = null, origin = [0,0,0], { lagSeconds = 0 } = {}) {
+    this.view = nativeParticleView(camera,targetHeight,volumeMatrix,origin,lagSeconds);
     this.preparedFrame = null;
   }
   prepareDraw(frame = this.gpu.frame) {
@@ -185,7 +191,7 @@ export class NativeParticles {
     }
     // A GPU-zero live count means zero vertex work, even when air/emitter work
     // keeps the dynamics source awake. No async CPU count can race new spawns.
-    this.countPipe.dispatch(frame,[1,1,1],{ bind: [this.countGroup], params: { ...this.view, capacity: s.capacity, viewport: [1,1] } });
+    this.countPipe.dispatch(frame,[1,1,1],{ bind: [this.countGroup], params: { ...this.view, soft: 0, capacity: s.capacity, viewport: [1,1] } });
     this.preparedFrame = frame;
     return true;
   }
@@ -199,9 +205,12 @@ export class NativeParticles {
     if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new RangeError('invalid particle viewport');
     const air = this.air();
     const options = { bind: [this.fu.group,this.group,air.group], indirect: { buffer: this.args, offset: 0 },
-      params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0, light: light ? (light.world ? PARTICLE_WORLD_LIGHT : 1) : 0 } };
+      params: { ...this.view, ...air.params, soft: 0, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0, light: light ? (light.world ? PARTICLE_WORLD_LIGHT : 1) : 0 } };
     const [matter, rays] = this.pipes;
-    matter.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] });
+    const lit = { ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] };
+    // what covers first (it writes depth), then the see-through looks over it, then the rays' glow
+    matter.draw(rp,lit);
+    if (this.softPipe.state === 'ready') this.softPipe.draw(rp,{ ...lit, params: { ...lit.params, soft: 1 } });
     rays.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
   }
