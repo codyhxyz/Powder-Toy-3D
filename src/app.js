@@ -49,6 +49,7 @@ import { preservationManifest } from './lab/preservation/index.js';
 import { destroyableCityManifest } from './scenes/destroyableCity.js';
 import { nuclearReactorManifest } from './scenes/nuclearReactor.js';
 import { nuclearBunkerManifest } from './scenes/nuclearBunker.js';
+import { volcanoTownManifest } from './scenes/volcanoTown.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -112,12 +113,13 @@ const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], 
   valley: ARENA_PRESETS.damValley.size };
 // Authored fixed-size presets switch to their grid; ordinary box scenes
 // switch back. Their grids aren't in the Grid size row.
-const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley', destroyableCity: 'valley', nuclearReactor: 'valley', nuclearBunker: 'valley' };
+const FIXED_PRESET_GRID = { damValley: 'valley', preservationLab: 'valley', labStudies: 'valley', destroyableCity: 'valley', nuclearReactor: 'valley', nuclearBunker: 'valley', volcanoTown: 'valley' };
 const PRESET_PLAQUES = new Map([
   ['preservationLab', preservationManifest],
   ['destroyableCity', destroyableCityManifest],
   ['nuclearReactor', nuclearReactorManifest],
   ['nuclearBunker', nuclearBunkerManifest],
+  ['volcanoTown', volcanoTownManifest],
 ]);
 const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset

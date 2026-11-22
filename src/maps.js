@@ -50,6 +50,8 @@ export const MAPS = [
   { key: 'destroyableCity', name: 'Destroyable City', size: 'valley', preset: 'destroyableCity', dims: [256, 96, 128],
     startInPov: true, spawnYaw: 0,
     desc: 'A Powder Toy city with a metro, a canal and a rigged skyline. Fire the demolition charges from across the boulevard.' },
+  { key: 'volcanoTown', name: 'Volcano & Dam', size: 'valley', preset: 'volcanoTown', dims: [256, 96, 128], startInPov: true,
+    desc: 'Fire a volcano or breach an alpine dam from the lookout. Lava and floodwater meet in a destructible riverside village.' },
   { key: 'quarry', viewPreviewVersion: 2, name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
     desc: 'Sort gold-bearing sand, automate exposed ore faces, pump a finite reservoir and smelt metal. Physical grains, real spills.' },
   { key: 'lab', viewPreviewVersion: 2, name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,

@@ -12,6 +12,7 @@ import { PRESERVATION_SPAWN } from '../lab/preservation/index.js';
 import { DESTROYABLE_CITY_SPAWN } from '../scenes/destroyableCity.js';
 import { NUCLEAR_REACTOR_SPAWN } from '../scenes/nuclearReactor.js';
 import { NUCLEAR_BUNKER_SPAWN } from '../scenes/nuclearBunker.js';
+import { VOLCANO_TOWN_SPAWN } from '../scenes/volcanoTown.js';
 import { Vector3 } from 'three';
 
 const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
@@ -22,6 +23,7 @@ const PRESET_SPAWNS = {
   destroyableCity: DESTROYABLE_CITY_SPAWN,
   nuclearReactor: NUCLEAR_REACTOR_SPAWN,
   nuclearBunker: NUCLEAR_BUNKER_SPAWN,
+  volcanoTown: VOLCANO_TOWN_SPAWN,
 };
 let factoryBelt = null;
 
