@@ -9,10 +9,11 @@ import { createPov } from '../pov/index.js';
 import { isGearTool } from '../elements.js';
 import { QUARRY_SPAWN } from '../industry/catalog.js';
 import { PRESERVATION_SPAWN } from '../lab/preservation/index.js';
+import { VOLCANO_TOWN_SPAWN } from '../scenes/volcanoTown.js';
 import { Vector3 } from 'three';
 
 const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
-const PRESET_SPAWNS = { quarry: QUARRY_SPAWN, preservationLab: PRESERVATION_SPAWN, labStudies: [128, 2, 16] };
+const PRESET_SPAWNS = { quarry: QUARRY_SPAWN, volcanoTown: VOLCANO_TOWN_SPAWN, preservationLab: PRESERVATION_SPAWN, labStudies: [128, 2, 16] };
 let factoryBelt = null;
 
 const pov = {

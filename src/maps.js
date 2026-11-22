@@ -47,6 +47,8 @@ export const MAPS = [
     desc: 'A fresh Noita world folded into a continuous 3D arc, its caves rounded out in depth, from the start mountain and the Mines down to Kolmi. Original Holy Mountain portals connect the main biomes; vertical bands load around the player.' },
   { key: 'damValley', viewPreviewVersion: 2, name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
+  { key: 'volcanoTown', name: 'Volcano & Dam', size: 'valley', preset: 'volcanoTown', dims: [256, 96, 128], startInPov: true,
+    desc: 'Fire a volcano or breach an alpine dam from the lookout. Lava and floodwater meet in a destructible riverside village.' },
   { key: 'quarry', viewPreviewVersion: 2, name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
     desc: 'Sort gold-bearing sand, automate exposed ore faces, pump a finite reservoir and smelt metal. Physical grains, real spills.' },
   { key: 'lab', viewPreviewVersion: 2, name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,
