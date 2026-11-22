@@ -63,7 +63,7 @@ const TOUCH_MARGIN = 1;
 // Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
 const UNDO_LIMIT = 3;
 
-// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): every grid starts with one, the
+// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): one on first use, the
 // cache the native engine's V1-format writers, loads and readbacks go through (src/v2/physics.js); a
 // window's V1-format shift before its native owner is ready runs out of place into a second, which
 // the owner's activation drops. Bytes a slot in each copy: A and B a vec4f each, F a u32 (a copy is
@@ -218,7 +218,7 @@ export class Simulation {
    *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
    *   world: that world's size (the GI's far layout, src/derived.js);
    *   debug: every state access tests its cell and counts misses (readDebug; I2.8).
-   *   Every grid keeps one legacy copy (a window's pre-owner shift grows a second: pingPong)
+   *   Legacy access materializes one copy (a window's pre-owner shift grows a second: pingPong).
    */
   constructor(gpu, nx, ny, nz, { windowed = false, world = null, debug = gpu.debug } = {}) {
     this.gpu = gpu;
@@ -273,7 +273,7 @@ export class Simulation {
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${this.id} ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     const slots = g.slots;
     this.cur = 0;
-    const { A, B, F } = this._stateBuffers(ONE_COPY);
+    this._legacy = null;
     this.flow = buf('flow', slots * 8);
     // the decoration's plane until the native owner takes it (_side, PhysicsV2.activate)
     this.moveSrc = buf('moveSrc (none)', 16);
@@ -285,13 +285,15 @@ export class Simulation {
     this.noMask = buf('paint mask (none)', 16);   // the brush's group 2 when it isn't a fill (passes.js PAINT_LAYOUT)
     const sim = this;
     this.state = {
-      A, B, F, flow: this.flow, slots,
+      get A() { return sim._legacyBuffer('A'); },
+      get B() { return sim._legacyBuffer('B'); },
+      get F() { return sim._legacyBuffer('F'); },
+      flow: this.flow, slots,
       get cur() { return sim.cur; },
     };
     // ---- bind groups, made once (B6) ----
     const L = (this.L = simLayouts(gpu));
     this.tables = tablesOf(gpu).group;
-    this._stateGroups();
 
     // ---- kernels (B5): the writers and readers a native host goes through ----
     const dbg = { debug: this.debug };
@@ -324,7 +326,13 @@ export class Simulation {
     if (gpu.testMode) this.passOf('toAtlas');
     // (the state starts blank once they are: load() needs its kernel)
     this.ready = Promise.all(Object.values(this.passes).map((k) => k.ready))
-      .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
+      .then(async () => {
+        if (!this.disposed && this.version === 0) {
+          if (!this.legacyAllocated && this.compact?.initializeBlank) await this.compact.initializeBlank();
+          else this.clear();
+        }
+        return this;
+      });
 
     // the derived passes' bookkeeping (src/derived.js reads and resets these)
     this.changedAll = true;  // every brick changed since the derived passes last ran
@@ -337,6 +345,25 @@ export class Simulation {
     this.history = [];
   }
 
+  get legacyAllocated() { return this._legacy === undefined ? !!this.state?.A : !!this._legacy; }
+
+  /** Materializes the V1-format cache on first use. Use legacyState() to refresh an existing cache. */
+  ensureLegacyState() {
+    if (this._legacy === null) this.legacyState();
+    return this._legacy ?? this.state;
+  }
+
+  _allocateLegacyState() {
+    if (this._legacy === null) {
+      if (this.disposed) throw new Error('Simulation is disposed');
+      this._legacy = this._stateBuffers(ONE_COPY);
+      this._stateGroups();
+    }
+    return this._legacy ?? this.state;
+  }
+
+  _legacyBuffer(name) { return this.ensureLegacyState()[name]; }
+
   // The legacy state's buffers with `copies` copies (docs/webgpu.md C1).
   _stateBuffers(copies) {
     const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
@@ -346,17 +373,28 @@ export class Simulation {
 
   // The group-1 bind groups that hold the state's buffers (made once per set of them, B6).
   _stateGroups() {
-    const { gpu, L } = this, { A, B, F } = this.state;
+    const { gpu, L } = this, { A, B, F } = this._legacy ?? this.state;
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     this._bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
     this._bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
     this._bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
-    this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
+    this._bindBuild = null;
     this._bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
   }
 
-  // The legacy state's copies held now.
-  get copies() { return this.state.A.size / (this.g.slots * STATE_BYTES.A); }
+  // The derived age pass only reads marks and activity; A/B/F are unused layout slots.
+  get bindBuild() {
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    const { A = this.noMask, B = this.noMask, F = this.noMask } = this._legacy ?? {};
+    return (this._bindBuild ??= this.gpu.bindGroup(this.L.STATE_BUILD,
+      [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build'));
+  }
+
+  // The compatibility cache has one logical copy until a pre-owner shift grows it.
+  get copies() {
+    const a = this._legacy === undefined ? this.state?.A : this._legacy?.A;
+    return a ? a.size / (this.g.slots * STATE_BYTES.A) : ONE_COPY;
+  }
 
   /**
    * Holds both legacy copies (on: a V1-format shift, before the window's native
@@ -371,7 +409,7 @@ export class Simulation {
     const n = on ? PING_PONG : ONE_COPY;
     // (a window under V2 holds one too: its move is V2's, and V1's copy then only a cache: shift below)
     if (n === this.copies || (!on && this.g.windowed !== false && !(this.g.windowed === true && this.compact)) || this.gpu.failure) return;
-    const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
+    const f = this.gpu.frame, state = this.ensureLegacyState(), next = this._stateBuffers(n), slots = this.g.slots;
     for (const k of Object.keys(STATE_BYTES)) {
       f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);
       this._retire(state[k]);
@@ -465,13 +503,23 @@ export class Simulation {
 
   // Writer/readback compatibility boundaries. Internal compact kernels bind
   // their own groups and legacy headers, so synchronization cannot recurse.
-  legacyState(native = false) { this.compact?.exportLegacy(native); }
+  legacyState(native = false) {
+    this.compact?.exportLegacy(native);
+    if (this._legacy === null) {
+      this._allocateLegacyState();
+      // Before bridge readiness, a legacy writer still needs the same blank projection.
+      if (this.compact?.blankInitialized && !this.compact.isReady) this.clear();
+    }
+  }
   get bindRW() { this.legacyState(true); return this._bindRW; }
   get bindAct() { this.legacyState(); return this._bindAct; }
   get bindFlagsRO() { this.legacyState(); return this._bindFlagsRO; }
   get bindRO() {
     const v2 = this.compact;
-    if (!v2?.isReady) return this._bindRO;
+    if (!v2?.isReady) {
+      if (this._legacy === null) this.ensureLegacyState();
+      return this._bindRO;
+    }
     v2.sync();
     return v2.readGroup();
   }
@@ -481,7 +529,10 @@ export class Simulation {
   // readers never read B.
   get bindPhysicalRO() {
     const v2 = this.compact;
-    if (!v2?.isReady) return this._bindRO;
+    if (!v2?.isReady) {
+      if (this._legacy === null) this.ensureLegacyState();
+      return this._bindRO;
+    }
     v2.sync();
     // (only the dynamics' buffers: their coarse air holds its rest, still air, until their kernels step it)
     const d = v2.dynamics;
@@ -818,6 +869,7 @@ export class Simulation {
   // into the current copy, with fresh flags (docs/webgpu.md C2).
   load(dataA, dataB) {
     if (this.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
+    this._allocateLegacyState();   // the load itself fills the cache, without a separate blank load
     const { width, height } = this.g, texels = width * height;
     const scratch = this._atlasScratch();
     this.gpu.write(scratch, 0, dataA.subarray(0, texels * 4));
@@ -1463,11 +1515,12 @@ export class Simulation {
     // later submit is a validation error, while one already submitted is freed
     // once the queue is done with it
     if (!this.gpu.failure) this.gpu.flush('sim dispose');
-    const { A, B, F } = this.state;
+    const { A, B, F } = this._legacy ?? (this._legacy === undefined ? this.state : null) ?? {};
     this.deco?.dispose?.();   // (its own buffers; its plane is moveSrc's, below)
     for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.noMask,
       this.paintMask, this.flowTmp, this.atlasScratch, this.rectScratch, this.editScratch]) b?.destroy();
     for (const t of this.history) for (const b of [t.A, t.B, t.compact, t.aux, ...(t.dynamic?.buffers ?? [])]) b?.destroy();   // (an entry holds V1's copies or V2's)
+    this._legacy = null;
     this.history = [];
   }
 }

@@ -27,7 +27,7 @@ export const SHADOW_PAD = 1;               // voxels the map's disc reaches past
 export const VOLUME_SHADOW_BIAS = 0.6;     // depth bias (voxels) for points inside volumes (no normal)
 
 // Soft-shadow taps per pass (blocker search, then filter).
-const PCSS_TAPS = 8;
+const PCSS_TAPS = 4;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 // Points of an n-point Vogel (sunflower) disc of radius 1, as WGSL vec2fs.
 const vogel = (n) => Array.from({ length: n }, (_, i) => {
@@ -645,6 +645,8 @@ fn fieldAO(p: vec3f, n: vec3f) -> f32 {
 // their field is inside (sampled where the ray passes closest to the cell
 // centre: their cells' staircase stands proud of a slope), and only from
 // selfSkip cells out, since the ray starts by one; the floor counts as matter.
+const LAMP_MAX_STEPS: i32 = 24;
+const LAMP_STRIDE_FROM: f32 = 16.0;
 const NEAR_MAX_STEPS: i32 = 48;   // cells (or empty-region jumps) a traced ray may visit
 // Whether p is inside a smooth surface (opaqueOnly: an opaque one; else liquid too).
 fn nearSmoothIn(p: vec3f, opaqueOnly: bool) -> bool {
@@ -693,6 +695,13 @@ fn traceNearSteps(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: 
     tEnter = tMax[ax];
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
+    // Beyond the nearby occluders, lamps sample every other cell boundary.
+    if (maxSteps == LAMP_MAX_STEPS && tEnter >= LAMP_STRIDE_FROM && cell.y >= 0) {
+      ax = argmin3(tMax);
+      tEnter = tMax[ax];
+      cell[ax] += istp[ax];
+      tMax[ax] += tDelta[ax];
+    }
   }
   return -1.0;
 }
@@ -1103,7 +1112,7 @@ fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamO
     var o = ro;
     var rd = vec3f(0.0);
     var len = 0.0;
-    var steps = NEAR_MAX_STEPS;
+    var steps = LAMP_MAX_STEPS;
     var nl = 0.0;
     var d2 = 0.0;
     var R = 0.0;
@@ -1152,7 +1161,6 @@ fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamO
     }`}
     var hc: vec3i;
     var hn: vec3f;
-    // (traceNear: the lamps' NEAR_MAX_STEPS)
     if (${giUniforms ? '' : 'trace && '}traceNearSteps(o, rd, len, true, LAMP_SELF_SKIP, steps, &hc, &hn) >= 0.0) { continue; }${giUniforms ? '' : `
     if (beam) {
       sum += power * nl;

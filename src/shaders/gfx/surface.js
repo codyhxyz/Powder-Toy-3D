@@ -230,7 +230,7 @@ var<private> CELL_ORDER: array<vec3f, 27> = array<vec3f, 27>(
   vec3f(0.0, -1.0, 1.0), vec3f(-1.0, 0.0, 1.0), vec3f(1.0, 0.0, 1.0), vec3f(0.0, 1.0, 1.0), vec3f(-1.0, -1.0, -1.0),
   vec3f(1.0, -1.0, -1.0), vec3f(-1.0, 1.0, -1.0), vec3f(1.0, 1.0, -1.0), vec3f(-1.0, -1.0, 1.0), vec3f(1.0, -1.0, 1.0),
   vec3f(-1.0, 1.0, 1.0), vec3f(1.0, 1.0, 1.0));
-fn mCell(p: vec3f, ge: ptr<function, vec3f>, r1: ptr<function, vec3f>) -> vec4f {
+fn mCell(p: vec3f, fp: f32, ge: ptr<function, vec3f>, r1: ptr<function, vec3f>) -> vec4f {
   let i = floor(p);
   let f = p - i;
   var d1 = CELL_FAR;
@@ -238,12 +238,19 @@ fn mCell(p: vec3f, ge: ptr<function, vec3f>, r1: ptr<function, vec3f>) -> vec4f 
   var s1 = vec3f(0.0);
   var s2 = vec3f(1.0);
   var c1 = vec3f(0.0);
-  for (var k = 0; k < 27; k++) {
-    let o = CELL_ORDER[k];
-    // how near a seed of cell o (anywhere in [o, o + 1)) can be to f
-    let lo = o - f;
-    let gap = max(max(lo, -(lo + 1.0)), vec3f(0.0));
-    if (dot(gap, gap) >= d2) { continue; }
+  // Close enough to resolve the edges: exact search with the lattice-box bound.
+  // Farther out, search the eight cells sharing the nearest lattice corner.
+  let exact = fp <= 0.08;
+  let corner = step(vec3f(0.5), f) - 1.0;
+  for (var k = 0; k < select(8, 27, exact); k++) {
+    var o = corner + vec3f(f32(k & 1), f32((k >> 1) & 1), f32(k >> 2));
+    if (exact) {
+      o = CELL_ORDER[k];
+      // How near a seed of cell o (anywhere in [o, o + 1)) can be to f.
+      let lo = o - f;
+      let gap = max(max(lo, -(lo + 1.0)), vec3f(0.0));
+      if (dot(gap, gap) >= d2) { continue; }
+    }
     let r = o + hash33(i + o) - f;
     let d = dot(r, r);
     if (d < d1) { d2 = d1; s2 = s1; d1 = d; s1 = r; c1 = i + o; }
@@ -552,7 +559,7 @@ fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4
   if (lwF > 0.0) {
     var ge: vec3f;
     var r1: vec3f;
-    let cc = mCell(J * pw, &ge, &r1);
+    let cc = mCell(J * pw, fp, &ge, &r1);
     *c = cc;
     // furrow: up from its floor to the plate; dome: down from the plate's seed
     let h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, cc.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
@@ -845,6 +852,7 @@ fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, keep: f
 // detail, the softness this replaces.
 const TEX_LAYERS: i32 = ${TEX_LAYERS};
 const TEX_TRI_SHARP: f32 = 4.0;     // the blend: weights ∝ |n|^this, so a face reads one projection and the seams between them stay narrow (Golus's 4-8)
+const TEX_TRI_WEAK: vec2f = vec2f(0.15, 0.20);   // fade out the weakest projection before skipping it
 const TEX_TRI_MIN: f32 = 0.02;      // a projection weighted under this share is skipped (two reads saved) and the rest renormalised
 const TEX_LOD_BIAS: f32 = 0.0;      // mip levels added to the footprint's (0: one texel a pixel, the mipmap rule)
 const TEX_TEXELS_MIN: f32 = 1e-6;   // floor on texels a pixel (keeps log2 finite)
@@ -866,6 +874,7 @@ const TEX_VARY_F: f32 = 1.3;                      // the noise's frequency, per 
 const TEX_VARY_N: f32 = 8.0;                      // copies the noise steps through
 const TEX_VARY_OFFSET: vec2f = vec2f(3.0, 7.0);   // copy i is the tile shifted by sin(i × this) tiles
 const TEX_VARY_EDGE: vec2f = vec2f(0.2, 0.8);     // the share of a step over which one copy fades into the next
+const TEX_VARY_FOOT: vec2f = vec2f(0.16, 0.25);   // mipmapped tiles need only the base sample beyond this footprint
 const TEX_VARY_SALT: f32 = 17.3;                  // decorrelates its noise from the other lattices
 // sRGB decoding of the albedo layers (IEC 61966-2-1, gfx/materials.js's)
 const TEX_SRGB_LINEAR_MAX: f32 = 0.04045;
@@ -935,16 +944,21 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
   var oa = vec2f(0.0);
   var ob = vec2f(0.0);
   var fade = 0.0;
-  if (TEXTINT(id).w > 0.0) {
+  if (fp < TEX_VARY_FOOT.y && TEXTINT(id).w > 0.0) {
+    let keep = 1.0 - smoothstep(TEX_VARY_FOOT.x, TEX_VARY_FOOT.y, fp);
     let k = vnoise(q * TEX_VARY_F + TEX_VARY_SALT) * TEX_VARY_N;
     let ia = floor(k);
-    oa = sin(TEX_VARY_OFFSET * ia);
-    ob = sin(TEX_VARY_OFFSET * (ia + 1.0));
+    oa = keep * sin(TEX_VARY_OFFSET * ia);
+    ob = keep * sin(TEX_VARY_OFFSET * (ia + 1.0));
     fade = smoothstep(TEX_VARY_EDGE.x, TEX_VARY_EDGE.y, k - ia);
   }
   let ft = texFoot(p, n, fp * tm.y * exp2(TEX_LOD_BIAS));   // in tiles, as q
   var w = pow(abs(n), vec3f(TEX_TRI_SHARP)) * planes;
-  w = select(vec3f(0.0), w, w >= vec3f(TEX_TRI_MIN * (w.x + w.y + w.z)));
+  let total = w.x + w.y + w.z;
+  w = select(vec3f(0.0), w, w >= vec3f(TEX_TRI_MIN * total));
+  let weakXY = select(1, 0, w.x <= w.y);
+  let weak = select(2, weakXY, w[weakXY] <= w.z);
+  w[weak] *= smoothstep(TEX_TRI_WEAK.x * total, TEX_TRI_WEAK.y * total, w[weak]);
   w /= max(w.x + w.y + w.z, TEX_TEXELS_MIN);
   let sg = select(vec3f(-1.0), vec3f(1.0), n >= vec3f(0.0));
   var alb = vec3f(0.0);
@@ -1132,8 +1146,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     var r1S = vec3f(0.0);
     var cb = vec4f(1.0, 1.0, 1.0, 0.5);
     var cs = vec4f(1.0, 1.0, 0.5, 0.5);
-    if (lwB > 0.0) { cb = mCell(p * CHUNK_F, &geB, &r1B); }
-    if (lwS > 0.0) { cs = mCell(p * PEBBLE_F + SMALL_SALT, &geS, &r1S); }
+    if (lwB > 0.0) { cb = mCell(p * CHUNK_F, fp, &geB, &r1B); }
+    if (lwS > 0.0) { cs = mCell(p * PEBBLE_F + SMALL_SALT, fp, &geS, &r1S); }
     // distance in from each chip's outline (lattice units; < 0 outside it)
     let dB = length(r1B - n * dot(r1B, n));
     let dS = length(r1S - n * dot(r1S, n));
@@ -1467,7 +1481,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     } else {
     var ge: vec3f;
     var r1: vec3f;
-    let c = mCell(p * LEAF_F, &ge, &r1);
+    let c = mCell(p * LEAF_F, fp, &ge, &r1);
     let tilt = hash33(vec3f(c.z, c.w, TILT_SALT) * TILT_HASH_SCALE) - 0.5;
     let rt = r1 - n * dot(r1, n);             // to the seed, within the surface
     let ax = normalize(tilt - n * dot(tilt, n) + 1e-4);
@@ -1708,7 +1722,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     var ge = vec3f(0.0);
     var r1 = vec3f(0.0);
     var c = vec4f(1.0, 1.0, 0.5, 0.5);
-    if (lwp > 0.0) { c = mCell(p * LAVA_PLATE_FREQ, &ge, &r1); }
+    if (lwp > 0.0) { c = mCell(p * LAVA_PLATE_FREQ, fp, &ge, &r1); }
     let lwc = lodFade(LAVA_PLATE_FREQ * LAVA_CRACK_LOD, fp);
     // crack half-width: hairlines once the crust has set, wide enough to
     // swallow the plates once it has broken up

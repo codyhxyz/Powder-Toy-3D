@@ -1,6 +1,6 @@
 import { BRICK, brickIdOf } from './shaders/common.js';
 import { FIELD_FORMAT, DIRTY, dirtyLists } from './shaders/fields.js';
-import { FIELD_RESOURCES, createFieldResources, createFieldLayouts, createFieldKernels, createFieldHelpers, createFieldGroups, bindFieldAeration, FieldDeriver } from './gfx/fieldDeriver.js';
+import { FIELD_RESOURCES, FIELD_TEXTURES, createFieldResources, createFieldLayouts, createFieldKernels, createFieldHelpers, createFieldGroups, bindFieldAeration, FieldDeriver } from './gfx/fieldDeriver.js';
 import {
   ageFrag, dirtyFrag, dirtyArgsFrag, brickFrag, brickDistFrag, blurFrag, brickShiftFrag, giShiftFrag, brickBitsFrag, boxArgsFrag,
   shadowMarkFrag, shadowListFrag, shadowArgsFrag,
@@ -107,16 +107,25 @@ function derivedLayouts(gpu) {
 
 export { fieldWeights } from './gfx/fieldDeriver.js';
 
+const DERIVED_BUFFERS = ['age', 'dlist', ...Object.keys(FIELD_RESOURCES), 'brick', 'brickDist', 'distX', 'distY',
+  'boxes', 'scratchB', 'lightA', 'lightB', 'giHist', 'giSrc', 'noAer'];
+const DERIVED_RESOURCES = [...DERIVED_BUFFERS, ...FIELD_TEXTURES, 'light', 'giTextures', 'views', 'groups', 'fields'];
+const FIELD_TEXEL_BYTES = 8;   // rgba16float
+
 export class Derived {
   /**
    * @param {import('./sim.js').Simulation} sim
-   * @param {{ world?: number[] | null }} [opts] world: the world size whose far layout the GI holds (sim.world)
+   * @param {{ world?: number[] | null, lazy?: boolean }} [opts] world: the GI far layout; lazy: defer GPU storage (default true)
    */
-  constructor(sim, { world = sim.world } = {}) {
+  constructor(sim, { world = sim.world, lazy = true } = {}) {
     const gpu = (this.gpu = sim.gpu);
     this.sim = sim;
     this.g = sim.g;
     this.world = world;
+    this.fieldsTmp = null;
+    Object.defineProperties(this, Object.fromEntries(DERIVED_RESOURCES.map((name) => [name, {
+      enumerable: true, get: () => this.ensureAllocated()[name],
+    }])));
     this.shiftsBricks = true;     // sim.shift: this keeps the history across a move (no changedAll)
     // test only (gpu.testMode): dropFold leaves the changes pending at a shift
     // where they are, dropJetToggle doesn't rebuild every brick when the
@@ -132,70 +141,12 @@ export class Derived {
     this._shadowAt = -Infinity;   // the derived frame the shadow map's tiles were last listed
     this._shadowMap = null;       // ...for this map
     this._giAt = -Infinity;       // ...and the GI's lists
-    const g = this.g, n = g.nbricks;
+    const g = this.g;
     this.lists = dirtyLists(g);
     this.shadowWords = shadowTileWords(g);
     this.giWords = giLists(g);
 
-    // ---- buffers and textures (made once per grid, B6) ----
-    const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
-    const label = (x) => `sim${sim.id} ${x}`;
-    const buf = (name, size, usage = S | CS | CD) => gpu.createBuffer({ label: label(name), size: Math.max(16, Math.ceil(size / 16) * 16), usage });
-    this.age = buf('age', n * 4);
-    this.dlist = buf('dirty lists', this.lists.words * 4, S | CS | GPUBufferUsage.INDIRECT);
-    const fields = createFieldResources(gpu, g, { label });
-    for (const name of ['ema', 'tmpA', 'tmpB', 'blurred']) this[name] = fields[name];
-    this.brick = buf('brick', n * 16);
-    // (after the distances, the march's occupancy, shaders/occupancy.js; after that, the shadow map's tiles)
-    this.brickDist = buf('brickDist', this.shadowWords.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
-    this.distX = buf('brickDist x', n * 4, S);
-    this.distY = buf('brickDist y', n * 4, S);
-    this.boxes = buf('brick regions', BOXES.words * 4, S | CS | GPUBufferUsage.INDIRECT);   // (copyable: gpu.indirectWorkgroups reads its arguments)
-    this.scratchB = buf('brick scratch', n * 16, S | CS);
-    this.lightA = buf('light blur A', n * 16, S);
-    this.lightB = buf('light blur B', n * 16, S);
-    this.giHist = buf('GI history', GI_BANDS * n * 8);
-    this.giSrc = buf('GI sources', this.giWords.words * 4);   // (copyable: tools/gi-check.mjs seeds and reads it)
-    this.noAer = buf('no aeration', 16, S);
-    const TB = GPUTextureUsage.TEXTURE_BINDING, SB = GPUTextureUsage.STORAGE_BINDING, TS = GPUTextureUsage.COPY_SRC, TD = GPUTextureUsage.COPY_DST;
-    const tex = (name, size, usage = TB | SB | TS | TD) => gpu.createTexture({ label: label(name), size, dimension: '3d', format: FIELD_FORMAT, usage });
-    const bricks = [g.bx, g.by, g.bz];
-    for (const name of ['fieldSurf', 'fieldMedia', 'fieldThin']) this[name] = fields[name];
-    this.light = tex('light', bricks, TB | SB | TS);
-    this.giTextures = [0, 1, 2, 3].map((k) => tex(`gi${k}`, bricks));
-    this.fieldsTmp = null;
-    const view = (t) => t.createView({ dimension: '3d' });
-    this.views = {
-      ...fields.views,
-      light: view(this.light), gi: this.giTextures.map(view),
-    };
-
-    // ---- bind groups (B6) ----
     const L = (this.L = derivedLayouts(gpu));
-    const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    const t = (binding, v) => ({ binding, resource: v });
-    const dist = (name, src, dst) => gpu.bindGroup(L.DIST, [b(0, src), b(1, dst), b(2, this.boxes)], name);
-    const v = this.views;
-    this.groups = {
-      book: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.dlist)], 'derived book'),
-      ...createFieldGroups(gpu, L, this),
-      brick: gpu.bindGroup(L.BRICK, [b(0, this.dlist), t(1, v.fieldSurf), t(2, v.fieldMedia), t(3, v.fieldThin), b(4, this.brick),
-        b(5, this.boxes)], 'brick'),
-      boxes: gpu.bindGroup(L.BOXES, [b(0, this.boxes)], 'brick regions'),
-      // empty-space distance: x from the brick map, y, z, each into a buffer of its own (REGIONS)
-      dist: [dist('brickDist x', this.brick, this.distX), dist('brickDist y', this.distX, this.distY), dist('brickDist z', this.distY, this.brickDist)],
-      // the light blur (docs/webgpu.md H2): brick → A, A → B, B → A, …, A → the light volume
-      light: { fromBrick: dist('light from brick', this.brick, this.lightA), aToB: dist('light A→B', this.lightA, this.lightB),
-        bToA: dist('light B→A', this.lightB, this.lightA),
-        aToLight: gpu.bindGroup(L.LIGHT, [b(0, this.lightA), t(1, v.light), b(2, this.boxes)], 'light A→volume') },
-      // the shadow map's tiles: the lists (FIELDS), brickDist's buffer (shadowTiles)
-      shadow: gpu.bindGroup(L.PAIR, [b(0, this.dlist), b(1, this.brickDist)], 'shadow tiles'),
-      // the GI's lists: the ages, the brick map, giSrc's buffer, the lists buffer (GI_NEAR)
-      giSelect: gpu.bindGroup(L.GI_SELECT, [b(0, this.age), b(1, this.brick), b(2, this.giSrc), b(3, this.dlist)], 'GI lists'),
-    };
-    this._jetBuffer = null;
-    this._jetGroups(this.noAer);
-
     // ---- kernels (B5): built now; the shift's on a world's grid (else on first use: prepare) ----
     const SL = sim.L, E = gpu.L.EMPTY;
     const kernel = (name, code, group1, group2, params = null) => gpu.kernel({ name, code, layouts: [SL.TABLES, group1, group2], params, workgroupSize: [64, 1, 1] });
@@ -214,11 +165,6 @@ export class Derived {
       shadowList: gpu.kernel({ name: 'shadowList', code: shadowListFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [64, 1, 1] }),
       shadowArgs: gpu.kernel({ name: 'shadowArgs', code: shadowArgsFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [1, 1, 1] }),
     };
-    this.fields = new FieldDeriver(gpu, { g, resources: this, layouts: L, kernels: this.kernels, tables: sim.tables, groups: this.groups,
-      onPass: (name, info) => sim.onPass?.(name, info) });
-    this.fields.aerBuffer = this._jetBuffer;
-    this.fields.aer = 0;
-    this.occupancy = new Occupancy(this);   // (its kernel joins this.kernels)
     this.passes = {};
     this._lazy = {
       ...createFieldHelpers(gpu, g, SL.TABLES, L),
@@ -226,6 +172,7 @@ export class Derived {
       giShift: () => kernel('giShift', giShiftFrag(g), E, L.GI_SHIFT, GiShiftParams),
       brickBits: () => kernel('brickBits', brickBitsFrag(g), E, L.PAIR),
     };
+    this.occupancy = new Occupancy(this);   // (its kernel joins this.kernels)
     if (kindOfGrid(g).streamed) this.prepare('shift');
     // (a world's grid moves: its shift's kernels are part of what it waits for)
     this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready)).then(() => this);
@@ -236,6 +183,84 @@ export class Derived {
     sim.giReset = true;
     sim.attachDerived(this);
     this._offShift = sim.onShift((dx, dz) => this.shift(dx, dz));
+    if (!lazy) this.ensureAllocated();
+  }
+
+  get allocated() { return !!this._resources; }
+
+  // Per-grid buffers and texture payloads; shared device resources are not charged here.
+  get bytes() {
+    return (this._resources?.bytes ?? 0) + (this.fieldsTmp ? this.g.nx * this.g.ny * this.g.nz * FIELD_TEXEL_BYTES : 0);
+  }
+
+  /** Materializes the Box derived resources once; readiness alone does not allocate storage. */
+  ensureAllocated() {
+    if (this._resources) return this._resources;
+    if (this._disposed) throw new Error('Derived is disposed');
+    const { gpu, sim, g, L } = this, n = g.nbricks, r = {};
+    // ---- buffers and textures (made once per grid, B6) ----
+    const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
+    const label = (x) => `sim${sim.id} ${x}`;
+    const buf = (name, size, usage = S | CS | CD) => gpu.createBuffer({ label: label(name), size: Math.max(16, Math.ceil(size / 16) * 16), usage });
+    r.age = buf('age', n * 4);
+    r.dlist = buf('dirty lists', this.lists.words * 4, S | CS | GPUBufferUsage.INDIRECT);
+    const fields = createFieldResources(gpu, g, { label });
+    for (const name of Object.keys(FIELD_RESOURCES)) r[name] = fields[name];
+    r.brick = buf('brick', n * 16);
+    // (after the distances, the march's occupancy, shaders/occupancy.js; after that, the shadow map's tiles)
+    r.brickDist = buf('brickDist', this.shadowWords.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
+    r.distX = buf('brickDist x', n * 4, S);
+    r.distY = buf('brickDist y', n * 4, S);
+    r.boxes = buf('brick regions', BOXES.words * 4, S | CS | GPUBufferUsage.INDIRECT);   // (copyable: gpu.indirectWorkgroups reads its arguments)
+    r.scratchB = buf('brick scratch', n * 16, S | CS);
+    r.lightA = buf('light blur A', n * 16, S);
+    r.lightB = buf('light blur B', n * 16, S);
+    r.giHist = buf('GI history', GI_BANDS * n * 8);
+    r.giSrc = buf('GI sources', this.giWords.words * 4);   // (copyable: tools/gi-check.mjs seeds and reads it)
+    r.noAer = buf('no aeration', 16, S);
+    const TB = GPUTextureUsage.TEXTURE_BINDING, SB = GPUTextureUsage.STORAGE_BINDING, TS = GPUTextureUsage.COPY_SRC, TD = GPUTextureUsage.COPY_DST;
+    const tex = (name, size, usage = TB | SB | TS | TD) => gpu.createTexture({ label: label(name), size, dimension: '3d', format: FIELD_FORMAT, usage });
+    const bricks = [g.bx, g.by, g.bz];
+    for (const name of FIELD_TEXTURES) r[name] = fields[name];
+    r.light = tex('light', bricks, TB | SB | TS);
+    r.giTextures = [0, 1, 2, 3].map((k) => tex(`gi${k}`, bricks));
+    const view = (t) => t.createView({ dimension: '3d' });
+    r.views = {
+      ...fields.views,
+      light: view(r.light), gi: r.giTextures.map(view),
+    };
+
+    // ---- bind groups (B6) ----
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    const t = (binding, v) => ({ binding, resource: v });
+    const dist = (name, src, dst) => gpu.bindGroup(L.DIST, [b(0, src), b(1, dst), b(2, r.boxes)], name);
+    const v = r.views;
+    r.groups = {
+      book: gpu.bindGroup(L.BOOK, [b(0, r.age), b(1, r.dlist)], 'derived book'),
+      ...createFieldGroups(gpu, L, r),
+      brick: gpu.bindGroup(L.BRICK, [b(0, r.dlist), t(1, v.fieldSurf), t(2, v.fieldMedia), t(3, v.fieldThin), b(4, r.brick),
+        b(5, r.boxes)], 'brick'),
+      boxes: gpu.bindGroup(L.BOXES, [b(0, r.boxes)], 'brick regions'),
+      // empty-space distance: x from the brick map, y, z, each into a buffer of its own (REGIONS)
+      dist: [dist('brickDist x', r.brick, r.distX), dist('brickDist y', r.distX, r.distY), dist('brickDist z', r.distY, r.brickDist)],
+      // the light blur (docs/webgpu.md H2): brick → A, A → B, B → A, …, A → the light volume
+      light: { fromBrick: dist('light from brick', r.brick, r.lightA), aToB: dist('light A→B', r.lightA, r.lightB),
+        bToA: dist('light B→A', r.lightB, r.lightA),
+        aToLight: gpu.bindGroup(L.LIGHT, [b(0, r.lightA), t(1, v.light), b(2, r.boxes)], 'light A→volume') },
+      // the shadow map's tiles: the lists (FIELDS), brickDist's buffer (shadowTiles)
+      shadow: gpu.bindGroup(L.PAIR, [b(0, r.dlist), b(1, r.brickDist)], 'shadow tiles'),
+      // the GI's lists: the ages, the brick map, giSrc's buffer, the lists buffer (GI_NEAR)
+      giSelect: gpu.bindGroup(L.GI_SELECT, [b(0, r.age), b(1, r.brick), b(2, r.giSrc), b(3, r.dlist)], 'GI lists'),
+    };
+
+    r.bytes = DERIVED_BUFFERS.reduce((sum, name) => sum + r[name].size, 0)
+      + FIELD_TEXEL_BYTES * (FIELD_TEXTURES.length * g.nx * g.ny * g.nz + (1 + r.giTextures.length) * n);
+    this._resources = r;
+    r.fields = new FieldDeriver(gpu, { g, resources: this, layouts: L, kernels: this.kernels, tables: sim.tables, groups: r.groups,
+      onPass: (name, info) => sim.onPass?.(name, info) });
+    this._jetGroups(r.noAer);
+    r.fields.aer = 0;
+    return r;
   }
 
   /**
@@ -456,6 +481,7 @@ export class Derived {
       frame = this.gpu._frameUniforms?.group, shadow = null, shadows = true,
     } = positional ? { shadow: args[1] ?? null, shadows: args[3] ?? true } : (a ?? {});
     if (!frame) throw new Error('derived.updateGI: no frame group (gfx/uniforms.js frameUniformsOf(gpu).group, written this tick)');
+    this.ensureAllocated();
     const k = this.giKernels();
     if (!Object.values(k).every((x) => x.state === 'ready')) {
       this.prepareGI().catch(() => {});   // (a kernel that fails stops graphics through gpu.fail)
@@ -601,6 +627,7 @@ export class Derived {
   resetGI() {
     this.sim.giFrame = 0;   // (and the checkerboard from its start, as a new Derived)
     this.giFull = true;
+    if (!this.allocated) return;   // freshly allocated textures and buffers are already zero
     const f = this.gpu.frame, g = this.g;
     f.clear(this.giHist);
     // the textures from a zeroed run of the scratch (rows padded to 256 bytes, as copies want)
@@ -639,6 +666,7 @@ export class Derived {
   shift(dx, dz) {
     const sim = this.sim, g = this.g, gpu = this.gpu;
     if (!sim.shiftKeepsHistory) return;   // the history starts over (sim.shift sets fieldReset, giReset)
+    this.ensureAllocated();
     const p = this.passes;
     if (![p.fieldShift, p.brickShift, p.giShift].every((x) => x?.state === 'ready')) {
       // (a grid made without `windowed` that hasn't prepared its shift: start over)
@@ -747,9 +775,13 @@ export class Derived {
     this._offShift?.();
     this.occupancy.dispose();
     if (this.sim.derived === this) this.sim.attachDerived(null);
+    this._disposed = true;
+    const r = this._resources;
+    if (!r) return;
     if (!this.gpu.failure) this.gpu.flush('derived dispose');
-    for (const x of [this.age, this.dlist, this.ema, this.tmpA, this.tmpB, this.blurred, this.brick, this.brickDist, this.distX, this.distY,
-      this.boxes, this.scratchB, this.lightA, this.lightB, this.giHist, this.giSrc, this.noAer, this.fieldSurf, this.fieldMedia, this.fieldThin, this.light,
-      ...this.giTextures, this.fieldsTmp]) x?.destroy();
+    for (const name of [...DERIVED_BUFFERS, ...FIELD_TEXTURES, 'light']) r[name].destroy();
+    for (const t of r.giTextures) t.destroy();
+    this.fieldsTmp?.destroy();
+    this.fieldsTmp = this._resources = null;
   }
 }

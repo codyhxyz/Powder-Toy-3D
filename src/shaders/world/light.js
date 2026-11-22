@@ -152,7 +152,7 @@ const declare = ([n, name, type, body]) => (body.buffer?.type === 'uniform'
  * shaders/world/bindings.js); skip leaves out those a writer binds writable. */
 export const lightDeclsWGSL = ({ skip = [] } = {}) => LIGHT_BINDINGS.filter(([n]) => !skip.includes(n)).map(declare).join('\n');
 
-const PCSS_TAPS = 8;
+const PCSS_TAPS = 4;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const vogel = (n) => Array.from({ length: n }, (_, i) => {
   const r = Math.sqrt((i + 0.5) / n), a = i * GOLDEN_ANGLE;
@@ -194,7 +194,17 @@ struct LcWalk { c: vec3i, t: f32, tOut: f32, ax: i32, w: u32, ok: bool }
 // field may be inside: the writers' walk through the fields). ok false: none (out of the world,
 // past tLim or out of steps; *steps counts them down).
 const LC_FIELD_BITS: u32 = ${BRICK_INFO.SURF | BRICK_INFO.MEDIA}u;
+const LAMP_MAX_STEPS: i32 = 24;
+const LAMP_STRIDE_FROM: f32 = 16.0;
+fn lcShadowAdvance(ro: vec3f, rd: vec3f, inv: vec3f, t: f32, stride: bool) -> f32 {
+  if (!stride || t < LAMP_STRIDE_FROM) { return t; }
+  let c = vec3i(floor(ro + rd * (t + LC_EPS)));
+  return max(t, lcExit(ro, inv, c, 1).x);
+}
 fn lcNext(ro: vec3f, rd: vec3f, inv: vec3f, t0: f32, tLim: f32, fieldAir: bool, steps: ptr<function, i32>) -> LcWalk {
+  return lcNextStride(ro, rd, inv, t0, tLim, fieldAir, steps, false);
+}
+fn lcNextStride(ro: vec3f, rd: vec3f, inv: vec3f, t0: f32, tLim: f32, fieldAir: bool, steps: ptr<function, i32>, stride: bool) -> LcWalk {
   var t = t0;
   var ax = -1;
   var lastB = vec3i(-2147483647);
@@ -217,7 +227,7 @@ fn lcNext(ro: vec3f, rd: vec3f, inv: vec3f, t0: f32, tLim: f32, fieldAir: bool, 
     if (!bOcc) { let e = lcExit(ro, inv, c, 4); t = e.x; ax = i32(e.y); continue; }
     let w = wcCell(c);
     if (wcId(w) != E_EMPTY || bField) { return LcWalk(c, t, min(e1.x, tLim), ax, w, true); }
-    t = e1.x;
+    t = lcShadowAdvance(ro, rd, inv, e1.x, stride);
     ax = i32(e1.y);
   }
   return LcWalk(vec3i(0), t, t, ax, 0u, false);
@@ -751,9 +761,10 @@ fn traceNearSteps(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: 
   var t = max(wh.x, 0.0);
   let tEnd = min(tLim, wh.y);
   var steps = maxSteps;
+  let stride = maxSteps == LAMP_MAX_STEPS;   // only lamp rays; sun, beacon and AO keep their budgets
   loop {
     if (t > tEnd) { break; }
-    let hit = lcNext(ro, rd, inv, t, tEnd, false, &steps);
+    let hit = lcNextStride(ro, rd, inv, t, tEnd, false, &steps, stride);
     if (!hit.ok) { break; }
     let id = wcId(hit.w);
     if (!isGasLike(id) && (!opaqueOnly || RCLASS(id) == R_OPAQUE)) {
@@ -761,7 +772,8 @@ fn traceNearSteps(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: 
       let tm = clamp(dot(vec3f(hit.c) + 0.5 - ro, rd), hit.t, hit.tOut);
       if (hit.t > selfSkip && nearSmoothIn(ro + rd * tm, opaqueOnly)) { *hc = hit.c; *hn = lcEntryNormal(rd, hit.ax); return hit.t; }
     }
-    t = hit.tOut;
+    if (stride && hit.tOut >= tEnd) { break; }
+    t = lcShadowAdvance(ro, rd, inv, hit.tOut, stride);
   }
   // the floor below the world
   if (rd.y < 0.0) {
@@ -1077,7 +1089,7 @@ fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamO
     var o = ro;
     var rd = vec3f(0.0);
     var len = 0.0;
-    var steps = NEAR_MAX_STEPS;
+    var steps = LAMP_MAX_STEPS;
     var nl = 0.0;
     var d2 = 0.0;
     var R = 0.0;

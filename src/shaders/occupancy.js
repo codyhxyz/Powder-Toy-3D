@@ -120,8 +120,6 @@ export class Occupancy {
       name: 'occupancy', code: occupancyFrag(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, derived.L.PAIR],
       params: OccParams, workgroupSize: [64, 1, 1],
     });
-    const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    this.group = gpu.bindGroup(derived.L.PAIR, [b(0, derived.dlist), b(1, derived.brickDist)], 'occupancy');
     // (the state has moved by whole bricks; the brick map moves with it, these words are rebuilt)
     this._off = sim.onShift(() => { if (sim.derived === derived) this.update(true); });
   }
@@ -129,6 +127,8 @@ export class Occupancy {
   /** Records the rebuild: the FIELDS list's bricks, or every brick. */
   update(all = false) {
     const d = this.derived, sim = d.sim;
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this.group ??= d.gpu.bindGroup(d.L.PAIR, [b(0, d.dlist), b(1, d.brickDist)], 'occupancy');
     d._dispatch(this.kernel, all ? fold(d.g.nbricks) : d._over(DIRTY.FIELDS), {
       bind: [sim.tables, sim.bindRO, this.group], header: sim.readHeader(), params: { all: all ? 1 : 0 },
     });

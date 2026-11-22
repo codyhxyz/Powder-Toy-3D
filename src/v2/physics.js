@@ -11,7 +11,7 @@ import {
   v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT, V2_BLOCK_FLOW_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, v2DemandWords, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   v2ChangeLayout,
-  TICK_HZ, FULL, V2, QUIET_TICKS, BRIDGE, LEGACY_WORD,
+  TICK_HZ, FULL, V2, QUIET_TICKS, BRIDGE, LEGACY_WORD, T_OFFSET,
 } from '../shaders/v2.js';
 import { pairOrder } from '../shaders/v2/columns.js';
 import { V2_ELECTRIC_KERNELS } from '../shaders/v2/electric.js';
@@ -20,6 +20,7 @@ import { CONTACT_CONSTANTS } from './contact.js';
 import { auxLayout } from '../shaders/v2/state.js';
 import { PARTICLE_CAP } from './dynamics-reference.js';
 import { kindOfGrid } from '../mapKind.js';
+import { PHYS } from '../physics.js';
 
 // Opt-in box physics. Compact cells are authoritative; read-only presentation
 // consumes them directly. Legacy A/B are a lazy, lossy compatibility cache for
@@ -143,7 +144,20 @@ export class PhysicsV2 {
     // the block pass's topples into the renderer's flow field (shaders/v2.js FLOW_TOPPLE_MARK; v2/flow.js's layout)
     L.BLOCK_FLOW = gpu.layout('V2_FLOW', V2_BLOCK_FLOW_LAYOUT);
     this.legacyLayouts = { read: sim.L.STATE_RO, import: L.IMPORT, state: L.STATE };
-    this.bindLegacy();
+    if (sim.legacyAllocated !== false) this.bindLegacy();
+    else {
+      // V1's initial load imports empty air at room temperature; the compact form has no air seed.
+      const room = Math.round((PHYS.AMBIENT + T_OFFSET) * 4) << 8;
+      this._blankKernel = gpu.kernel({ name: 'v2blank', layouts: [gpu.L.EMPTY, gpu.L.EMPTY, L.V2],
+        workgroupSize: [64, 1, 1], code: /* wgsl */ `
+@group(2) @binding(0) var<storage, read_write> cells: array<vec4u>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u,
+        @builtin(local_invocation_index) lane: u32) {
+  let s = ((wg.z * nwg.y + wg.y) * nwg.x + wg.x) * 64u + lane;
+  if (s < arrayLength(&cells)) { cells[s] = vec4u(${room}u, 0u, 0u, 0u); }
+}` });
+    }
     // Only the current legacy copy is ours to use: a box lets V1's other go
     // while it's owned (Simulation.pingPong: it binds the groups above again).
     sim.pingPong?.(false);
@@ -188,7 +202,7 @@ export class PhysicsV2 {
     // (every Simulation has the field; a CPU fixture's stand-in may not)
     this.flowField = sim.flow ? new NativeFlow(this, L.V2) : null;
     this.groups.flow = this.flowField?.group ?? gpu.bindGroup(L.BLOCK_FLOW, [b(0, buf('flow stand-in', 16))], 'v2 flow stand-in');
-    // Publish native readiness only after legacy storage has its blank defaults. `ready` is the
+    // Publish native readiness only after the grid has its blank defaults. `ready` is the
     // grid's: what draws and steps a world (the app's first frame waits for it). The flying matter's
     // (dynamics: particles, blasts, air; jets) builds behind it, `dynamicsReady`: until then every tick
     // steps the grid, and what the dynamics would serve waits where it is kept (dynamicsBuilt, _tick).
@@ -201,6 +215,8 @@ export class PhysicsV2 {
       if (this.disposed) return;
       this.isReady = true;
       this.contactReady = !!contactWGSL;
+      // The readiness notification is not a legacy write when startup was native.
+      if (this.blankInitialized && sim.version === this.seenVersion) this.seenVersion++;
       sim.version++;
       sim.changedAll = true;
     }, () => {});
@@ -214,11 +230,23 @@ export class PhysicsV2 {
   /** The liquid jets' kernels are built (NativeJets: R14's launches run from then on). */
   get jetsBuilt() { return !this.jets || (this.jets.isReady === true && this.dynamicsBuilt); }
 
+  async initializeBlank() {
+    await this._blankKernel.ready;
+    const sim = this.sim;
+    if (this.disposed || sim.disposed || sim.version !== 0) return;
+    if (sim.legacyAllocated || sim.compact !== this) { sim.clear(); return; }
+    this._blankKernel.dispatch(this.gpu.frame, fold(this.g.nbricks), { bind: [this.gpu.emptyGroup, this.gpu.emptyGroup, this.groups.v2] });
+    this.importFull = false;
+    this.blankInitialized = true;
+    this.seenVersion = ++sim.version;
+  }
+
   // The groups holding the simulation's legacy state: the import of today's
   // writers, the boundary bridge and the readers' B. Made again whenever the
   // simulation makes those buffers again (Simulation.pingPong).
   bindLegacy() {
-    const { gpu, sim, legacyLayouts: L } = this, { A, B, F } = sim.state;
+    const { gpu, sim, legacyLayouts: L } = this;
+    const { A, B, F } = sim.legacyAllocated === false ? sim._allocateLegacyState() : sim.state;
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     this.groups.read = gpu.bindGroup(L.read, [b(0, this.cells), b(1, B)], 'compact readers');
     this.groups.import = gpu.bindGroup(L.import, [b(0, A), b(1, B), b(3, sim.marks)], 'v2 import');
@@ -227,10 +255,16 @@ export class PhysicsV2 {
   // The readers' group (sim.bindRO, format 2): the cells, and in B dynamics' current coarse air
   // (two vec4f per brick, one group per air copy), which the Box's draw and the brick map's air
   // flags read as V1's B (shaders/v2/viewRead.js; V1 keeps air in B too). Generic readers' format
-  // 2 never reads B (shaders/common.js fetchBs). Without dynamics (CPU fixtures): groups.read.
+  // 2 never reads B (shaders/common.js fetchBs). Without dynamics, bind a tiny unused B.
   readGroup() {
     const d = this.dynamics;
-    if (!d?.air) return this.groups.read;
+    if (!d?.air) {
+      this.groups.read ??= this._noAirRead ??= this.gpu.bindGroup(this.legacyLayouts.read, [
+        { binding: 0, resource: { buffer: this.cells } },
+        { binding: 1, resource: { buffer: this.sim.noMask } },
+      ], 'compact readers (no air)');
+      return this.groups.read;
+    }
     if (this._readAir !== d.air) {
       this._readAir = d.air;
       this._readGroups = d.air.map(buffer => this.gpu.bindGroup(this.legacyLayouts.read, [
@@ -239,7 +273,7 @@ export class PhysicsV2 {
     return this._readGroups[d.airIndex];
   }
   // Whether group is one of the readers' groups (sim.probe: a reader of V2's cells).
-  isReadGroup(group) { return group === this.groups.read || !!this._readGroups?.includes(group); }
+  isReadGroup(group) { return !!group && (group === this.groups.read || group === this._noAirRead || !!this._readGroups?.includes(group)); }
 
   // ---- writes and rest ----
 
@@ -341,6 +375,8 @@ export class PhysicsV2 {
   _import(params) {
     if (!this.importFull && !this.importMarked) return;
     const { gpu, sim } = this;
+    if (sim.legacyAllocated === false) { this.importFull = this.importMarked = false; return; }
+    if (!this.groups.import) this.bindLegacy();
     this.kernels.v2externalEvents.dispatch(gpu.frame, fold(this.g.nbricks), {
       bind: [sim.tables, this.groups.invalidate, this.groups.contact], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
     });
@@ -370,6 +406,7 @@ export class PhysicsV2 {
     const modeChanged = this.legacyNative !== native;
     if (!this.legacyPending && !modeChanged) return;
     const { sim, gpu } = this;
+    if (!this.groups.state) this.bindLegacy();
     // What it converts (shaders/v2.js BRIDGE): the bricks changed since the last export; on a switch of
     // projection those and the ones holding a partial liquid fill the drawn dither hides (the only cells
     // the two projections show differently: every other brick's A/B hold both); before the first, all.
