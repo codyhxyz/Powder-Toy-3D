@@ -48,6 +48,10 @@
      one dig, and so does soil (grass and plants, moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
      Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
      worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
+     `[` and `]` (The Powder Toy's brush-size keys, as on the tool gun) set the bite's size for the shovel,
+     the pickaxe, the jackhammer and the trowel together, from one cell (0.3 m, the finest the world holds) to
+     the default 3-cell block (`dig.js` `biteSize`): a bite of n cells is n deep and n × n across on the n-cell
+     lattice, a throw is a bite's worth, and the trowel sets blocks of that size.
      The aimed bite's outline and cracks are drawn on the surface itself (`surface.js` `digMark`, FrameUniforms
      `digMin`/`digMax`), so they follow a trunk or a slope.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.

@@ -8,7 +8,7 @@ import { povEvents } from '../events.js';
 import { heldModel } from './held.js';
 import { trigger, swing, toolDt } from './action.js';
 import { faceNormal, pack, cellsNear } from './transfer.js';
-import { digger } from './dig.js';
+import { digger, resizeTool } from './dig.js';
 import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 
 // A melee tool (the axe, the pickaxe): a short-range swing that breaks
@@ -204,6 +204,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         status: () => null,
         get telling() { return telling; },   // for checks: the tell (pose.ready) is up
         windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
+        ...(digs ? { resize: (step) => resizeTool(env, step) } : {}),   // [ and ]: a digging tool's bite size (dig.js)
         get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
         dispose() { disposed = true; pass.dispose(); digs?.dispose(); model.dispose(); },
       };

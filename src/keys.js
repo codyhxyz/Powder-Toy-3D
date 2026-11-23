@@ -34,7 +34,7 @@ export const KEYS = {
   firstPerson: ['v'],     // into the body and back out (Garry's Mod's noclip key)
 
   // painting (The Powder Toy's keys where it has one)
-  brushSmaller: ['['],
+  brushSmaller: ['['],     // in the body: the tool gun's brush, and a dig or build tool's bite size (pov/tools/dig.js)
   brushBigger: [']'],
   brushShape: ['b'],
   builderMode: ['l'],

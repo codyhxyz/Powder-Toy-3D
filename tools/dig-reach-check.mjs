@@ -2,7 +2,8 @@
 // node tools/dig-reach-check.mjs
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { digger, BLOCK } from '../src/pov/tools/dig.js';
+import { digger, BLOCK, biteSize, resizeBite, resizeTool, blockMin } from '../src/pov/tools/dig.js';
+import { BITE_MIN, BITE_MAX, biteLabel } from '../src/pov/constants.js';
 import { E } from '../src/elements.js';
 import { holdFor } from '../src/pov/holds.js';
 
@@ -70,7 +71,65 @@ for (let face = 0; face < 6; face++) {
     } finally { angled.tool.dispose(); }
   }
 }
+// The bite's size ([ and ]): the player's tools take a bite of the chosen size holding the aimed cell,
+// one cell at the finest; an NPC's keep the block.
+{
+  const aimAt = (cell, face) => ({
+    eye: cell.clone().addScalar(0.5).add(new THREE.Vector3(0, 2, 0)), dir: new THREE.Vector3(0, -1, 0),
+    aim: { valid: true, cell, face, dist: 1.5, id: E.SAND },
+    sim: { g: { nx: 64, ny: 64, nz: 64 } },
+  });
+  const bite = (owner, cell, face) => {
+    const tool = digger({ owner }, { power: 6, tools: ['shovel'], reach: 15 });
+    let cells = null;
+    const transfer = { take(_load, request) { cells = request.cells; return Promise.resolve(cells.length); } };
+    try {
+      const ctx = aimAt(cell, face), t = tool.target(ctx);
+      assert.ok(t, 'sand in reach is a target');
+      tool.blow(ctx, t, {}, transfer);
+      return { t, cells };
+    } finally { tool.dispose(); }
+  };
+  assert.equal(biteSize(), BLOCK, 'the big bite is the default');
+  assert.equal(resizeBite(1), null, 'no bigger than the block');
+  const sizes = [];
+  for (let n = BITE_MAX; n >= BITE_MIN; n--) {
+    assert.equal(biteSize(), n);
+    assert.equal(biteSize('npc'), BLOCK, "an NPC's bite stays the block");
+    for (const cell of [new THREE.Vector3(24, 24, 24), new THREE.Vector3(25, 26, 23), new THREE.Vector3(31, 20, 29)]) {
+      for (let face = 0; face < 6; face++) {
+        const { t, cells } = bite(null, cell, face);
+        assert.equal(t.size, n);
+        assert.equal(cells.length, n ** 3, `a size-${n} bite is ${n}³ cells`);
+        assert.ok(cells.some(([x, y, z]) => x === cell.x && y === cell.y && z === cell.z), 'the bite holds the aimed cell');
+        assert.deepEqual(cells[0], cell.toArray(), 'nearest first: the aimed cell');
+        // n deep behind the aimed face, the n-cell lattice square across it
+        const axis = face >> 1, lattice = blockMin(cell, undefined, n);
+        for (let a = 0; a < 3; a++) {
+          const lo = Math.min(...cells.map((c) => c[a])), hi = Math.max(...cells.map((c) => c[a]));
+          assert.equal(hi - lo, n - 1);
+          if (a !== axis) assert.equal(lo, lattice.getComponent(a), 'across the face it is the lattice square');
+          else assert.equal(face % 2 === 0 ? hi : lo, cell.getComponent(a), 'it starts at the aimed face');
+        }
+        assert.equal(bite('npc', cell, face).cells.length, BLOCK ** 3);
+      }
+    }
+    sizes.push(biteLabel(n));
+    if (n > BITE_MIN) assert.equal(resizeBite(-1), n - 1);
+  }
+  assert.equal(resizeBite(-1), null, 'no finer than one cell');
+  assert.deepEqual(sizes, ['0.9 m', '0.6 m', '0.3 m']);
+  // the key's handler: toasts the size, and is the player's only
+  const said = [];
+  const env = { owner: null, feedback: { toast: (text) => said.push(text) } };
+  assert.equal(resizeTool({ owner: 'npc' }, 1), false);
+  assert.equal(resizeTool(env, -1), true);
+  assert.match(said.at(-1), /0\.3 m \(smallest\)/);
+  while (biteSize() < BITE_MAX) assert.equal(resizeTool(env, 1), true);
+  assert.match(said.at(-1), /0\.9 m$/);
+  assert.equal(biteSize(), BLOCK, 'back at the default for the checks below');
+}
 const grip = holdFor('jackhammer');
 assert.equal(grip.right.palm[0], -1, 'right palm faces inward');
 assert.equal(grip.left.palm[0], 1, 'left palm faces inward');
-console.log('PASS: stale mining reach on six faces, diagonal rays, in-reach continuation, mirrored jackhammer grip');
+console.log('PASS: stale mining reach on six faces, diagonal rays, in-reach continuation, bite sizes one cell to the block, mirrored jackhammer grip');

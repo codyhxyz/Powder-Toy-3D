@@ -2,12 +2,14 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { aimInReach } from './transfer.js';
 import { gfxUniforms } from '../../gfx/uniforms.js';
+import { BLOCK, BITE_MIN, BITE_MAX, biteLabel } from '../constants.js';
 
 // Digging, for every tool that digs (the shovel, the pickaxe): Minecraft's block
 // breaking (minecraft.wiki/w/Breaking) on the trowel's lattice.
 //
 //   - A blow takes a whole bite: BLOCK cells deep into the face you hit, and
-//     across it the BLOCK × BLOCK square of the lattice the trowel builds on, so
+//     across it the BLOCK × BLOCK square of the lattice the trowel builds on
+//     (or smaller, down to one cell: the bite's size, below), so
 //     holes have straight walls and flat floors that line up with built blocks,
 //     and every bite is a full one wherever the surface stands (a bite of the
 //     lattice block alone came up a few grains where the sand had already gone).
@@ -39,7 +41,38 @@ import { gfxUniforms } from '../../gfx/uniforms.js';
 //   const t = d.target(ctx);           // once a frame: the aimed bite (and its mark on the surface), or null
 //   const r = d.blow(ctx, t, load);    // a blow landed: { id, need, hits, taken: promise | null } or null
 
-export const BLOCK = 3;              // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block); the trowel's lattice
+export { BLOCK };                    // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block); the trowel's lattice (constants.js)
+
+// The bite's size is the player's to set, from one cell (0.3 m: the finest the
+// world holds) up to the block: [ and ], The Powder Toy's brush-size keys, as on
+// the tool gun (keys.js brushSmaller/brushBigger; app.js sends them to the tool
+// in hand). One size for every tool that digs or builds on the lattice (the
+// shovel and its throw, the pickaxe, the jackhammer, the trowel), so a hole dug
+// at a size is filled by blocks of that size. A bite of n cells is n deep behind
+// the aimed face and the n × n square of the n-cell lattice across it; at 1 it
+// is the aimed cell itself.
+// Intentional (user request, 2026-11-22: "we need a finer resolution for eg
+// digging. i need to be able to be precise with it"): the big bite stays the
+// default (the user's "fast refire + big bites", 2026-10-13), and an NPC's
+// tools always take the block (brain.js plans in blocks).
+let playerBite = BLOCK;              // cells: the player's chosen size
+// the bite size of `owner`'s tools (null: the player's)
+export const biteSize = (owner = null) => (owner == null ? playerBite : BLOCK);
+// Step the player's bite size by `step` cells. Returns the new size, or null at an end of the range.
+export function resizeBite(step) {
+  const next = Math.max(BITE_MIN, Math.min(BITE_MAX, playerBite + Math.sign(step)));
+  if (next === playerBite) return null;
+  playerBite = next;
+  return next;
+}
+// What [ and ] do with a lattice tool in hand (a tool's `resize`): step the size and say it.
+export function resizeTool(env, step) {
+  if (env.owner != null) return false;
+  const n = resizeBite(step);
+  env.feedback?.toast?.(`Dig and build size: ${biteLabel(n ?? playerBite)}${n == null ? (playerBite === BITE_MIN ? ' (smallest)' : ' (biggest)') : ''}`);
+  globalThis.__app?.requestRender?.();
+  return true;
+}
 
 // the kinds a dig takes: powder as it is, breakable solids as their debris
 const DIG_KINDS = [K.POWDER, K.SOLID];
@@ -48,23 +81,23 @@ const STALE_S = 0.25;                // s a bite dug is taken as gone while the 
 // Keep the existing highlight clearance around a smooth surface hit.
 const SURFACE_CLEAR = 0.25;          // cells
 
-// The lattice block holding `cell`: its minimum corner.
-export const blockMin = (cell, out = new THREE.Vector3()) => out.copy(cell).divideScalar(BLOCK).floor().multiplyScalar(BLOCK);
+// The block of the n-cell lattice holding `cell`: its minimum corner.
+export const blockMin = (cell, out = new THREE.Vector3(), n = BLOCK) => out.copy(cell).divideScalar(n).floor().multiplyScalar(n);
 
 // The bite behind face `face` (transfer.js faceNormal: axis face >> 1, + for even) of
-// `cell`: its minimum corner. BLOCK cells inward from the cell along the face's axis,
-// the lattice's BLOCK across it.
-export function biteMin(cell, face, out = new THREE.Vector3()) {
-  blockMin(cell, out);
+// `cell`: its minimum corner. n cells inward from the cell along the face's axis,
+// the n-cell lattice's square across it.
+export function biteMin(cell, face, out = new THREE.Vector3(), n = BLOCK) {
+  blockMin(cell, out, n);
   const axis = face >> 1, c = cell.getComponent(axis);
-  out.setComponent(axis, face % 2 === 0 ? c - (BLOCK - 1) : c);
+  out.setComponent(axis, face % 2 === 0 ? c - (n - 1) : c);
   return out;
 }
 
-// The block's cells inside the grid, nearest `from` first (so a full pack takes the ones you aimed at).
-export function blockCells(min, g, from) {
+// The n-cell block's cells inside the grid, nearest `from` first (so a full pack takes the ones you aimed at).
+export function blockCells(min, g, from, n = BLOCK) {
   const cells = [];
-  for (let y = 0; y < BLOCK; y++) for (let z = 0; z < BLOCK; z++) for (let x = 0; x < BLOCK; x++) {
+  for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
     const c = [min.x + x, min.y + y, min.z + z];
     if (c[0] < 0 || c[1] < 0 || c[2] < 0 || c[0] >= g.nx || c[1] >= g.ny || c[2] >= g.nz) continue;
     cells.push(c);
@@ -89,8 +122,8 @@ export function digger(env, { power, limit = Infinity, tools, reach }) {
   // the elements a bite may take: its tools' (and its limit, through the take's maxHard)
   const ids = ELEMENTS.flatMap((el, id) => (tools.includes(el.tool) ? [id] : []));
   let lastBlow = null;   // for checks: { min, id, need, hits, taken }
-  const dug = new Map();   // bites dug lately, 'x,y,z' of their corner → when (s, performance.now)
-  const cornerKey = (m) => `${m.x},${m.y},${m.z}`;
+  const dug = new Map();   // bites dug lately, their size and 'x,y,z' of their corner → when (s, performance.now)
+  const cornerKey = (m, n) => `${n}:${m.x},${m.y},${m.z}`;
 
   // the mark on the surface (FrameUniforms digMin/digMax): the player's tools only (an NPC's are its own, unseen)
   const mine = env.owner == null;
@@ -103,7 +136,7 @@ export function digger(env, { power, limit = Infinity, tools, reach }) {
       return;
     }
     const axis = t.aim.face >> 1, out = t.aim.face % 2 === 0 ? 1 : -1;   // the aimed face's axis, and outward along it
-    const lo = t.min.toArray(), hi = lo.map((v) => v + BLOCK);
+    const lo = t.min.toArray(), hi = lo.map((v) => v + t.size);
     if (out > 0) hi[axis] += SURFACE_CLEAR; else lo[axis] -= SURFACE_CLEAR;
     const cracked = t.need > 1 && t.key === hitKey ? hits / t.need : 0;
     u.uDigMin.value = [...lo, cracked];
@@ -113,29 +146,30 @@ export function digger(env, { power, limit = Infinity, tools, reach }) {
   }
 
   return {
-    // The aimed block within reach, outlined: { aim, min, id, need, key }, or null (air, the floor, out of reach).
+    // The aimed bite within reach, outlined: { aim, min, size, id, need, key }, or null (air, the floor, out of reach).
     target(ctx) {
       const aim = aimInReach(ctx, reach);
       if (!aim || aim.id < 0 || aim.cell.y < 0) { show(null); return null; }
       // the bite behind the aimed face; past the ones just dug (the aim hasn't seen them go yet)
       const now = performance.now() / 1000;
       for (const [k, at] of dug) if (now - at > STALE_S) dug.delete(k);
-      const min = biteMin(aim.cell, aim.face);
-      const inward = (aim.face % 2 === 0 ? -1 : 1) * BLOCK, axis = aim.face >> 1;
+      const size = biteSize(env.owner);
+      const min = biteMin(aim.cell, aim.face, undefined, size);
+      const inward = (aim.face % 2 === 0 ? -1 : 1) * size, axis = aim.face >> 1;
       let advanced = false;
-      while (dug.has(cornerKey(min))) {
+      while (dug.has(cornerKey(min, size))) {
         min.setComponent(axis, min.getComponent(axis) + inward);
         advanced = true;
       }
       if (advanced) {
         // A rapid tool can pass several stale bites before the GPU pick catches
         // up. Its reach ends at the new face, not the original pick's distance.
-        const faceAt = min.getComponent(axis) + (inward < 0 ? BLOCK : 0);
+        const faceAt = min.getComponent(axis) + (inward < 0 ? size : 0);
         const distance = (faceAt - ctx.eye.getComponent(axis)) / ctx.dir.getComponent(axis) * ctx.dir.length();
         if (!(distance >= 0 && distance <= reach)) { show(null); return null; }
       }
       const need = blowsFor(aim.id, power, limit, tools);
-      const t = { aim, min, id: aim.id, need, key: `${min.x},${min.y},${min.z}:${aim.id}` };
+      const t = { aim, min, size, id: aim.id, need, key: `${min.x},${min.y},${min.z}:${aim.id}` };
       if (t.key !== hitKey) { hits = 0; hitKey = t.key; }
       show(Number.isFinite(need) ? t : null);
       return t;
@@ -149,14 +183,14 @@ export function digger(env, { power, limit = Infinity, tools, reach }) {
       hits = Math.min(hits + 1, t.need);
       let taken = null;
       if (hits >= t.need) {
-        const cells = blockCells(t.min, ctx.sim.g, t.aim.cell.clone().addScalar(0.5));
+        const cells = blockCells(t.min, ctx.sim.g, t.aim.cell.clone().addScalar(0.5), t.size);
         // (limit: the take reserves room for that many in the pack, so the next bite isn't refused while this one's in flight)
         taken = transfer?.take(load, {
           cells, kinds: DIG_KINDS, breakDebris: true, maxHard: Math.min(t.need * power, limit), ids, limit: cells.length,
         }) ?? null;
-        if (taken) { hits = 0; hitKey = ''; dug.set(cornerKey(t.min), performance.now() / 1000); }   // the next blow starts on the bite behind
+        if (taken) { hits = 0; hitKey = ''; dug.set(cornerKey(t.min, t.size), performance.now() / 1000); }   // the next blow starts on the bite behind
       }
-      lastBlow = { min: t.min.clone(), id: t.id, need: t.need, hits, taken };
+      lastBlow = { min: t.min.clone(), size: t.size, id: t.id, need: t.need, hits, taken };
       show(t);
       return { id: t.id, need: t.need, hits, taken };
     },

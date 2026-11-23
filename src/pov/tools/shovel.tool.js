@@ -5,7 +5,7 @@ import {
   pack, cellsNear, outsideBody, bodyExit, toStepVelocity, faceNormal, ballRadius, pinned,
 } from './transfer.js';
 import { trigger, swing, toolDt } from './action.js';
-import { digger, BLOCK } from './dig.js';
+import { digger, BLOCK, biteSize, resizeTool } from './dig.js';
 import { attachModel, MODELS } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { gear } from './catalog.js';
@@ -16,8 +16,8 @@ import { gear } from './catalog.js';
 // plants and moss as debris, fungus intact). Wood is the axe's and rock the pickaxe's: they ring
 // off the blade, and a toast names the tool (Minecraft's shovel blocks).
 // Liquids run off the blade. Right-click
-// throws a block's worth (the newest BLADE_LOAD cells) where you aim, or in
-// front of you; hold to keep throwing. The pack (transfer.js) is the inventory
+// throws a bite's worth (the newest cells, a full block's BLADE_LOAD at the default size) where you aim, or in
+// front of you; hold to keep throwing. [ and ] set the bite's size (dig.js), down to one cell. The pack (transfer.js) is the inventory
 // the trowel builds from.
 //
 // Events: tool:action 'dig' (cells came up), 'chip' (a dig cracked a solid),
@@ -28,7 +28,7 @@ const REFIRE = 0.15;                 // s between digs while held: Minecraft's i
 const THROW_REFIRE = 0.2;            // s between throws while held: Minecraft's 4-tick use delay (the trowel's)
 const POWER = 6;                     // hardness one dig beats: soil (moss, fungus: 6) in one
 const TOOLS = ['shovel'];            // the elements it digs: elements.js tool 'shovel' (Minecraft's mineable/shovel: sand, gravel, snow, grass); wood is the axe's, rock the pickaxe's
-const BLADE_LOAD = BLOCK ** 3;       // cells one throw takes from the pack: one dug block
+const BLADE_LOAD = BLOCK ** 3;       // cells a full blade holds: one dug block (a throw takes a bite's worth: dig.js biteSize)
 const THROW_SPEED = 8;               // cells/s along the aim, on top of the body's velocity
 const DUMP_REACH = 2.5;              // cells from the eye where a load lands when nothing is aimed at
 const DUMP_SLACK = 2.5;              // candidate cells per cell dumped (some are full or behind the surface)
@@ -131,7 +131,7 @@ export default {
     }
 
     function dump(ctx, aim) {
-      const n = Math.min(load.cells.length, BLADE_LOAD);
+      const n = Math.min(load.cells.length, biteSize(env.owner) ** 3);   // a throw is a bite's worth, as fine as the dig
       if (!n) return false;
       const feet = ctx.player?.pos;
       const clear = feet ? outsideBody(feet, BODY_CLEARANCE) : null;
@@ -193,6 +193,7 @@ export default {
         tilt.stop(); thrust.stop(); flick.stop();
       },
       status: () => load.status(),
+      resize: (step) => resizeTool(env, step),   // [ and ]: the bite's size (dig.js)
       get lastBlow() { return dig.lastBlow; },   // for checks
       dispose() {
         dig.dispose();

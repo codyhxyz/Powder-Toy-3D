@@ -2621,6 +2621,9 @@ addEventListener('keydown', (e) => {
     }
     if (is(e, KEYS.brushSmaller)) { setRadius(settings.radius - 1); return; }
     if (is(e, KEYS.brushBigger)) { setRadius(settings.radius + 1); return; }
+  } else if (pov.locked && (is(e, KEYS.brushSmaller) || is(e, KEYS.brushBigger))) {
+    // the same keys size the bite of a dig or build tool in hand (the shovel, pickaxe, trowel: pov/tools/dig.js)
+    if (pov.toolbelt?.resize(is(e, KEYS.brushBigger) ? 1 : -1)) return;
   }
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   // (flying up and down: camera.js)

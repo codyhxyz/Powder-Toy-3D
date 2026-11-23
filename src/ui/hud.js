@@ -4,6 +4,7 @@ import { CLASSES_ENABLED } from '../pov/classes.js';
 import { KEYS, keycaps, label, slotKey, MOD, ALT } from '../keys.js';
 import { VIEWS } from '../views.js';
 import { SLOTS } from '../pov/tools/catalog.js';
+import { BITE_MIN, BITE_MAX, biteLabel } from '../pov/constants.js';
 import { createNotices } from './notices.js';
 
 export function createHud({ onTogglePause }) {
@@ -155,6 +156,7 @@ export function createHelp(onClose) {
         row('Tool gun: cycle Freehand / Line / Box / Hollow Box', KEYS.builderMode),
         row('Tool gun: toggle hollow boxes', KEYS.builderHollow),
         row('Tool gun: brush size', KEYS.brushSmaller, KEYS.brushBigger),
+        row(`Shovel, pickaxe, trowel: dig and build size (${biteLabel(BITE_MIN)} to ${biteLabel(BITE_MAX)})`, KEYS.brushSmaller, KEYS.brushBigger),
         row('Tool gun: aim and click for each point; a box takes two corners then depth', 'Left'),
         row('Tool gun: erase, start a solid cut, or cancel the selection', 'Right'),
         row('Drink from the flask', KEYS.drink),

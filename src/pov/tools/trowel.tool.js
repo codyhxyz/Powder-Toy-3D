@@ -7,13 +7,14 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
 import { gear } from './catalog.js';
 import { createMaterialPicker } from './materialPicker.js';
-import { BLOCK, blockMin } from './dig.js';   // the lattice the shovel and pickaxe dig on: 0.9 m, Minecraft's 1 m block
+import { blockMin, biteSize, resizeTool } from './dig.js';   // the lattice the shovel and pickaxe dig on: 0.9 m, Minecraft's 1 m block, or finer ([ and ])
 
 // Trowel: builds with what the shovel dug up. Left-click sets a block
 // of the chosen material from the pack (transfer.js) against the face you aim
 // at; hold to keep building. Right-click opens the pack's material picker.
 //
-// Blocks are Minecraft's: a 1 m cube (BLOCK cells a side) on a fixed lattice,
+// Blocks are Minecraft's: a 1 m cube (BLOCK cells a side) on a fixed lattice
+// (or smaller, down to one cell, on that size's lattice: [ and ], dig.js biteSize),
 // so a block set on top of another lines up with it, placed at Minecraft's
 // right-click rate (4 ticks), and never inside your own body. They are the
 // pack's own cells, put back exactly (element, temperature, life), and from
@@ -68,13 +69,14 @@ export default {
 
     // the lattice block next to the aimed face: its cells, bottom up
     function blockAt(aim) {
+      const size = biteSize(env.owner);
       const c = aim.cell.clone().add(faceNormal(aim.face));
-      const min = blockMin(c);
+      const min = blockMin(c, undefined, size);
       const cells = [];
-      for (let y = 0; y < BLOCK; y++) for (let z = 0; z < BLOCK; z++) for (let x = 0; x < BLOCK; x++) {
+      for (let y = 0; y < size; y++) for (let z = 0; z < size; z++) for (let x = 0; x < size; x++) {
         cells.push([min.x + x, min.y + y, min.z + z]);
       }
-      return { min, cells };
+      return { min, cells, size };
     }
 
     function place(ctx) {
@@ -82,7 +84,7 @@ export default {
       if (!aim) return false;
       const mat = material();
       if (!mat) { env.feedback?.refuse('Your pack is empty: dig with the shovel first'); return false; }
-      const { min, cells } = blockAt(aim);
+      const { min, cells, size } = blockAt(aim);
       const g = ctx.sim.g;
       const inGrid = cells.filter(([x, y, z]) => x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz);
       if (!inGrid.length) return false;
@@ -94,8 +96,8 @@ export default {
       const [id] = mat;
       const p = transfer.put(load, { cells: inGrid, max: inGrid.length, id });
       if (!p) return false;
-      const point = min.clone().addScalar(BLOCK / 2);
-      lastBlock = { min: min.clone(), id, landed: null };
+      const point = min.clone().addScalar(size / 2);
+      lastBlock = { min: min.clone(), size, id, landed: null };
       const block = lastBlock;
       p.then((landed) => {
         block.landed = landed;
@@ -133,6 +135,7 @@ export default {
         if (!mat) return { name: 'Pack empty', color: 'transparent', note: 'dig with the shovel or pickaxe' };
         return { name: `${ELEMENTS[mat[0]].name} ×${mat[1]}`, color: ELEMENTS[mat[0]].color, note: 'right-click: materials' };
       },
+      resize: (step) => resizeTool(env, step),   // [ and ]: the block's size (dig.js)
       get lastBlock() { return lastBlock; },
       worldReplaced() { picker?.setVisible(false); chosen = -1; },
       dispose() { picker?.dispose(); mesh.dispose(); hand.removeFromParent(); },
