@@ -2,14 +2,14 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { aimInReach } from './transfer.js';
 import { gfxUniforms } from '../../gfx/uniforms.js';
-import { BLOCK, BITE_MIN, BITE_MAX, biteLabel } from '../constants.js';
+import { BLOCK, BITE_FINE, biteLabel } from '../constants.js';
 
 // Digging, for every tool that digs (the shovel, the pickaxe): Minecraft's block
 // breaking (minecraft.wiki/w/Breaking) on the trowel's lattice.
 //
 //   - A blow takes a whole bite: BLOCK cells deep into the face you hit, and
 //     across it the BLOCK × BLOCK square of the lattice the trowel builds on
-//     (or smaller, down to one cell: the bite's size, below), so
+//     (or, fine, the one cell you aim at: the bite's size, below), so
 //     holes have straight walls and flat floors that line up with built blocks,
 //     and every bite is a full one wherever the surface stands (a bite of the
 //     lattice block alone came up a few grains where the sand had already gone).
@@ -43,35 +43,41 @@ import { BLOCK, BITE_MIN, BITE_MAX, biteLabel } from '../constants.js';
 
 export { BLOCK };                    // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block); the trowel's lattice (constants.js)
 
-// The bite's size is the player's to set, from one cell (0.3 m: the finest the
-// world holds) up to the block: [ and ], The Powder Toy's brush-size keys, as on
-// the tool gun (keys.js brushSmaller/brushBigger; app.js sends them to the tool
-// in hand). One size for every tool that digs or builds on the lattice (the
-// shovel and its throw, the pickaxe, the jackhammer, the trowel), so a hole dug
-// at a size is filled by blocks of that size. A bite of n cells is n deep behind
-// the aimed face and the n × n square of the n-cell lattice across it; at 1 it
-// is the aimed cell itself.
+// The bite comes in two sizes the player flips between with the tool mode key
+// (keys.js toolMode, R): the block, and the fine bite, one cell (0.3 m: the
+// smallest piece the world holds). A key that changes what the tool in hand does
+// is Vintage Story's tool mode key (its clay forming picks 1 × 1, 2 × 2 or 3 × 3
+// voxels with it, its chisel 1 to 8), a shooter's fire selector, and Garry's
+// Mod's Reload, the tool gun's third action, on the key it has there. The wheel
+// stays the tool switch (Half-Life 2's), and the key is under the hand on WASD.
+// One size for every tool that digs or builds on the lattice (the shovel and its
+// throw, the pickaxe, the jackhammer, the trowel), so a hole dug fine is filled
+// by fine blocks. A bite of n cells is n deep behind the aimed face and the
+// n × n square of the n-cell lattice across it; fine, it is the aimed cell itself.
 // Intentional (user request, 2026-11-22: "we need a finer resolution for eg
-// digging. i need to be able to be precise with it"): the big bite stays the
+// digging. i need to be able to be precise with it"): the block stays the
 // default (the user's "fast refire + big bites", 2026-10-13), and an NPC's
 // tools always take the block (brain.js plans in blocks).
-let playerBite = BLOCK;              // cells: the player's chosen size
+let playerBite = BLOCK;              // cells: the player's size, BLOCK or BITE_FINE
 // the bite size of `owner`'s tools (null: the player's)
 export const biteSize = (owner = null) => (owner == null ? playerBite : BLOCK);
-// Step the player's bite size by `step` cells. Returns the new size, or null at an end of the range.
-export function resizeBite(step) {
-  const next = Math.max(BITE_MIN, Math.min(BITE_MAX, playerBite + Math.sign(step)));
-  if (next === playerBite) return null;
-  playerBite = next;
-  return next;
+// Flip the player's bite between the block and the fine one. Returns the new size.
+export function toggleBite() {
+  playerBite = playerBite === BLOCK ? BITE_FINE : BLOCK;
+  return playerBite;
 }
-// What [ and ] do with a lattice tool in hand (a tool's `resize`): step the size and say it.
-export function resizeTool(env, step) {
+// What the tool mode key does with a lattice tool in hand (a tool's `toolMode`): flip the size and say it.
+export function toggleToolBite(env) {
   if (env.owner != null) return false;
-  const n = resizeBite(step);
-  env.feedback?.toast?.(`Dig and build size: ${biteLabel(n ?? playerBite)}${n == null ? (playerBite === BITE_MIN ? ' (smallest)' : ' (biggest)') : ''}`);
+  const n = toggleBite();
+  env.feedback?.toast?.(n === BLOCK ? `Block size: ${biteLabel(n)}` : `Fine size: ${biteLabel(n)}`);
   globalThis.__app?.requestRender?.();
   return true;
+}
+// A lattice tool's status with the fine size marked ('SAND ×12 · 0.3 m'); the block, the default, says nothing.
+export function biteStatus(env, status) {
+  const n = biteSize(env.owner);
+  return n === BLOCK ? status : [status, biteLabel(n)].filter(Boolean).join(' · ');
 }
 
 // the kinds a dig takes: powder as it is, breakable solids as their debris

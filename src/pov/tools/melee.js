@@ -8,7 +8,7 @@ import { povEvents } from '../events.js';
 import { heldModel } from './held.js';
 import { trigger, swing, toolDt } from './action.js';
 import { faceNormal, pack, cellsNear } from './transfer.js';
-import { digger, resizeTool } from './dig.js';
+import { digger, toggleToolBite, biteStatus } from './dig.js';
 import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 
 // A melee tool (the axe, the pickaxe): a short-range swing that breaks
@@ -201,10 +201,10 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           model.pivot.position.set(rp[0] * tellK + axis[0] * drive, rp[1] * tellK + axis[1] * drive, rp[2] * tellK + axis[2] * drive);
         },
         deselect() { model.deselect(); digs?.hide(); button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
-        status: () => null,
+        status: () => (digs ? biteStatus(env, null) : null),   // a digging tool marks its fine size
         get telling() { return telling; },   // for checks: the tell (pose.ready) is up
         windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
-        ...(digs ? { resize: (step) => resizeTool(env, step) } : {}),   // [ and ]: a digging tool's bite size (dig.js)
+        ...(digs ? { toolMode: () => toggleToolBite(env) } : {}),   // the tool mode key: a digging tool's block or fine bite (dig.js)
         get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
         dispose() { disposed = true; pass.dispose(); digs?.dispose(); model.dispose(); },
       };

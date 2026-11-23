@@ -7,14 +7,14 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
 import { gear } from './catalog.js';
 import { createMaterialPicker } from './materialPicker.js';
-import { blockMin, biteSize, resizeTool } from './dig.js';   // the lattice the shovel and pickaxe dig on: 0.9 m, Minecraft's 1 m block, or finer ([ and ])
+import { blockMin, biteSize, toggleToolBite, biteStatus } from './dig.js';   // the lattice the shovel and pickaxe dig on: 0.9 m, Minecraft's 1 m block, or one cell (the tool mode key)
 
 // Trowel: builds with what the shovel dug up. Left-click sets a block
 // of the chosen material from the pack (transfer.js) against the face you aim
 // at; hold to keep building. Right-click opens the pack's material picker.
 //
 // Blocks are Minecraft's: a 1 m cube (BLOCK cells a side) on a fixed lattice
-// (or smaller, down to one cell, on that size's lattice: [ and ], dig.js biteSize),
+// (or, fine, one cell: the tool mode key, R, dig.js biteSize),
 // so a block set on top of another lines up with it, placed at Minecraft's
 // right-click rate (4 ticks), and never inside your own body. They are the
 // pack's own cells, put back exactly (element, temperature, life), and from
@@ -128,14 +128,14 @@ export default {
       deselect() { picker?.setVisible(false); hand.visible = false; button.reset(); next.reset(); pose.stop(); },
       status() {
         const mat = material();
-        return mat ? `${ELEMENTS[mat[0]].abbr} ×${mat[1]}` : null;
+        return biteStatus(env, mat ? `${ELEMENTS[mat[0]].abbr} ×${mat[1]}` : null);
       },
       readout() {
         const mat = material();
         if (!mat) return { name: 'Pack empty', color: 'transparent', note: 'dig with the shovel or pickaxe' };
         return { name: `${ELEMENTS[mat[0]].name} ×${mat[1]}`, color: ELEMENTS[mat[0]].color, note: 'right-click: materials' };
       },
-      resize: (step) => resizeTool(env, step),   // [ and ]: the block's size (dig.js)
+      toolMode: () => toggleToolBite(env),   // the tool mode key: blocks or single cells (dig.js)
       get lastBlock() { return lastBlock; },
       worldReplaced() { picker?.setVisible(false); chosen = -1; },
       dispose() { picker?.dispose(); mesh.dispose(); hand.removeFromParent(); },

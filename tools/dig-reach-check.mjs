@@ -2,8 +2,8 @@
 // node tools/dig-reach-check.mjs
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { digger, BLOCK, biteSize, resizeBite, resizeTool, blockMin } from '../src/pov/tools/dig.js';
-import { BITE_MIN, BITE_MAX, biteLabel } from '../src/pov/constants.js';
+import { digger, BLOCK, biteSize, toggleBite, toggleToolBite, biteStatus, blockMin } from '../src/pov/tools/dig.js';
+import { BITE_FINE, biteLabel } from '../src/pov/constants.js';
 import { E } from '../src/elements.js';
 import { holdFor } from '../src/pov/holds.js';
 
@@ -71,8 +71,8 @@ for (let face = 0; face < 6; face++) {
     } finally { angled.tool.dispose(); }
   }
 }
-// The bite's size ([ and ]): the player's tools take a bite of the chosen size holding the aimed cell,
-// one cell at the finest; an NPC's keep the block.
+// The bite's size (the tool mode key): the player's tools take the block or, fine, the aimed cell;
+// an NPC's keep the block.
 {
   const aimAt = (cell, face) => ({
     eye: cell.clone().addScalar(0.5).add(new THREE.Vector3(0, 2, 0)), dir: new THREE.Vector3(0, -1, 0),
@@ -91,9 +91,8 @@ for (let face = 0; face < 6; face++) {
     } finally { tool.dispose(); }
   };
   assert.equal(biteSize(), BLOCK, 'the big bite is the default');
-  assert.equal(resizeBite(1), null, 'no bigger than the block');
   const sizes = [];
-  for (let n = BITE_MAX; n >= BITE_MIN; n--) {
+  for (const n of [BLOCK, BITE_FINE]) {
     assert.equal(biteSize(), n);
     assert.equal(biteSize('npc'), BLOCK, "an NPC's bite stays the block");
     for (const cell of [new THREE.Vector3(24, 24, 24), new THREE.Vector3(25, 26, 23), new THREE.Vector3(31, 20, 29)]) {
@@ -115,21 +114,26 @@ for (let face = 0; face < 6; face++) {
       }
     }
     sizes.push(biteLabel(n));
-    if (n > BITE_MIN) assert.equal(resizeBite(-1), n - 1);
+    if (n === BLOCK) assert.equal(toggleBite(), BITE_FINE, 'the key flips the block to fine');
   }
-  assert.equal(resizeBite(-1), null, 'no finer than one cell');
-  assert.deepEqual(sizes, ['0.9 m', '0.6 m', '0.3 m']);
-  // the key's handler: toasts the size, and is the player's only
+  assert.deepEqual(sizes, ['0.9 m', '0.3 m']);
+  // the key's handler: flips the size, toasts it, marks the status, and is the player's only
   const said = [];
   const env = { owner: null, feedback: { toast: (text) => said.push(text) } };
-  assert.equal(resizeTool({ owner: 'npc' }, 1), false);
-  assert.equal(resizeTool(env, -1), true);
-  assert.match(said.at(-1), /0\.3 m \(smallest\)/);
-  while (biteSize() < BITE_MAX) assert.equal(resizeTool(env, 1), true);
-  assert.match(said.at(-1), /0\.9 m$/);
+  assert.equal(biteStatus(env, 'SAND ×12'), 'SAND ×12 · 0.3 m');
+  assert.equal(biteStatus(env, null), '0.3 m');
+  assert.equal(biteStatus({ owner: 'npc' }, 'SAND ×12'), 'SAND ×12');
+  assert.equal(toggleToolBite({ owner: 'npc' }), false);
+  assert.equal(biteSize(), BITE_FINE, "an NPC's tool doesn't flip the player's size");
+  assert.equal(toggleToolBite(env), true);
+  assert.equal(said.at(-1), 'Block size: 0.9 m');
+  assert.equal(biteStatus(env, 'SAND ×12'), 'SAND ×12');
+  assert.equal(toggleToolBite(env), true);
+  assert.equal(said.at(-1), 'Fine size: 0.3 m');
+  toggleToolBite(env);
   assert.equal(biteSize(), BLOCK, 'back at the default for the checks below');
 }
 const grip = holdFor('jackhammer');
 assert.equal(grip.right.palm[0], -1, 'right palm faces inward');
 assert.equal(grip.left.palm[0], 1, 'left palm faces inward');
-console.log('PASS: stale mining reach on six faces, diagonal rays, in-reach continuation, bite sizes one cell to the block, mirrored jackhammer grip');
+console.log('PASS: stale mining reach on six faces, diagonal rays, in-reach continuation, block and fine bite sizes, mirrored jackhammer grip');

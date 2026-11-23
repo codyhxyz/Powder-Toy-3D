@@ -518,8 +518,8 @@ export function createToolbelt(env) {
     get selected() { return wandSelected ? WAND : selected; },
     get selectedKey() { return wandSelected ? WAND : selected; },   // the held tool's key ('GUN', ...; 'WAND')
     get wantsWheel() { return !!held()?.wantsWheel?.(); },
-    // [ and ] with a tool in hand that has a size of its own (the dig and build tools' bite, dig.js): true if it took the key
-    resize: (step) => !!held()?.resize?.(step),
+    // the tool mode key (keys.js toolMode) with a tool in hand that has a mode (the dig and build tools' bite size, dig.js): true if it took the key
+    toolMode: () => !!held()?.toolMode?.(),
     get zoom() { return held()?.zoom?.() ?? 1; },   // the held tool's view zoom (the sniper's scope): FOV ÷ this
     get transfer() { return transfer; },
     get grapple() { return grapple; },
