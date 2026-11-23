@@ -30,7 +30,8 @@ export { emptyLoads };
 //
 // Number key k picks slot k: the tool last held in it, or, if a tool of that
 // slot is already in hand, the next one in it. The wheel steps through every
-// tool carried, in catalog order.
+// tool carried, in catalog order, unless the tool in hand takes it (wantsWheel:
+// the physgun's hold distance, the dig and build tools' bite size).
 //
 // A team game in Halo's style restricts it (restrict(keys), src/game/arsenal.js):
 // only those keys can be in hand, each in a slot of its own in their order
@@ -518,8 +519,8 @@ export function createToolbelt(env) {
     get selected() { return wandSelected ? WAND : selected; },
     get selectedKey() { return wandSelected ? WAND : selected; },   // the held tool's key ('GUN', ...; 'WAND')
     get wantsWheel() { return !!held()?.wantsWheel?.(); },
-    // the tool mode key (keys.js toolMode) with a tool in hand that has a mode (the dig and build tools' bite size, dig.js): true if it took the key
-    toolMode: () => !!held()?.toolMode?.(),
+    // what the wheel does while the held tool has it: 'distance' (the physgun's hold), 'size' (the dig and build tools' bite, dig.js), or null (it switches tools)
+    get wheelUse() { const t = held(); return t?.wantsWheel?.() ? t.wheelUse ?? 'distance' : null; },
     get zoom() { return held()?.zoom?.() ?? 1; },   // the held tool's view zoom (the sniper's scope): FOV ÷ this
     get transfer() { return transfer; },
     get grapple() { return grapple; },

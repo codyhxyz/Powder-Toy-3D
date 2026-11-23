@@ -48,11 +48,12 @@
      one dig, and so does soil (grass and plants, moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
      Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
      worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
-     `R` (the tool mode key, `keys.js` `toolMode`: Garry's Mod's Reload on the tool gun, Vintage Story's tool
-     mode) flips the bite between the default 3-cell block and fine, one cell (0.3 m, the finest the world
-     holds), for the shovel, the pickaxe, the jackhammer and the trowel together (`dig.js` `biteSize`): fine,
-     a dig takes the aimed cell, a throw is one cell, and the trowel sets single cells. The wheel stays the
-     tool switch.
+     With the shovel, the pickaxe, the jackhammer or the trowel in hand the wheel sizes the bite for all of
+     them together (`dig.js` `biteSize`), a notch a cell, from one cell (0.3 m, the smallest piece the world
+     holds) to the default 3-cell block; wheel up is bigger (The Powder Toy's brush). A bite of n cells is n
+     deep and n × n across on the n-cell lattice, a throw is a bite's worth, and the trowel sets blocks of
+     that size. These tools own the wheel (Valheim's hammer, Satisfactory's build gun): the number keys
+     switch away from them. On a phone the wheel's two buttons read Smaller and Bigger.
      The aimed bite's outline and cracks are drawn on the surface itself (`surface.js` `digMark`, FrameUniforms
      `digMin`/`digMax`), so they follow a trunk or a slope.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.

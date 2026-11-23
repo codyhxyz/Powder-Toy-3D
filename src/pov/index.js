@@ -338,8 +338,6 @@ export function createPov(app) {
       useControlAction();
     }
     if (is(e, KEYS.kick) && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
-    // the tool in hand's other mode (the dig and build tools' fine size, tools/dig.js); the village's R turns what you carry
-    if (is(e, KEYS.toolMode) && !e.repeat && mode === 'on' && !village.enabled && isLocked()) toolbelt?.toolMode();
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if (is(e, KEYS.fast) && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // hide the HUD and the hand, for a clean view or a screenshot
@@ -818,7 +816,7 @@ export function createPov(app) {
   function update(dt) {
     touch.update({
       live: live() && !village.blocked, tool: village.enabled ? null : toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
-      wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicleKind: vehicles.seated?.kind, vehicles: vehicles.list.length > 0,
+      wantsWheel: !!toolbelt?.wantsWheel, wheelUse: toolbelt?.wheelUse ?? null, driving: !!vehicles.seated, vehicleKind: vehicles.seated?.kind, vehicles: vehicles.list.length > 0,
     });
     descentFrame(dt);
     if (!active()) return;

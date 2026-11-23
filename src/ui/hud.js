@@ -4,7 +4,7 @@ import { CLASSES_ENABLED } from '../pov/classes.js';
 import { KEYS, keycaps, label, slotKey, MOD, ALT } from '../keys.js';
 import { VIEWS } from '../views.js';
 import { SLOTS } from '../pov/tools/catalog.js';
-import { BLOCK, BITE_FINE, biteLabel } from '../pov/constants.js';
+import { BITE_MIN, BITE_MAX, biteLabel } from '../pov/constants.js';
 import { createNotices } from './notices.js';
 
 export function createHud({ onTogglePause }) {
@@ -150,7 +150,7 @@ export function createHelp(onClose) {
         row('Kick: shove, break glass, kick off walls (Halo\'s melee in a match)', KEYS.kick),
         row('Zoom (hold; scroll to zoom further)', KEYS.zoom),
         row('Use tool / its other action', 'Left', 'Right'),
-        row(`Shovel, pickaxe, trowel: fine (${biteLabel(BITE_FINE)}) or block (${biteLabel(BLOCK)}) size`, KEYS.toolMode),
+        row(`Shovel, pickaxe, trowel: dig and build size, ${biteLabel(BITE_MIN)} to ${biteLabel(BITE_MAX)} (switch tools with the number keys)`, 'Scroll'),
         row('Pick a tool slot; again for the next in it', slots[0], { sep: '–' }, slots[slots.length - 1]),
         row('Spawn menu (Garry\'s Mod\'s key; in Factory, Build)', KEYS.toolMenu),
         row('Tool gun: pick up what you aim at', 'Middle'),

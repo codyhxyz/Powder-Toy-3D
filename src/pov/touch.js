@@ -148,6 +148,9 @@ export function createTouchControls({ canvas, active, turn, button, wheel, kick,
       setHidden(kicker, s.driving);
       setHidden(vehicle, !s.vehicles);
       setHidden(distance, !s.wantsWheel || s.driving);
+      // the wheel's two buttons, named for what the held tool does with it (tools/index.js wheelUse)
+      setText(nearer, s.wheelUse === 'size' ? 'Smaller' : 'Nearer');
+      setText(farther, s.wheelUse === 'size' ? 'Bigger' : 'Farther');
     },
   };
 }

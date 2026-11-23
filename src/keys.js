@@ -71,7 +71,6 @@ export const KEYS = {
 
   // first person
   kick: ['KeyF'],         // free in the body; Halo's melee in a Halo match
-  toolMode: ['KeyR'],     // the tool in hand's other mode (the dig and build tools' fine size): Garry's Mod's Reload, the tool gun's third action; Vintage Story's tool mode
   zoom: ['KeyZ'],
   toolMenu: ['KeyQ'],     // Garry's Mod's spawn-menu key; Factory's Build
   use: ['KeyE'],          // vehicles, pick-ups, shops (Halo's and most shooters' use key)

@@ -5,7 +5,7 @@ import {
   pack, cellsNear, outsideBody, bodyExit, toStepVelocity, faceNormal, ballRadius, pinned,
 } from './transfer.js';
 import { trigger, swing, toolDt } from './action.js';
-import { digger, BLOCK, biteSize, toggleToolBite, biteStatus } from './dig.js';
+import { digger, BLOCK, biteSize, wheelBite, bitesByWheel, WHEEL_USE, biteStatus } from './dig.js';
 import { attachModel, MODELS } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { gear } from './catalog.js';
@@ -17,7 +17,7 @@ import { gear } from './catalog.js';
 // off the blade, and a toast names the tool (Minecraft's shovel blocks).
 // Liquids run off the blade. Right-click
 // throws a bite's worth (the newest cells, a full block's BLADE_LOAD at the default size) where you aim, or in
-// front of you; hold to keep throwing. The tool mode key (R) flips the bite between the block and one cell (dig.js). The pack (transfer.js) is the inventory
+// front of you; hold to keep throwing. The wheel sizes the bite, from the block down to one cell (dig.js). The pack (transfer.js) is the inventory
 // the trowel builds from.
 //
 // Events: tool:action 'dig' (cells came up), 'chip' (a dig cracked a solid),
@@ -169,6 +169,7 @@ export default {
           if (heap.visible) paintHeap();
           heap.scale.setScalar(Math.max(HEAP_MIN, Math.min(1, load.cells.length / BLADE_LOAD)));
         }
+        wheelBite(env, ctx);
         const t = dig.target(ctx);
         if (digs.ready(ctx)) {
           digs.fire();
@@ -193,7 +194,7 @@ export default {
         tilt.stop(); thrust.stop(); flick.stop();
       },
       status: () => biteStatus(env, load.status()),
-      toolMode: () => toggleToolBite(env),   // the tool mode key: the block or the fine bite (dig.js)
+      wantsWheel: () => bitesByWheel(env), wheelUse: WHEEL_USE,   // the wheel sizes the bite (dig.js)
       get lastBlow() { return dig.lastBlow; },   // for checks
       dispose() {
         dig.dispose();
