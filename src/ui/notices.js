@@ -9,9 +9,11 @@ import './notices.css';
 // licence) and the icons are game-icons.net's (noticeIcons.js,
 // tools/noticeicons.mjs) in place of GMod's notice materials.
 //
-//   notices.add(text, { kind, ms, icon })   kind: GMod's NOTIFY_* ('generic',
+//   notices.add(text, { kind, ms, icon, replace })   kind: GMod's NOTIFY_* ('generic',
 //     'error', 'undo', 'hint', 'cleanup'); ms: how long (default: the kind's
-//     length in GMod's sandbox); icon: another icon by name ('camera')
+//     length in GMod's sandbox); icon: another icon by name ('camera');
+//     replace: a notice add() returned: while it is still up it takes the new
+//     text where it stands (a value read out as it changes), and no new one comes
 //
 // Desktop only: on a phone or a narrow window the notices keep their place
 // under the toolbar (styles.css .toasts), fading in and out, as before.
@@ -122,7 +124,13 @@ export function createNotices(root) {
   size();
 
   return {
-    add(text, { kind = 'generic', ms, icon } = {}) {
+    add(text, { kind = 'generic', ms, icon, replace } = {}) {
+      const up = replace ? list.find((n) => n.el === replace) : null;
+      if (up) {
+        up.el.querySelector('.nt-text').textContent = text;
+        if (desktop.matches) { up.w = up.el.offsetWidth; kick(); }
+        return up.el;
+      }
       if (!(kind in NOTICE_S)) kind = 'generic';
       ms ??= NOTICE_S[kind] * MS_PER_S;
       const label = document.createElement('span');

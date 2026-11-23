@@ -16,11 +16,12 @@ export const EYE_HEIGHT = 5.0;          // cells above the feet
 // Minecraft's 4.5 m. A real arm's 1.5 m barely got past your feet from an eye 1.5 m up.
 export const HAND_REACH = 4.5 / CELL_M; // cells
 
-// The lattice the dig and build tools work on (tools/dig.js), and the sizes a
-// bite of it can be set to (the wheel, with one of them in hand).
+// The lattice the dig and build tools work on (tools/dig.js), and the range a
+// bite's size slides over (the wheel, with one of them in hand).
 export const BLOCK = 3;                 // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block)
 export const BITE_MIN = 1;              // cells: the finest bite, one cell (the smallest piece the world holds)
 export const BITE_MAX = BLOCK;          // cells: the biggest, the block
+export const BITE_NOTCHES = 10;         // wheel notches from the finest to the block (6 cm a notch: The Powder Toy's brush grows a pixel a notch; a smooth wheel or trackpad slides between)
 // a bite's size in words, for the toast and the Controls sheet: '0.3 m'
 export const biteLabel = (cells) => `${+(cells * CELL_M).toFixed(2)} m`;
 

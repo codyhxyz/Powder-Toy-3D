@@ -49,10 +49,13 @@
      Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
      worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
      With the shovel, the pickaxe, the jackhammer or the trowel in hand the wheel sizes the bite for all of
-     them together (`dig.js` `biteSize`), a notch a cell, from one cell (0.3 m, the smallest piece the world
-     holds) to the default 3-cell block; wheel up is bigger (The Powder Toy's brush). A bite of n cells is n
-     deep and n × n across on the n-cell lattice, a throw is a bite's worth, and the trowel sets blocks of
-     that size. These tools own the wheel (Valheim's hammer, Satisfactory's build gun): the number keys
+     them together (`dig.js` `biteSize`): any size from one cell (0.3 m, the smallest piece the world holds)
+     to the default 3-cell block, sliding with the wheel (6 cm a notch, less on a smooth wheel); wheel up is
+     bigger (The Powder Toy's brush). At the block a bite is the lattice's. Smaller, it leaves the lattice:
+     a box of that side centred on the crosshair across the aimed face and that deep behind it (`biteBox`),
+     outlined as it is; what comes up is the cells whose centres are in it, and always the aimed cell. A
+     throw is a bite's worth, and the trowel sets a block of that size against the face, outlined the same
+     way. These tools own the wheel (Valheim's hammer, Satisfactory's build gun): the number keys
      switch away from them. On a phone the wheel's two buttons read Smaller and Bigger.
      The aimed bite's outline and cracks are drawn on the surface itself (`surface.js` `digMark`, FrameUniforms
      `digMin`/`digMax`), so they follow a trunk or a slope.

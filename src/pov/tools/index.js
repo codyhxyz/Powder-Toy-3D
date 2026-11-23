@@ -208,7 +208,7 @@ export function createToolbelt(env) {
     rafAt = now;
     const sim = env.getSim(), stepsPerFrame = sim?.compact ? ticksRun(sim) : env.getStepsPerFrame?.() ?? lastSteps;
     const ctx = { ...lastCtx, sim, dt, stepsPerFrame, nativeDt: sim?.compact ? nativeSeconds(stepsPerFrame) : undefined,
-      primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0 };
+      primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0, wheelTurn: 0 };
     ballistics.update(ctx);
     if (lastCtx) wandRuntime.tick(ctx);
     env.requestRender?.();

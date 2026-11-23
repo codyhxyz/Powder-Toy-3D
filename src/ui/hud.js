@@ -150,7 +150,7 @@ export function createHelp(onClose) {
         row('Kick: shove, break glass, kick off walls (Halo\'s melee in a match)', KEYS.kick),
         row('Zoom (hold; scroll to zoom further)', KEYS.zoom),
         row('Use tool / its other action', 'Left', 'Right'),
-        row(`Shovel, pickaxe, trowel: dig and build size, ${biteLabel(BITE_MIN)} to ${biteLabel(BITE_MAX)} (switch tools with the number keys)`, 'Scroll'),
+        row(`Shovel, pickaxe, trowel: dig and build size, anything from ${biteLabel(BITE_MIN)} to ${biteLabel(BITE_MAX)} (switch tools with the number keys)`, 'Scroll'),
         row('Pick a tool slot; again for the next in it', slots[0], { sep: '–' }, slots[slots.length - 1]),
         row('Spawn menu (Garry\'s Mod\'s key; in Factory, Build)', KEYS.toolMenu),
         row('Tool gun: pick up what you aim at', 'Middle'),

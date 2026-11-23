@@ -206,6 +206,7 @@ export function createPov(app) {
   let kickQueued = false, kickLeg = null;   // the kick key went down; the kicking leg in the viewmodel (kick.js)
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
   let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
+  let wheelTurn = 0;   // the same turn with the parts of a notch kept (ctx.wheelTurn: the tools that slide a value by it, tools/dig.js)
   const test = { assumeLocked: false };   // headless tests can't lock the pointer
 
   const active = () => mode !== 'off';
@@ -220,7 +221,7 @@ export function createPov(app) {
       if (down) buttons[`${name}Pressed`] = true;
       if (cancelled) buttons[`${name}Pressed`] = false;
     },
-    wheel: (notches) => { wheelNotches += notches; },
+    wheel: (notches) => { wheelNotches += notches; wheelTurn += notches; },
     kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
     useVehicle: useControlAction,
   });
@@ -284,7 +285,7 @@ export function createPov(app) {
   }
   function releaseActions() {
     buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
-    wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = grappleQueued = false;
+    wheelNotches = wheelAcc = wheelTurn = 0; villageToolTap = false; kickQueued = grappleQueued = false;
     toolbelt?.grapple?.release();
     // A buffered dig must not finish after pockets open or furniture takes the hands.
     if (village.enabled) toolbelt?.tool(toolbelt.selectedKey)?.deselect?.();
@@ -422,8 +423,10 @@ export function createPov(app) {
     const now = performance.now(), dirn = Math.sign(px);
     if (now - wheelLast > WHEEL_GESTURE_GAP_MS || dirn !== wheelDir) {
       wheelNotches += dirn;   // a new gesture (or a change of direction): one notch now
+      wheelTurn += dirn;
       wheelAcc = 0;
     } else {
+      wheelTurn += px / WHEEL_NOTCH_PX;
       wheelAcc += px;
       const n = Math.trunc(wheelAcc / WHEEL_NOTCH_PX);
       wheelNotches += n;
@@ -687,7 +690,7 @@ export function createPov(app) {
     sim: null, dt: 0, stepsPerFrame: 0,
     toolRate: 1,                    // tool speed (the Faster Tools perk; tools/action.js toolDt)
     eye: new THREE.Vector3(), dir: new THREE.Vector3(),
-    primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
+    primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0, wheelTurn: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), teleport: (feet) => player?.teleport(feet), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
@@ -905,7 +908,7 @@ export function createPov(app) {
     // the zoom key: while it's held the wheel zooms, as in Zoomify, instead of picking a tool
     const zooming = mode === 'on' && !deadSeen && keyHeld(keys, KEYS.zoom);
     povCam.keyZoom = zoom.update(dt, zooming, zooming ? wheelNotches : 0);
-    if (zooming) wheelNotches = 0;
+    if (zooming) wheelNotches = wheelTurn = 0;
     toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
@@ -974,7 +977,7 @@ export function createPov(app) {
     } else aim.dist = Infinity;
     interact.update(ctx.eye, ctx.dir, aim.dist, !coop() && live() && mode === 'on' && !deadSeen && !driving && !editing && !village.enabled);
     if (village.enabled) {
-      if (wheelNotches) { village.cycleTool(wheelNotches); wheelNotches = 0; }
+      if (wheelNotches) { village.cycleTool(wheelNotches); wheelNotches = wheelTurn = 0; }
       if (!village.tool && buttons.primaryPressed && !editing && (isLocked() || touch.enabled)) void village.punch();
       village.usingTool = village.canAct && !!village.tool && (buttons.primary || buttons.primaryPressed || buttons.secondary || buttons.secondaryPressed);
     }
@@ -997,6 +1000,7 @@ export function createPov(app) {
       ctx.grappleEnabled = canGrapple() && use;
       ctx.grapplePressed = ctx.grappleEnabled && grappleQueued;
       ctx.wheel = wheelNotches;
+      ctx.wheelTurn = wheelTurn;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
     ctx.player.body = player;
@@ -1028,7 +1032,7 @@ export function createPov(app) {
       live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps),
     });
     buttons.primaryPressed = buttons.secondaryPressed = false;
-    wheelNotches = 0; villageToolTap = false;
+    wheelNotches = wheelTurn = 0; villageToolTap = false;
 
     // Night Vision: the goggles follow the scene's measured light (nightVision.js)
     nightVision?.update(dt, mode === 'on' && !deadSeen ? player.perks.nightGain : 0);
